@@ -1,0 +1,33 @@
+{
+  "name": "alpha-radar-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "echarts": "^5.5.1",
+    "lightweight-charts": "^4.2.3",
+    "lucide-react": "^0.475.0",
+    "next": "^16.2.5",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.5",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "postcss": "^8.5.14"
+  }
+}

@@ -1,0 +1,1 @@
+"""AlphaRadar backend package."""

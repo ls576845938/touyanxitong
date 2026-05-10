@@ -1,0 +1,748 @@
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import sessionmaker
+
+from app.data_sources.mock_data import MockMarketDataClient
+from app.db.models import Base, DailyBar, DailyReport, DataIngestionBatch, DataSourceRun, EvidenceChain, FundamentalMetric, Industry, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal, utcnow
+from app.pipeline.industry_mapping_job import run_industry_mapping_job
+from app.pipeline.daily_report_job import run_daily_report_job
+from app.pipeline.evidence_chain_job import run_evidence_chain_job
+from app.pipeline.industry_heat_job import run_industry_heat_job
+from app.pipeline.ingestion_task_service import claim_next_ingestion_task, create_ingestion_task, priority_candidates, run_ingestion_task, run_next_ingestion_task, task_payload
+from app.pipeline.market_data_job import run_market_data_job
+from app.pipeline.news_ingestion_job import run_news_ingestion_job
+from app.pipeline.sector_industry_mapping_job import run_sector_industry_mapping_job
+from app.pipeline.stock_universe_job import run_stock_universe_job
+from app.pipeline.tenbagger_score_job import run_tenbagger_score_job
+from app.pipeline.trend_signal_job import run_trend_signal_job
+
+
+class RealSourceMockMarketDataClient(MockMarketDataClient):
+    source = "tencent+akshare+mock_fallback"
+    last_effective_source = "tencent"
+
+    def fetch_daily_bars(self, stock_code: str, market: str | None = None, end_date: date | None = None, periods: int = 320):
+        rows = super().fetch_daily_bars(stock_code, market=market, end_date=end_date, periods=periods)
+        real_source = "akshare" if (market or "").upper() == "US" else "tencent"
+        self.last_effective_source = real_source
+        for row in rows:
+            row["source"] = real_source
+            row["source_kind"] = "real"
+            row["source_confidence"] = 1.0
+        return rows
+
+
+class FakeSectorMappingClient:
+    source = "fixture_sector"
+
+    def fetch_a_share_members(self):
+        from app.data_sources.sector_mapping_client import SectorIndustryMember
+
+        return [
+            SectorIndustryMember(code="000001", name="平安银行", raw_sector="金融行业", industry="银行"),
+            SectorIndustryMember(code="600150", name="中国船舶", raw_sector="船舶制造", industry="军工信息化"),
+        ]
+
+
+def test_sector_industry_mapping_job_updates_a_share_unclassified_stocks() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add_all(
+            [
+                Stock(
+                    code="000001",
+                    name="平安银行",
+                    market="A",
+                    board="main",
+                    exchange="SSE",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    concepts="[]",
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="600150",
+                    name="中国船舶",
+                    market="A",
+                    board="main",
+                    exchange="SSE",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    concepts="[]",
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="AAPL",
+                    name="Apple",
+                    market="US",
+                    board="main",
+                    exchange="NASDAQ",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    concepts="[]",
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                ),
+            ]
+        )
+        session.commit()
+
+        result = run_sector_industry_mapping_job(session, client=FakeSectorMappingClient())
+        bank = session.scalar(select(Stock).where(Stock.code == "000001"))
+        ship = session.scalar(select(Stock).where(Stock.code == "600150"))
+        us_stock = session.scalar(select(Stock).where(Stock.code == "AAPL"))
+
+        assert result["updated"] == 2
+        assert bank is not None and bank.industry_level1 == "银行"
+        assert ship is not None and ship.industry_level1 == "军工信息化"
+        assert "sector_industry_mapping_v1" in ship.metadata_json
+        assert us_stock is not None and us_stock.industry_level1 == "未分类"
+        assert session.scalar(select(Industry).where(Industry.name == "军工信息化")) is not None
+
+
+def test_industry_mapping_job_maps_only_unclassified_stocks() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        ai = Industry(name="AI算力", description="")
+        robot = Industry(name="机器人", description="")
+        session.add_all([ai, robot])
+        session.flush()
+        session.add_all(
+            [
+                IndustryKeyword(industry_id=ai.id, keyword="光模块", weight=1.0, is_active=True),
+                IndustryKeyword(industry_id=ai.id, keyword="CPO", weight=1.0, is_active=True),
+                IndustryKeyword(industry_id=robot.id, keyword="减速器", weight=1.0, is_active=True),
+                Stock(
+                    code="MAP1",
+                    name="测试光模块",
+                    market="A",
+                    board="main",
+                    exchange="SSE",
+                    industry_level1="未分类",
+                    industry_level2="光模块",
+                    concepts='["CPO"]',
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="KEEP1",
+                    name="强分类样本",
+                    market="A",
+                    board="main",
+                    exchange="SSE",
+                    industry_level1="半导体",
+                    industry_level2="光模块",
+                    concepts='["CPO"]',
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                ),
+            ]
+        )
+        session.commit()
+
+        result = run_industry_mapping_job(session)
+        mapped = session.scalar(select(Stock).where(Stock.code == "MAP1"))
+        kept = session.scalar(select(Stock).where(Stock.code == "KEEP1"))
+        run = session.scalar(select(DataSourceRun).where(DataSourceRun.job_name == "industry_mapping_v1"))
+
+        assert result["mapped"] == 1
+        assert result["skipped_strong"] == 1
+        assert mapped is not None
+        assert mapped.industry_level1 == "AI算力"
+        assert "industry_mapping_v1" in mapped.metadata_json
+        assert kept is not None
+        assert kept.industry_level1 == "半导体"
+        assert run is not None
+        assert run.status == "success"
+
+
+def test_daily_pipeline_jobs_are_idempotent() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        run_stock_universe_job(session)
+        run_market_data_job(session, client=RealSourceMockMarketDataClient())
+        run_news_ingestion_job(session)
+        run_industry_heat_job(session)
+        run_trend_signal_job(session)
+        run_tenbagger_score_job(session)
+        run_evidence_chain_job(session)
+        run_daily_report_job(session)
+
+        stock_count = len(session.scalars(select(Stock)).all())
+        markets = {row.market for row in session.scalars(select(Stock)).all()}
+        a_boards = {row.board for row in session.scalars(select(Stock).where(Stock.market == "A")).all()}
+        trend_count = len(session.scalars(select(TrendSignal)).all())
+        score_count = len(session.scalars(select(StockScore)).all())
+        evidence_count = len(session.scalars(select(EvidenceChain)).all())
+        fundamental_count = len(session.scalars(select(FundamentalMetric)).all())
+        report_count = len(session.scalars(select(DailyReport)).all())
+        data_runs = session.scalars(select(DataSourceRun)).all()
+
+        assert stock_count >= 5
+        assert markets == {"A", "US", "HK"}
+        assert {"main", "chinext", "star", "bse"}.issubset(a_boards)
+        assert trend_count == stock_count
+        assert score_count == stock_count
+        assert evidence_count == stock_count
+        assert fundamental_count == stock_count
+        assert report_count == 1
+        assert all(score.company_score > 0 for score in session.scalars(select(StockScore)).all())
+        assert any("营收同比" in chain.company_logic for chain in session.scalars(select(EvidenceChain)).all())
+        assert {row.job_name for row in data_runs} == {"stock_universe", "market_data"}
+        assert {row.status for row in data_runs} == {"success"}
+
+        run_market_data_job(session, client=RealSourceMockMarketDataClient())
+        run_news_ingestion_job(session)
+        run_trend_signal_job(session)
+        run_tenbagger_score_job(session)
+        run_evidence_chain_job(session)
+        run_daily_report_job(session)
+
+        assert len(session.scalars(select(TrendSignal)).all()) == trend_count
+        assert len(session.scalars(select(StockScore)).all()) == score_count
+        assert len(session.scalars(select(EvidenceChain)).all()) == evidence_count
+        assert len(session.scalars(select(FundamentalMetric)).all()) == fundamental_count
+        assert len(session.scalars(select(DailyReport)).all()) == report_count
+
+        limited = run_market_data_job(session, markets=("A",), max_stocks_per_market=1, periods=10, client=MockMarketDataClient())
+        assert limited["stocks_requested"] >= 1
+        assert limited["stocks_processed"] == 1
+        assert limited["skipped_by_limit"] >= 1
+        assert limited["periods"] == 10
+
+
+def test_news_ingestion_persists_source_metadata() -> None:
+    class OneArticleClient:
+        source = "fixture"
+
+        def fetch_articles(self, published_date=None):
+            return [
+                {
+                    "title": "AI算力真实资讯样本",
+                    "content": "光模块需求提升",
+                    "summary": "光模块需求提升",
+                    "source": "Fixture RSS",
+                    "source_kind": "rss",
+                    "source_confidence": 0.8,
+                    "source_url": "https://example.com/news/1",
+                    "published_at": date(2026, 5, 8),
+                    "matched_keywords": '["AI算力", "光模块"]',
+                    "related_industries": '["AI算力"]',
+                    "related_stocks": "[]",
+                }
+            ]
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        result = run_news_ingestion_job(session, client=OneArticleClient())
+        article = session.scalar(select(NewsArticle))
+
+        assert result == {"inserted": 1, "skipped": 0}
+        assert article is not None
+        assert article.source_kind == "rss"
+        assert article.source_confidence == 0.8
+
+
+def test_trend_signal_job_uses_research_universe_gate() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+    start = date(2025, 1, 1)
+
+    with Session() as session:
+        session.add_all(
+            [
+                Stock(
+                    code="GOOD",
+                    name="合格样本",
+                    market="A",
+                    board="main",
+                    exchange="SSE",
+                    industry_level1="AI算力",
+                    industry_level2="",
+                    concepts="[]",
+                    asset_type="equity",
+                    listing_status="listed",
+                    market_cap=500,
+                    float_market_cap=300,
+                    is_active=True,
+                    is_st=False,
+                    source="mock",
+                    data_vendor="mock",
+                ),
+                Stock(
+                    code="SHORT",
+                    name="历史不足样本",
+                    market="A",
+                    board="main",
+                    exchange="SSE",
+                    industry_level1="AI算力",
+                    industry_level2="",
+                    concepts="[]",
+                    asset_type="equity",
+                    listing_status="listed",
+                    market_cap=500,
+                    float_market_cap=300,
+                    is_active=True,
+                    is_st=False,
+                    source="mock",
+                    data_vendor="mock",
+                ),
+            ]
+        )
+        for code, count in {"GOOD": 160, "SHORT": 80}.items():
+            for idx in range(count):
+                session.add(
+                    DailyBar(
+                        stock_code=code,
+                        trade_date=start + timedelta(days=idx),
+                        open=10 + idx * 0.01,
+                        high=10.5 + idx * 0.01,
+                        low=9.5 + idx * 0.01,
+                        close=10.2 + idx * 0.01,
+                        pre_close=10,
+                        volume=1_000_000,
+                        amount=50_000_000,
+                            pct_chg=0.1,
+                            adj_factor=1.0,
+                            source="tencent",
+                            source_kind="real",
+                            source_confidence=1.0,
+                        )
+                    )
+        session.add(TrendSignal(stock_code="SHORT", trade_date=start + timedelta(days=159), trend_score=99))
+        session.commit()
+
+        result = run_trend_signal_job(session, trade_date=start + timedelta(days=159))
+        signals = session.scalars(select(TrendSignal)).all()
+
+        assert result["trend_signals"] == 1
+        assert {signal.stock_code for signal in signals} == {"GOOD"}
+
+
+def test_market_data_batch_fails_when_provider_has_no_usable_bars() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add(
+            Stock(
+                code="NO_BARS",
+                name="无行情样本",
+                market="A",
+                board="main",
+                exchange="SSE",
+                industry_level1="未分类",
+                industry_level2="",
+                asset_type="equity",
+                listing_status="listed",
+                is_active=True,
+            )
+        )
+        session.commit()
+
+        result = run_market_data_job(
+            session,
+            markets=("A",),
+            max_stocks_per_market=1,
+            periods=60,
+            client=MockMarketDataClient(),
+        )
+        batch = session.scalars(select(DataIngestionBatch)).first()
+        run = session.scalars(select(DataSourceRun)).first()
+
+        assert result["stocks_processed"] == 1
+        assert result["missing_stocks"] == 1
+        assert result["status"] == "failed"
+        assert batch is not None
+        assert batch.status == "failed"
+        assert batch.failed == 1
+        assert run is not None
+        assert run.status == "failed"
+        assert result["failed_symbols"] == [{"code": "NO_BARS", "market": "A", "error": "no_usable_bars"}]
+        assert "NO_BARS:no_usable_bars" in batch.error
+
+
+def test_market_data_job_marks_mock_bars_as_low_confidence() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add(
+            Stock(
+                code="300308",
+                name="中际旭创",
+                market="A",
+                board="chinext",
+                exchange="SZSE",
+                industry_level1="未分类",
+                industry_level2="",
+                asset_type="equity",
+                is_etf=False,
+                listing_status="listed",
+                is_active=True,
+            )
+        )
+        session.commit()
+
+        result = run_market_data_job(session, markets=("A",), max_stocks_per_market=1, periods=60, client=MockMarketDataClient())
+        bar = session.scalars(select(DailyBar).where(DailyBar.stock_code == "300308")).first()
+        run = session.scalars(select(DataSourceRun).where(DataSourceRun.job_name == "market_data")).first()
+
+        assert result["status"] == "success"
+        assert bar is not None
+        assert bar.source == "mock"
+        assert bar.source_kind == "mock"
+        assert bar.source_confidence == 0.1
+        assert run is not None
+        assert run.source_kind == "mock"
+        assert run.source_confidence == 0.1
+
+
+def test_no_usable_bars_ingestion_task_is_terminal() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add(
+            Stock(
+                code="NO_BARS",
+                name="无行情样本",
+                market="A",
+                board="main",
+                exchange="SSE",
+                industry_level1="未分类",
+                industry_level2="",
+                asset_type="equity",
+                is_etf=False,
+                listing_status="listed",
+                is_active=True,
+            )
+        )
+        session.commit()
+        task = create_ingestion_task(session, task_type="single", market="A", stock_code="NO_BARS", source="mock", periods=60)
+
+        result = run_ingestion_task(session, task)
+        next_task = claim_next_ingestion_task(session)
+
+        assert result.status == "failed"
+        assert result.retry_count == result.max_retries + 1
+        assert "NO_BARS:no_usable_bars" in result.error
+        assert next_task is None
+
+
+def test_ingestion_task_claim_does_not_duplicate_running_task() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        task = create_ingestion_task(session, task_type="batch", market="A", source="mock")
+
+        claimed = claim_next_ingestion_task(session, worker_id="worker-a", lease_seconds=300)
+        duplicate = claim_next_ingestion_task(session, worker_id="worker-b", lease_seconds=300)
+
+        assert claimed is not None
+        assert claimed.id == task.id
+        assert duplicate is None
+        payload = task_payload(claimed)
+        assert payload["status"] == "running"
+        assert payload["worker_id"] == "worker-a"
+        assert payload["lease_expires_at"] is not None
+        assert payload["heartbeat_at"] is not None
+        assert payload["progress"] == 0.0
+
+
+def test_ingestion_task_claim_recovers_stale_running_task() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        task = create_ingestion_task(session, task_type="batch", market="A", source="mock")
+        first = claim_next_ingestion_task(session, worker_id="worker-a", lease_seconds=300)
+        assert first is not None
+
+        stale_at = (utcnow() - timedelta(hours=1)).isoformat()
+        session.execute(
+            text(
+                """
+                UPDATE data_ingestion_task
+                SET heartbeat_at = :stale_at,
+                    lease_expires_at = :stale_at
+                WHERE id = :task_id
+                """
+            ),
+            {"stale_at": stale_at, "task_id": task.id},
+        )
+        session.commit()
+
+        reclaimed = claim_next_ingestion_task(session, worker_id="worker-b", lease_seconds=300, stale_after_seconds=60)
+
+        assert reclaimed is not None
+        assert reclaimed.id == task.id
+        payload = task_payload(reclaimed)
+        assert payload["worker_id"] == "worker-b"
+        assert payload["status"] == "running"
+        assert "stale running task recovered" in payload["last_error"]
+
+
+def test_run_next_ingestion_task_executes_claimed_task() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add(
+            Stock(
+                code="300308",
+                name="中际旭创",
+                market="A",
+                board="chinext",
+                exchange="SZSE",
+                industry_level1="未分类",
+                industry_level2="",
+                asset_type="equity",
+                is_etf=False,
+                listing_status="listed",
+                is_active=True,
+            )
+        )
+        session.commit()
+        task = create_ingestion_task(session, task_type="single", market="A", stock_code="300308", source="mock", periods=60)
+
+        result = run_next_ingestion_task(session, worker_id="queue-worker")
+
+        assert result is not None
+        assert result.id == task.id
+        assert result.status == "success"
+        assert result.processed == 1
+        assert task_payload(result)["progress"] == 1.0
+
+
+def test_ingestion_priority_skips_recent_unusable_symbols() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add_all(
+            [
+                Stock(
+                    code="BAD",
+                    name="坏行情样本",
+                    market="A",
+                    board="main",
+                    exchange="SSE",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="GOOD",
+                    name="正常行情样本",
+                    market="A",
+                    board="main",
+                    exchange="SSE",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+            ]
+        )
+        task = create_ingestion_task(session, task_type="batch", market="A", source="mock")
+        task.status = "success"
+        task.error = "failed_symbols=[BAD:no_usable_bars]"
+        task.finished_at = utcnow()
+        session.add(task)
+        session.commit()
+
+        candidates = priority_candidates(session, market="A", limit=5, periods=60)
+
+        assert {item["code"] for item in candidates} == {"GOOD"}
+
+
+def test_market_data_job_upserts_duplicate_provider_rows() -> None:
+    class DuplicateBarClient:
+        source = "duplicate"
+
+        def fetch_stock_list(self, markets=None):
+            return []
+
+        def fetch_daily_bars(self, stock_code, market=None, end_date=None, periods=320):
+            return [
+                {
+                    "stock_code": stock_code,
+                    "trade_date": date(2026, 5, 8),
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.5,
+                    "close": 10.5,
+                    "pre_close": 10.0,
+                    "volume": 1000.0,
+                    "amount": 10500.0,
+                    "pct_chg": 5.0,
+                    "adj_factor": 1.0,
+                    "source": "duplicate",
+                },
+                {
+                    "stock_code": stock_code,
+                    "trade_date": date(2026, 5, 8),
+                    "open": 10.0,
+                    "high": 11.2,
+                    "low": 9.5,
+                    "close": 10.8,
+                    "pre_close": 10.0,
+                    "volume": 1200.0,
+                    "amount": 12960.0,
+                    "pct_chg": 8.0,
+                    "adj_factor": 1.0,
+                    "source": "duplicate",
+                },
+            ]
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add(
+            Stock(
+                code="DUP",
+                name="重复行情样本",
+                market="A",
+                board="main",
+                exchange="SSE",
+                industry_level1="未分类",
+                industry_level2="",
+                asset_type="equity",
+                listing_status="listed",
+                is_active=True,
+            )
+        )
+        session.commit()
+
+        first = run_market_data_job(session, markets=("A",), max_stocks_per_market=1, periods=60, client=DuplicateBarClient())
+        second = run_market_data_job(session, markets=("A",), max_stocks_per_market=1, periods=60, client=DuplicateBarClient())
+
+        rows = session.scalars(select(DailyBar).where(DailyBar.stock_code == "DUP")).all()
+        assert first["status"] == "success"
+        assert second["status"] == "success"
+        assert len(rows) == 1
+        assert rows[0].close == 10.8
+
+
+def test_market_data_job_filters_unsupported_us_rows() -> None:
+    class RecordingBarClient:
+        source = "recording"
+
+        def __init__(self) -> None:
+            self.codes: list[str] = []
+
+        def fetch_stock_list(self, markets=None):
+            return []
+
+        def fetch_daily_bars(self, stock_code, market=None, end_date=None, periods=320):
+            self.codes.append(stock_code)
+            return [
+                {
+                    "stock_code": stock_code,
+                    "trade_date": date(2026, 5, 8),
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.5,
+                    "close": 10.5,
+                    "pre_close": 10.0,
+                    "volume": 1000.0,
+                    "amount": 10500.0,
+                    "pct_chg": 5.0,
+                    "adj_factor": 1.0,
+                    "source": "recording",
+                }
+            ]
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add_all(
+            [
+                Stock(
+                    code="AAPL",
+                    name="Apple Inc.",
+                    market="US",
+                    board="nasdaq",
+                    exchange="US",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="105.AAPL22",
+                    name="Apple structured row",
+                    market="US",
+                    board="other",
+                    exchange="US",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    asset_type="other",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="SPY",
+                    name="SPDR S&P 500 ETF Trust",
+                    market="US",
+                    board="nyse",
+                    exchange="US",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    asset_type="etf",
+                    is_etf=True,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+            ]
+        )
+        session.commit()
+
+        client = RecordingBarClient()
+        result = run_market_data_job(session, markets=("US",), max_stocks_per_market=10, periods=60, client=client)
+
+        assert result["stocks_requested"] == 1
+        assert result["stocks_processed"] == 1
+        assert client.codes == ["AAPL"]

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Local data
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+alpha_radar.db
+logs/
+.runtime/
+backend/data/backfill/
+*.log
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+npm-debug.log*
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

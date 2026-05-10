@@ -1,0 +1,1234 @@
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL || "";
+
+export type MarketSummary = {
+  stock_count: number;
+  latest_trade_date: string | null;
+  watch_count: number;
+  industry_heat_records: number;
+  latest_report_title: string | null;
+  markets: MarketSegment[];
+  boundary: string;
+};
+
+export type MarketSegment = {
+  market: string;
+  label: string;
+  stock_count: number;
+  watch_count: number;
+  boards: {
+    board: string;
+    label: string;
+    stock_count: number;
+    watch_count: number;
+  }[];
+};
+
+export type DataStatus = {
+  coverage: {
+    market: string;
+    market_label: string;
+    board: string;
+    board_label: string;
+    stock_count: number;
+    stocks_with_bars: number;
+    coverage_ratio: number;
+    latest_trade_date: string | null;
+  }[];
+  source_coverage?: {
+    source_kind: string;
+    source: string;
+    bars_count: number;
+    stocks_with_bars: number;
+    first_trade_date: string | null;
+    latest_trade_date: string | null;
+  }[];
+  runs: {
+    job_name: string;
+    requested_source: string;
+    effective_source: string;
+    source_kind?: string;
+    source_confidence?: number;
+    markets: string[];
+    status: string;
+    rows_inserted: number;
+    rows_updated: number;
+    rows_total: number;
+    error: string;
+    started_at: string;
+    finished_at: string | null;
+  }[];
+};
+
+export type DataQuality = {
+  status: "PASS" | "WARN" | "FAIL";
+  summary: {
+    stock_count: number;
+    issue_count: number;
+    fail_count: number;
+    warn_count: number;
+    min_required_bars: number;
+    preferred_bars: number;
+    stocks_with_real_bars?: number;
+  };
+  segments: {
+    market: string;
+    market_label: string;
+    board: string;
+    board_label: string;
+    status: "PASS" | "WARN" | "FAIL";
+    stock_count: number;
+    stocks_with_bars: number;
+    stocks_with_required_history: number;
+    stocks_with_preferred_history: number;
+    coverage_ratio: number;
+    real_coverage_ratio?: number;
+    required_history_ratio: number;
+    preferred_history_ratio: number;
+    avg_bars: number;
+    latest_trade_date: string | null;
+    source_kind_coverage?: Record<string, {
+      stocks_with_bars: number;
+      coverage_ratio: number;
+      bars_count: number;
+    }>;
+  }[];
+  issues: {
+    code: string;
+    name: string;
+    market: string;
+    market_label: string;
+    board: string;
+    board_label: string;
+    severity: "WARN" | "FAIL";
+    issue_type: string;
+    message: string;
+    bars_count: number;
+    latest_trade_date: string | null;
+    source_kinds?: string[];
+    real_bars_count?: number;
+  }[];
+};
+
+export type IngestionPlan = {
+  mode: string;
+  settings: {
+    mock_data: boolean;
+    market_data_source: string;
+    enabled_markets: string[];
+    max_stocks_per_market: number;
+    market_data_periods: number;
+  };
+  markets: {
+    market: string;
+    label: string;
+    stock_count: number;
+    stocks_with_bars: number;
+    coverage_ratio: number;
+    latest_trade_date: string | null;
+    next_batch_size: number;
+    remaining_without_bars: number;
+    next_batch_offset: number;
+  }[];
+  discovery_commands: string[];
+  recommended_commands: string[];
+  safety_rules: string[];
+};
+
+export type BackfillManifest = {
+  status: string;
+  updated_at: string | null;
+  finished_at: string | null;
+  manifest_path: string | null;
+  database?: {
+    url?: string;
+    path?: string | null;
+  };
+  totals?: {
+    batches?: number;
+    inserted?: number;
+    updated?: number;
+    failed_symbols?: number;
+    processed_symbols?: number;
+  };
+  coverage?: {
+    market: string;
+    eligible_symbols: number;
+    covered_symbols: number;
+    partial_symbols: number;
+    empty_symbols: number;
+    coverage_ratio: number;
+    average_bars: number;
+    latest_trade_date: string | null;
+    complete_bars_threshold: number;
+  }[];
+};
+
+export type InstrumentRow = {
+  code: string;
+  name: string;
+  market: string;
+  market_label: string;
+  board: string;
+  board_label: string;
+  exchange: string;
+  asset_type: string;
+  currency: string;
+  listing_status: string;
+  industry_level1: string;
+  industry_level2: string;
+  market_cap: number;
+  float_market_cap: number;
+  listing_date: string | null;
+  delisting_date: string | null;
+  is_st: boolean;
+  is_etf: boolean;
+  is_adr: boolean;
+  is_active: boolean;
+  source: string;
+  data_vendor: string;
+  bars_count: number;
+  latest_trade_date: string | null;
+  updated_at: string;
+};
+
+export type InstrumentsResponse = {
+  total: number;
+  limit: number;
+  offset: number;
+  rows: InstrumentRow[];
+};
+
+export type InstrumentNavigation = {
+  current: InstrumentRow;
+  previous: InstrumentRow | null;
+  next: InstrumentRow | null;
+  scope: {
+    market: string;
+    market_label: string;
+    board: string;
+    board_label: string;
+  };
+};
+
+export type IngestionBatch = {
+  batch_key: string;
+  job_name: string;
+  market: string;
+  board: string;
+  source: string;
+  status: string;
+  offset: number;
+  requested: number;
+  processed: number;
+  inserted: number;
+  updated: number;
+  failed: number;
+  error: string;
+  started_at: string;
+  finished_at: string | null;
+};
+
+export type IngestionTask = {
+  id: number;
+  task_key: string;
+  task_type: string;
+  market: string;
+  board: string;
+  stock_code: string | null;
+  source: string;
+  status: string;
+  priority: number;
+  batch_limit: number;
+  periods: number;
+  requested: number;
+  processed: number;
+  inserted: number;
+  updated: number;
+  failed: number;
+  retry_count: number;
+  max_retries: number;
+  error: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type IngestionPriorityCandidate = {
+  code: string;
+  name: string;
+  market: string;
+  board: string;
+  market_cap: number;
+  float_market_cap: number;
+  bars_count: number;
+  missing_bars: number;
+  latest_trade_date: string | null;
+  priority_score: number;
+};
+
+export type IngestionPriority = {
+  market: string;
+  board: string;
+  limit: number;
+  periods: number;
+  candidates: IngestionPriorityCandidate[];
+};
+
+export type IngestionBackfillResult = {
+  markets: string[];
+  board: string;
+  batches_per_market: number;
+  batch_limit: number;
+  periods: number;
+  queued_count: number;
+  skipped_count: number;
+  queued_tasks: IngestionTask[];
+  skipped: {
+    market: string;
+    board: string;
+    reason: string;
+    pending: number;
+  }[];
+};
+
+export type IngestionQueueRunResult = {
+  tasks_run: number;
+  max_tasks: number;
+  stopped_reason: string;
+  tasks: IngestionTask[];
+};
+
+export type ResearchUniverse = {
+  summary: {
+    stock_count: number;
+    eligible_count: number;
+    excluded_count: number;
+    eligible_ratio: number;
+  };
+  segments: {
+    market: string;
+    market_label: string;
+    board: string;
+    board_label: string;
+    stock_count: number;
+    eligible_count: number;
+    excluded_count: number;
+    eligible_ratio: number;
+  }[];
+  rules: Record<string, Record<string, number>>;
+  rows: {
+    code: string;
+    name: string;
+    market: string;
+    market_label: string;
+    board: string;
+    board_label: string;
+    eligible: boolean;
+    exclusion_reasons: string[];
+    market_cap: number;
+    float_market_cap: number;
+    bars_count: number;
+    latest_trade_date: string | null;
+    latest_close: number;
+    avg_amount_20d: number;
+    avg_volume_20d: number;
+  }[];
+};
+
+export type IndustryRadarRow = {
+  industry_id: number;
+  name: string;
+  trade_date: string | null;
+  heat_score: number;
+  global_heat_score?: number | null;
+  news_heat_score?: number | null;
+  structure_heat_score?: number | null;
+  heat_1d: number;
+  heat_7d: number;
+  heat_30d: number;
+  heat_change_7d: number;
+  heat_change_30d: number;
+  market: string;
+  market_label: string;
+  related_stock_count: number;
+  scored_stock_count: number;
+  watch_stock_count: number;
+  top_keywords: string[];
+  top_articles: string[];
+  heat_status?: "active" | "zero" | string;
+  evidence_status?: "news_active" | "structure_active" | "mapped_only" | "no_evidence" | string;
+  trend_breadth?: number | null;
+  breakout_breadth?: number | null;
+  zero_heat_reason?: string;
+  explanation: string;
+};
+
+export type IndustryTimelineRow = {
+  industry_id: number;
+  name: string;
+  trade_date: string;
+  heat_score: number;
+  global_heat_score?: number | null;
+  news_heat_score?: number | null;
+  structure_heat_score?: number | null;
+  heat_score_delta: number | null;
+  heat_1d: number;
+  heat_7d: number;
+  heat_7d_delta: number | null;
+  heat_30d: number;
+  heat_30d_delta: number | null;
+  heat_change_7d: number;
+  heat_change_30d: number;
+  top_keywords: string[];
+  top_articles: string[];
+  heat_status?: "active" | "zero" | string;
+  evidence_status?: "news_active" | "structure_active" | "mapped_only" | "no_evidence" | string;
+  trend_breadth?: number | null;
+  breakout_breadth?: number | null;
+  zero_heat_reason?: string;
+  explanation: string;
+};
+
+export type IndustryTimelineItem = {
+  trade_date: string;
+  previous_date: string | null;
+  summary: {
+    industry_count: number;
+    hot_industry_count: number;
+    rising_count: number;
+    cooling_count: number;
+    total_heat_score: number;
+    average_heat_score: number;
+  };
+  top_industries: IndustryTimelineRow[];
+  rising_industries: IndustryTimelineRow[];
+  cooling_industries: IndustryTimelineRow[];
+  industries: IndustryTimelineRow[];
+};
+
+export type IndustryTimeline = {
+  latest: IndustryTimelineItem | null;
+  timeline: IndustryTimelineItem[];
+};
+
+export type HotTermsWindow = "1d" | "7d";
+
+export type HotTermsSourceStatus = "empty" | "partial" | "local_aggregate" | string;
+
+export type HotTermsIndustryRow = {
+  industry_id: number | null;
+  name: string;
+  score: number;
+  heat_score: number;
+  heat_rows: number;
+  article_count: number;
+  keyword_count: number;
+  latest_trade_date: string | null;
+  latest_heat_score: number;
+  heat_1d: number;
+  heat_7d: number;
+  heat_30d: number;
+  heat_change_7d: number;
+  heat_change_30d: number;
+  top_keywords: string[];
+  related_terms: string[];
+  article_sources: Record<string, number>;
+  source_mix: string[];
+  source_status: HotTermsSourceStatus;
+  explanation: string;
+};
+
+export type HotTermsTermRow = {
+  term: string;
+  score: number;
+  heat_mentions: number;
+  article_mentions: number;
+  keyword_mentions: number;
+  industry_mentions: number;
+  related_industries: string[];
+  article_sources: Record<string, number>;
+  source_mix: string[];
+  source_status: HotTermsSourceStatus;
+};
+
+export type HotTermsResponse = {
+  window: HotTermsWindow;
+  window_days: number;
+  source_status: HotTermsSourceStatus;
+  source_mix: string[];
+  latest_trade_date: string | null;
+  window_start_date: string | null;
+  summary: {
+    industry_count: number;
+    term_count: number;
+    heat_row_count: number;
+    article_count: number;
+    keyword_count: number;
+    article_source_count: number;
+  };
+  source_breakdown: {
+    industry_heat_rows: number;
+    news_article_rows: number;
+    industry_keyword_rows: number;
+    article_sources: Record<string, number>;
+  };
+  industries: HotTermsIndustryRow[];
+  terms: HotTermsTermRow[];
+};
+
+export type IndustryDetailStock = {
+  code: string;
+  name: string;
+  market: string;
+  board: string;
+  exchange: string;
+  industry_level2: string;
+  concepts: string[];
+  market_cap: number;
+  float_market_cap: number;
+  trade_date: string | null;
+  final_score: number | null;
+  rating: string | null;
+  industry_score: number | null;
+  company_score: number | null;
+  trend_score: number | null;
+  catalyst_score: number | null;
+  risk_penalty: number | null;
+  relative_strength_rank: number | null;
+  is_ma_bullish: boolean | null;
+  is_breakout_120d: boolean | null;
+  is_breakout_250d: boolean | null;
+};
+
+export type IndustryDetail = {
+  industry: {
+    id: number;
+    name: string;
+    description: string;
+    keywords: string[];
+  };
+  latest_heat: IndustryTimelineRow | null;
+  heat_history: IndustryTimelineRow[];
+  summary: {
+    market: string;
+    market_label: string;
+    related_stock_count: number;
+    watch_stock_count: number;
+    strong_watch_count: number;
+    recent_article_count: number;
+  };
+  related_stocks: IndustryDetailStock[];
+  recent_articles: {
+    title: string;
+    summary: string;
+    source: string;
+    source_url: string;
+    published_at: string;
+    matched_keywords: string[];
+    related_stocks: string[];
+  }[];
+};
+
+export type ChainNode = {
+  node_key: string;
+  name: string;
+  layer: string;
+  node_type: string;
+  description?: string;
+  industry_names?: string[];
+  tags?: string[];
+  heat?: number | null;
+  momentum?: number | null;
+  intensity?: number | null;
+  anchor_companies?: string[];
+  indicators?: {
+    label: string;
+    value: string | number | null;
+    change?: number | null;
+    unit?: string;
+    trend?: string;
+  }[];
+  stock_count?: number | null;
+};
+
+export type ChainEdge = {
+  source: string;
+  target: string;
+  relation_type?: string;
+  flow?: string;
+  weight?: number | null;
+  heat?: number | null;
+  intensity?: number | null;
+};
+
+export type ChainLayer = {
+  key: string;
+  label: string;
+  count?: number | null;
+  order?: number | null;
+};
+
+export type ChainRegion = {
+  region_key: string;
+  label: string;
+  heat?: number | null;
+  intensity?: number | null;
+  share?: number | null;
+  summary?: string;
+  country_count?: number | null;
+  hubs?: string[];
+  industries?: string[];
+  x?: number | null;
+  y?: number | null;
+};
+
+export type ChainRoute = {
+  from_key: string;
+  to_key: string;
+  flow?: string;
+  weight?: number | null;
+  heat?: number | null;
+  intensity?: number | null;
+};
+
+export type ChainOverview = {
+  summary: {
+    snapshot_date?: string | null;
+    node_count?: number | null;
+    edge_count?: number | null;
+    region_count?: number | null;
+    [key: string]: unknown;
+  };
+  layers: Array<ChainLayer | string>;
+  nodes: ChainNode[];
+  edges: ChainEdge[];
+  regions?: ChainRegion[];
+  default_focus_node_key?: string | null;
+};
+
+export type ChainMappedIndustry = {
+  id?: number | string;
+  node_key?: string;
+  name: string;
+  market?: string;
+  heat?: number | null;
+};
+
+export type ChainLeaderStock = {
+  code: string;
+  name: string;
+  market?: string;
+  board?: string;
+  market_cap?: number | null;
+  final_score?: number | null;
+  industry_level2?: string;
+  reason?: string;
+};
+
+export type ChainNodeIndicator = {
+  label: string;
+  value: string | number | null;
+  change?: number | null;
+  unit?: string;
+  trend?: string;
+};
+
+export type ChainNodeDetail = {
+  node: ChainNode;
+  upstream: ChainNode[];
+  downstream: ChainNode[];
+  same_layer?: ChainNode[];
+  edges: ChainEdge[];
+  mapped_industries?: Array<ChainMappedIndustry | string>;
+  leader_stocks?: ChainLeaderStock[];
+  regions?: ChainRegion[];
+  indicators?: ChainNodeIndicator[];
+  heat_explanation?: string[];
+};
+
+export type ChainGeo = {
+  node_key: string;
+  regions: ChainRegion[];
+  routes: ChainRoute[];
+};
+
+export type ChainTimelinePoint = {
+  date?: string;
+  trade_date?: string;
+  heat?: number | null;
+  momentum?: number | null;
+  intensity?: number | null;
+  label?: string;
+  summary?: string;
+  regions?: { region_key: string; heat?: number | null; intensity?: number | null }[];
+};
+
+export type ChainTimeline = {
+  node_key: string;
+  timeline: ChainTimelinePoint[];
+};
+
+export type TrendPoolRow = {
+  code: string;
+  name: string;
+  market: string;
+  board: string;
+  exchange: string;
+  industry: string;
+  industry_level2: string;
+  final_score: number;
+  rating: string;
+  industry_score: number;
+  company_score: number;
+  trend_score: number;
+  catalyst_score: number;
+  risk_penalty: number;
+  relative_strength_rank: number;
+  is_ma_bullish: boolean;
+  is_breakout_120d: boolean;
+  is_breakout_250d: boolean;
+  volume_expansion_ratio: number;
+  research_eligible: boolean;
+  research_gate?: ResearchGate;
+  confidence?: ScoreConfidence;
+  fundamental_summary?: FundamentalSummary;
+  news_evidence_status?: EvidenceStatus;
+  explanation: string;
+};
+
+export type EvidenceStatus = "active" | "partial" | "missing" | "sourced" | "needs_verification" | string;
+
+export type ScoreConfidence = {
+  source_confidence: number | null;
+  data_confidence: number | null;
+  fundamental_confidence: number | null;
+  news_confidence: number | null;
+  evidence_confidence: number | null;
+  combined_confidence: number | null;
+  level: "high" | "medium" | "low" | "insufficient" | "unknown" | string;
+  reasons: string[];
+};
+
+export type ResearchGate = {
+  passed: boolean;
+  status: "pass" | "review" | string;
+  reasons: string[];
+};
+
+export type FundamentalSummary = {
+  status: "complete" | "partial" | "unknown" | string;
+  market_cap?: number;
+  float_market_cap?: number;
+  confidence: number | null;
+  missing_items: string[];
+};
+
+export type DailyReport = {
+  report_date: string;
+  title: string;
+  market_summary: string;
+  top_industries: Record<string, unknown>[];
+  top_trend_stocks: TrendPoolRow[];
+  new_watchlist_stocks: TrendPoolRow[];
+  risk_alerts: string[];
+  data_quality: DataQuality;
+  research_universe: ResearchUniverse;
+  watchlist_changes: WatchlistChanges;
+  full_markdown: string;
+};
+
+export type ReportSummary = {
+  report_date: string;
+  title: string;
+  market_summary: string;
+  watch_count: number;
+  risk_count: number;
+  created_at: string;
+};
+
+export type WatchlistChangeRow = {
+  code: string;
+  name: string;
+  market: string;
+  board: string;
+  industry: string;
+  change_type: string;
+  rating: string | null;
+  previous_rating: string | null;
+  final_score: number | null;
+  previous_score: number | null;
+  score_delta: number | null;
+};
+
+export type WatchlistChanges = {
+  latest_date: string | null;
+  previous_date: string | null;
+  summary: {
+    latest_watch_count: number;
+    previous_watch_count: number;
+    new_count: number;
+    removed_count: number;
+    upgraded_count: number;
+    downgraded_count: number;
+    score_gainer_count: number;
+    score_loser_count: number;
+  };
+  new_entries: WatchlistChangeRow[];
+  removed_entries: WatchlistChangeRow[];
+  upgraded: WatchlistChangeRow[];
+  downgraded: WatchlistChangeRow[];
+  score_gainers: WatchlistChangeRow[];
+  score_losers: WatchlistChangeRow[];
+};
+
+export type WatchlistTopRow = {
+  code: string;
+  name: string;
+  market: string;
+  board: string;
+  industry: string;
+  rating: string;
+  final_score: number;
+  industry_score: number;
+  company_score: number;
+  trend_score: number;
+  catalyst_score: number;
+  risk_penalty: number;
+};
+
+export type WatchlistTimelineItem = {
+  trade_date: string;
+  previous_date: string | null;
+  summary: WatchlistChanges["summary"];
+  new_entries: WatchlistChangeRow[];
+  removed_entries: WatchlistChangeRow[];
+  upgraded: WatchlistChangeRow[];
+  downgraded: WatchlistChangeRow[];
+  score_gainers: WatchlistChangeRow[];
+  score_losers: WatchlistChangeRow[];
+  watchlist_top: WatchlistTopRow[];
+};
+
+export type WatchlistTimeline = {
+  market: string;
+  board: string;
+  latest: WatchlistTimelineItem | null;
+  timeline: WatchlistTimelineItem[];
+};
+
+export type BarRow = {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  amount: number;
+};
+
+export type StockEvidence = {
+  stock: {
+    code: string;
+    name: string;
+    market: string;
+    board: string;
+    exchange: string;
+    industry_level1: string;
+    industry_level2: string;
+    concepts: string[];
+    market_cap: number;
+    float_market_cap: number;
+    is_st: boolean;
+    is_active: boolean;
+  };
+  score: {
+    final_score: number | null;
+    rating: string | null;
+    industry_score: number | null;
+    company_score: number | null;
+    trend_score: number | null;
+    catalyst_score: number | null;
+    risk_penalty: number | null;
+    confidence: ScoreConfidence;
+    research_gate: ResearchGate;
+    fundamental_summary: FundamentalSummary;
+    news_evidence_status: EvidenceStatus;
+    explanation: string;
+  };
+  trend: {
+    ma20: number | null;
+    ma60: number | null;
+    ma120: number | null;
+    ma250: number | null;
+    relative_strength_rank: number | null;
+    is_ma_bullish: boolean | null;
+    is_breakout_120d: boolean | null;
+    is_breakout_250d: boolean | null;
+    explanation: string;
+  };
+  evidence: {
+    trade_date: string;
+    summary: string;
+    industry_logic: string;
+    company_logic: string;
+    trend_logic: string;
+    catalyst_logic: string;
+    risk_summary: string;
+    evidence_status: EvidenceStatus;
+    questions_to_verify: string[];
+    source_refs: { title: string; url: string; source: string }[];
+  };
+};
+
+export type StockHistoryRow = {
+  trade_date: string;
+  final_score: number;
+  rating: string;
+  industry_score: number;
+  company_score: number;
+  trend_score: number;
+  catalyst_score: number;
+  risk_penalty: number;
+  score_delta: number | null;
+  score_explanation: string;
+  relative_strength_rank: number | null;
+  is_ma_bullish: boolean | null;
+  is_breakout_120d: boolean | null;
+  is_breakout_250d: boolean | null;
+  volume_expansion_ratio: number | null;
+  max_drawdown_60d: number | null;
+  trend_explanation: string;
+  summary: string;
+  risk_summary: string;
+  confidence?: ScoreConfidence;
+  news_evidence_status?: EvidenceStatus;
+  questions_to_verify: string[];
+  source_refs: { title: string; url: string; source: string }[];
+};
+
+export type StockHistory = {
+  stock: StockEvidence["stock"];
+  latest: StockHistoryRow | null;
+  history: StockHistoryRow[];
+};
+
+export type SourceComparison = {
+  stock_code: string;
+  stock: StockEvidence["stock"];
+  sources: {
+    source: string;
+    bars_count: number;
+    first_trade_date: string | null;
+    latest_trade_date: string | null;
+  }[];
+};
+
+export type ResearchTask = {
+  id: string;
+  trade_date: string;
+  stock_code: string;
+  stock_name: string;
+  market: string;
+  board: string;
+  industry: string;
+  industry_level2: string;
+  task_type: "verify_question" | "risk_review";
+  priority: "high" | "medium" | "low";
+  priority_score: number;
+  title: string;
+  detail: string;
+  rating: string;
+  final_score: number;
+  industry_score: number;
+  company_score: number;
+  trend_score: number;
+  risk_penalty: number;
+  relative_strength_rank: number;
+  is_ma_bullish: boolean;
+  is_breakout_120d: boolean;
+  is_breakout_250d: boolean;
+  source_refs: { title: string; url: string; source: string }[];
+};
+
+export type ResearchTasks = {
+  latest_date: string | null;
+  summary: {
+    task_count: number;
+    stock_count: number;
+    high_priority_count: number;
+    medium_priority_count: number;
+    low_priority_count: number;
+    risk_task_count: number;
+    question_task_count: number;
+    market_breakdown: Record<string, number>;
+  };
+  tasks: ResearchTask[];
+};
+
+export type HotTermFacet = {
+  key: string;
+  label: string;
+  count: number;
+};
+
+export type ResearchHotTerm = {
+  term: string;
+  score: number;
+  intensity: number;
+  mentions: number;
+  sources: HotTermFacet[];
+  industries: HotTermFacet[];
+  latest_at: string | null;
+  examples: { title: string; source: string; url?: string }[];
+};
+
+export type ResearchHotIndustry = {
+  industry: string;
+  score: number;
+  intensity: number;
+  mentions: number;
+  sources: HotTermFacet[];
+  top_terms: { term: string; score: number }[];
+  latest_at: string | null;
+};
+
+export type ResearchHotSource = {
+  key: string;
+  label: string;
+  kind: string;
+  status: "active" | "pending_connector" | "internal_ready" | string;
+  article_count: number;
+};
+
+export type ResearchPlatformTerms = ResearchHotSource & {
+  terms: {
+    term: string;
+    score: number;
+    mentions: number;
+    industries: HotTermFacet[];
+  }[];
+};
+
+export type ResearchHotTerms = {
+  latest_date: string | null;
+  updated_at: string;
+  window: "1d" | "7d" | string;
+  summary: {
+    term_count: number;
+    industry_count: number;
+    article_count: number;
+    source_count: number;
+    data_mode: string;
+  };
+  sources: ResearchHotSource[];
+  hot_terms: ResearchHotTerm[];
+  hot_industries: ResearchHotIndustry[];
+  platform_terms: ResearchPlatformTerms[];
+};
+
+export type ResearchFocusStock = {
+  stock_code: string;
+  stock_name: string;
+  market: string;
+  board: string;
+  industry: string;
+  industry_level2: string;
+  rating: string;
+  final_score: number;
+  task_count: number;
+  high_priority_count: number;
+  risk_task_count: number;
+  top_task_titles: string[];
+  priority_score: number;
+};
+
+export type ResearchFocusIndustry = {
+  industry: string;
+  task_count: number;
+  stock_count: number;
+  high_priority_count: number;
+  risk_task_count: number;
+  average_priority_score: number;
+  top_stocks: {
+    stock_code: string;
+    stock_name: string;
+    final_score: number;
+  }[];
+};
+
+export type ResearchBrief = {
+  latest_date: string | null;
+  filters: {
+    market: string;
+    board: string;
+    watch_only: boolean;
+    limit: number;
+  };
+  summary: ResearchTasks["summary"];
+  focus_stocks: ResearchFocusStock[];
+  focus_industries: ResearchFocusIndustry[];
+  top_tasks: ResearchTask[];
+  markdown: string;
+};
+
+async function getJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`${path} failed: ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+export const api = {
+  marketSummary: () => getJson<MarketSummary>("/api/market/summary"),
+  marketSegments: () => getJson<MarketSegment[]>("/api/market/segments"),
+  dataStatus: () => getJson<DataStatus>("/api/market/data-status"),
+  dataQuality: () => getJson<DataQuality>("/api/market/data-quality"),
+  ingestionPlan: () => getJson<IngestionPlan>("/api/market/ingestion-plan"),
+  backfillManifest: () => getJson<BackfillManifest>("/api/market/backfill-manifest"),
+  instruments: (filters?: { market?: string; board?: string; assetType?: string; q?: string; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    if (filters?.board && filters.board !== "all") params.set("board", filters.board);
+    if (filters?.assetType && filters.assetType !== "all") params.set("asset_type", filters.assetType);
+    if (filters?.q) params.set("q", filters.q);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.offset) params.set("offset", String(filters.offset));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<InstrumentsResponse>(`/api/market/instruments${suffix}`);
+  },
+  instrumentNavigation: (code: string) => getJson<InstrumentNavigation>(`/api/market/instruments/${encodeURIComponent(code)}/navigation`),
+  ingestionBatches: () => getJson<IngestionBatch[]>("/api/market/ingestion-batches"),
+  ingestionTasks: () => getJson<IngestionTask[]>("/api/market/ingestion-tasks"),
+  ingestionPriority: (filters?: { market?: string; board?: string; limit?: number; periods?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    if (filters?.board && filters.board !== "all") params.set("board", filters.board);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.periods) params.set("periods", String(filters.periods));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<IngestionPriority>(`/api/market/ingestion-priority${suffix}`);
+  },
+  createIngestionTask: (payload: { task_type: "batch" | "single"; market: string; board?: string; stock_code?: string; source?: string; batch_limit?: number; periods?: number }) =>
+    postJson<IngestionTask>("/api/market/ingestion-tasks", payload),
+  createIngestionBackfill: (payload: { markets: string[]; board?: string; source?: string; batches_per_market?: number; batch_limit?: number; periods?: number }) =>
+    postJson<IngestionBackfillResult>("/api/market/ingestion-tasks/backfill", payload),
+  runIngestionTask: (taskId: number) => postJson<IngestionTask>(`/api/market/ingestion-tasks/${taskId}/run`, {}),
+  runNextIngestionTask: () => postJson<IngestionTask>("/api/market/ingestion-tasks/run-next", {}),
+  runIngestionQueue: (maxTasks = 3) => postJson<IngestionQueueRunResult>(`/api/market/ingestion-tasks/run-queue?max_tasks=${maxTasks}`, {}),
+  industryRadar: (filters?: { market?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<IndustryRadarRow[]>(`/api/industries/radar${suffix}`);
+  },
+  industryTimeline: (limit = 30) => getJson<IndustryTimeline>(`/api/industries/timeline?limit=${limit}`),
+  industryDetail: (industryId: number | string, filters?: { market?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<IndustryDetail>(`/api/industries/${industryId}${suffix}`);
+  },
+  chainOverview: (filters?: { market?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ChainOverview>(`/api/chain/overview${suffix}`);
+  },
+  chainNode: (nodeKey: string, filters?: { market?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ChainNodeDetail>(`/api/chain/nodes/${encodeURIComponent(nodeKey)}${suffix}`);
+  },
+  chainGeo: (filters: { nodeKey: string; market?: string }) => {
+    const params = new URLSearchParams();
+    params.set("node_key", filters.nodeKey);
+    if (filters.market && filters.market !== "ALL") params.set("market", filters.market);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ChainGeo>(`/api/chain/geo${suffix}`);
+  },
+  chainTimeline: (filters: { nodeKey: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    params.set("node_key", filters.nodeKey);
+    if (filters.limit) params.set("limit", String(filters.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ChainTimeline>(`/api/chain/timeline${suffix}`);
+  },
+  researchTasks: (filters?: { market?: string; board?: string; priority?: string; taskType?: string; watchOnly?: boolean; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    if (filters?.board && filters.board !== "all") params.set("board", filters.board);
+    if (filters?.priority && filters.priority !== "all") params.set("priority", filters.priority);
+    if (filters?.taskType && filters.taskType !== "all") params.set("task_type", filters.taskType);
+    if (filters?.watchOnly === false) params.set("watch_only", "false");
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ResearchTasks>(`/api/research/tasks${suffix}`);
+  },
+  researchBrief: (filters?: { market?: string; board?: string; watchOnly?: boolean; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    if (filters?.board && filters.board !== "all") params.set("board", filters.board);
+    if (filters?.watchOnly === false) params.set("watch_only", "false");
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ResearchBrief>(`/api/research/brief${suffix}`);
+  },
+  researchHotTerms: (filters?: { window?: "1d" | "7d"; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.window) params.set("window", filters.window);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ResearchHotTerms>(`/api/research/hot-terms${suffix}`);
+  },
+  hotTerms: (filters?: { window?: "1d" | "7d"; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.window) params.set("window", filters.window);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ResearchHotTerms>(`/api/research/hot-terms${suffix}`);
+  },
+  researchUniverse: () => getJson<ResearchUniverse>("/api/market/research-universe"),
+  trendPool: (filters?: { market?: string; board?: string; researchUniverseOnly?: boolean; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    if (filters?.board && filters.board !== "all") params.set("board", filters.board);
+    if (filters?.researchUniverseOnly === false) params.set("research_universe_only", "false");
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.offset) params.set("offset", String(filters.offset));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<TrendPoolRow[]>(`/api/stocks/trend-pool${suffix}`);
+  },
+  latestReport: () => getJson<DailyReport>("/api/reports/latest"),
+  reports: () => getJson<ReportSummary[]>("/api/reports"),
+  reportByDate: (date: string) => getJson<DailyReport>(`/api/reports/${date}`),
+  watchlistChanges: () => getJson<WatchlistChanges>("/api/watchlist/changes"),
+  watchlistTimeline: (filters?: { market?: string; board?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    if (filters?.board && filters.board !== "all") params.set("board", filters.board);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<WatchlistTimeline>(`/api/watchlist/timeline${suffix}`);
+  },
+  stockEvidence: (code: string) => getJson<StockEvidence>(`/api/stocks/${code}/evidence`),
+  stockHistory: (code: string) => getJson<StockHistory>(`/api/stocks/${code}/history`),
+  stockBars: (code: string) => getJson<BarRow[]>(`/api/stocks/${code}/bars`),
+  sourceComparison: (code: string) => getJson<SourceComparison>(`/api/stocks/${code}/source-comparison`),
+  ingestStock: (code: string, source = "akshare") => postJson<IngestionTask>(`/api/stocks/${code}/ingest?source=${encodeURIComponent(source)}`, {})
+};
+
+async function postJson<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    throw new Error(`${path} failed: ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
