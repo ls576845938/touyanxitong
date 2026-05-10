@@ -18,16 +18,24 @@ export default function IndustryDetailPage() {
   const [detail, setDetail] = useState<IndustryDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const removedRoute = params.id === "chain-cockpit";
 
   useEffect(() => {
+    if (removedRoute) {
+      setLoading(false);
+      setDetail(null);
+      setError("");
+      return;
+    }
     setLoading(true);
     setError("");
     api.industryDetail(params.id, { market })
       .then(setDetail)
       .catch((err: Error) => setError(`赛道详情读取失败：${err.message}`))
       .finally(() => setLoading(false));
-  }, [params.id, market]);
+  }, [params.id, market, removedRoute]);
 
+  if (removedRoute) return <div className="page-shell"><ErrorState message="该页面已删除" /></div>;
   if (loading) return <div className="page-shell"><LoadingState label="正在加载赛道详情" /></div>;
   if (error) return <div className="page-shell"><ErrorState message={error} /></div>;
   if (!detail) return <div className="page-shell"><ErrorState message="赛道详情为空" /></div>;

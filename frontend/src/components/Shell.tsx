@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { BarChart3, ClipboardCheck, Database, FileText, Flame, Gauge, Layers3, Map as MapIcon, Network, Repeat2, Search, TrendingUp } from "lucide-react";
+import { BarChart3, ClipboardCheck, Database, FileText, Flame, Gauge, Layers3, Map as MapIcon, Repeat2, Search, TrendingUp } from "lucide-react";
 import { StockSearch } from "@/components/StockSearch";
 
 const navItems = [
@@ -9,7 +9,6 @@ const navItems = [
   { href: "/universe", label: "证券主数据", icon: Database },
   { href: "/industry", label: "产业雷达", icon: Layers3 },
   { href: "/industry/chain", label: "产业链地图", icon: MapIcon },
-  { href: "/industry/chain-cockpit", label: "产业链驾驶舱", icon: Network },
   { href: "/industry/review", label: "赛道复盘", icon: Flame },
   { href: "/trend", label: "趋势池", icon: BarChart3 },
   { href: "/watchlist", label: "观察池复盘", icon: Repeat2 },
