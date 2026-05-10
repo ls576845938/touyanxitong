@@ -157,6 +157,7 @@ export default function IndustryChainPage() {
       .sort((left, right) => nodeHeat(right) - nodeHeat(left));
   }, [activeLayer, overview, query]);
   const quickNodes = visibleNodes.slice(0, 14);
+  const showNodePicker = viewMode !== "universe" && viewMode !== "metro";
   const mappedIndustries = (currentDetail?.mapped_industries ?? []).slice(0, 8);
   const leaderStocks = (currentDetail?.leader_stocks ?? []).slice(0, 8);
   const indicators = (currentDetail?.indicators?.length ? currentDetail.indicators : selectedNode?.indicators) ?? [];
@@ -226,6 +227,7 @@ export default function IndustryChainPage() {
           ))}
         </div>
 
+        {showNodePicker ? (
         <div className="mt-5 grid gap-4 xl:grid-cols-[1fr_320px]">
           <div className="space-y-4">
             <div className="relative">
@@ -301,14 +303,17 @@ export default function IndustryChainPage() {
             </div>
           </div>
         </div>
+        ) : null}
       </section>
 
+      {showNodePicker ? (
       <section className="grid gap-3 md:grid-cols-4">
         <StatCard icon={CalendarRange} label="快照日期" value={stats.snapshot} onClick={() => setViewMode("universe")} />
         <StatCard icon={Boxes} label="直接上游" value={stats.upstream} onClick={() => setViewMode("focus")} />
         <StatCard icon={ArrowRight} label="下游链" value={stats.downstream} onClick={() => setViewMode("focus")} />
         <StatCard icon={Globe2} label="区域触点" value={stats.regions} onClick={() => setViewMode("geo")} />
       </section>
+      ) : null}
 
       {viewMode === "universe" ? (
         <IndustryUniverseOverview
