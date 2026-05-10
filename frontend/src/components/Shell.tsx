@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BarChart3, ClipboardCheck, Database, FileText, Flame, Gauge, Layers3, Map as MapIcon, Repeat2, Search, TrendingUp } from "lucide-react";
 import { StockSearch } from "@/components/StockSearch";
@@ -36,12 +35,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="w-full md:w-80 lg:w-96">
             <StockSearch compact placeholder="搜索 A股 / 港股 / 美股" />
           </div>
-          <nav className="flex flex-wrap items-center gap-2">
+          <nav className="relative z-50 flex flex-wrap items-center gap-2">
             {navItems.map((item) => {
               const active = item.href === activeHref;
               const Icon = item.icon;
               return (
-                <Link
+                <a
                   key={item.href}
                   href={item.href}
                   className={`flex h-10 items-center gap-2 rounded-md border px-3 text-sm ${
@@ -52,7 +51,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 >
                   <Icon size={16} aria-hidden="true" />
                   <span>{item.label}</span>
-                </Link>
+                </a>
               );
             })}
           </nav>
