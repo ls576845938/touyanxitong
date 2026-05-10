@@ -19,7 +19,9 @@ import {
 import { ErrorState } from "@/components/ErrorState";
 import { IndustryChainMap } from "@/components/IndustryChainMap";
 import { IndustryGraphMap } from "@/components/IndustryGraphMap";
+import { IndustryMetroSankeyMap } from "@/components/IndustryMetroSankeyMap";
 import { IndustryPlaneHeatMap } from "@/components/IndustryPlaneHeatMap";
+import { IndustryUniverseOverview } from "@/components/IndustryUniverseOverview";
 import { LoadingState } from "@/components/LoadingState";
 import { WorldIndustryHeatMap } from "@/components/WorldIndustryHeatMap";
 import { api, type ChainLayer, type ChainMappedIndustry, type ChainNode, type ChainNodeDetail, type ChainTimelinePoint } from "@/lib/api";
@@ -31,10 +33,12 @@ type LayerOption = {
   count?: number | null;
 };
 
-type ViewMode = "graph" | "focus" | "heatmap" | "geo";
+type ViewMode = "universe" | "metro" | "graph" | "focus" | "heatmap" | "geo";
 
 const VIEW_OPTIONS: { key: ViewMode; label: string; icon: typeof Layers3 }[] = [
-  { key: "graph", label: "总图热力", icon: Layers3 },
+  { key: "universe", label: "宇宙总览", icon: Flame },
+  { key: "metro", label: "地铁主图", icon: Activity },
+  { key: "graph", label: "球面关系", icon: Layers3 },
   { key: "focus", label: "聚焦链路", icon: Activity },
   { key: "heatmap", label: "平面总谱", icon: Boxes },
   { key: "geo", label: "世界分布", icon: Globe2 }
@@ -44,7 +48,7 @@ export default function IndustryChainPage() {
   const [market, setMarket] = useState("ALL");
   const [query, setQuery] = useState("");
   const [activeLayer, setActiveLayer] = useState("all");
-  const [viewMode, setViewMode] = useState<ViewMode>("graph");
+  const [viewMode, setViewMode] = useState<ViewMode>("universe");
   const [focusNodeKey, setFocusNodeKey] = useState<string | null>(null);
 
   const [overview, setOverview] = useState<Awaited<ReturnType<typeof api.chainOverview>> | null>(null);
@@ -258,7 +262,7 @@ export default function IndustryChainPage() {
                   <button
                     key={node.node_key}
                     type="button"
-                    onClick={() => selectNode(node.node_key, "graph")}
+                    onClick={() => selectNode(node.node_key, "metro")}
                     aria-pressed={active}
                     className={`rounded-lg border p-3 text-left transition ${
                       active ? "border-orange-500 bg-orange-50/80 shadow-[0_0_0_2px_rgba(249,115,22,0.12)]" : "border-[#f2dfd2] bg-white hover:border-orange-300 hover:bg-[#fffaf5]"
@@ -290,8 +294,8 @@ export default function IndustryChainPage() {
               <div className="mt-1 text-xs text-slate-500">{selectedNode?.layer ?? "--"} / {marketLabel(market)}</div>
             </div>
             <div className="mt-4 grid grid-cols-2 gap-2">
-              <TopMetric label="快照" value={stats.snapshot} onClick={() => setViewMode("graph")} />
-              <TopMetric label="热度" value={selectedNode ? nodeHeat(selectedNode).toFixed(1) : "--"} onClick={() => setViewMode("graph")} />
+              <TopMetric label="快照" value={stats.snapshot} onClick={() => setViewMode("universe")} />
+              <TopMetric label="热度" value={selectedNode ? nodeHeat(selectedNode).toFixed(1) : "--"} onClick={() => setViewMode("universe")} />
               <TopMetric label="上游" value={stats.upstream} onClick={() => setViewMode("focus")} />
               <TopMetric label="下游" value={stats.downstream} onClick={() => setViewMode("focus")} />
             </div>
@@ -300,11 +304,29 @@ export default function IndustryChainPage() {
       </section>
 
       <section className="grid gap-3 md:grid-cols-4">
-        <StatCard icon={CalendarRange} label="快照日期" value={stats.snapshot} onClick={() => setViewMode("graph")} />
+        <StatCard icon={CalendarRange} label="快照日期" value={stats.snapshot} onClick={() => setViewMode("universe")} />
         <StatCard icon={Boxes} label="直接上游" value={stats.upstream} onClick={() => setViewMode("focus")} />
         <StatCard icon={ArrowRight} label="下游链" value={stats.downstream} onClick={() => setViewMode("focus")} />
         <StatCard icon={Globe2} label="区域触点" value={stats.regions} onClick={() => setViewMode("geo")} />
       </section>
+
+      {viewMode === "universe" ? (
+        <IndustryUniverseOverview
+          nodes={overview?.nodes ?? []}
+          edges={overview?.edges ?? []}
+          selectedNodeKey={selectedNodeKey}
+          onOpenChain={(nodeKey) => selectNode(nodeKey, "metro")}
+        />
+      ) : null}
+
+      {viewMode === "metro" ? (
+        <IndustryMetroSankeyMap
+          nodes={overview?.nodes ?? []}
+          edges={overview?.edges ?? []}
+          selectedNodeKey={selectedNodeKey}
+          onSelect={(nodeKey) => selectNode(nodeKey, "metro")}
+        />
+      ) : null}
 
       {viewMode === "graph" ? (
         <IndustryGraphMap
