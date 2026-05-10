@@ -52,10 +52,11 @@ type Segment = {
 };
 
 const WIDTH = 1320;
-const HEIGHT = 650;
+const HEIGHT = 760;
 const LEFT = 92;
 const TOP = 112;
 const STAGE_GAP = 178;
+const LINE_GAP = 102;
 
 const STAGES = [
   { key: "resource", label: "资源/能源", layers: ["自然资源", "公共品与能源"] },
@@ -153,7 +154,7 @@ export function IndustryMetroSankeyMap({ nodes, edges, selectedNodeKey, onSelect
       </div>
 
       <div className="overflow-x-auto bg-[#fffdfa]">
-        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="block min-w-[1080px]" style={{ height: HEIGHT }} role="img" aria-label="产业链地铁桑基图">
+        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="block min-w-[1320px]" style={{ height: HEIGHT }} role="img" aria-label="产业链地铁桑基图">
           <defs>
             <filter id="metro-sankey-shadow" x="-40%" y="-40%" width="180%" height="190%">
               <feDropShadow dx="0" dy="9" stdDeviation="8" floodColor="#7c2d12" floodOpacity="0.11" />
@@ -234,6 +235,7 @@ export function IndustryMetroSankeyMap({ nodes, edges, selectedNodeKey, onSelect
             const active = station.chain.key === activeChain?.key || station.selected;
             const border = momentumBorder(station.node);
             const labelVisible = active || station.intensity > 0.58 || station.selected;
+            const label = stationLabel(station);
             return (
               <g
                 key={station.id}
@@ -253,9 +255,10 @@ export function IndustryMetroSankeyMap({ nodes, edges, selectedNodeKey, onSelect
                 <circle cx={station.x} cy={station.y} r={station.r} fill={warmColor(station.intensity)} stroke={station.selected ? "#111827" : border.color} strokeWidth={station.selected ? 3.2 : border.width} filter="url(#metro-sankey-shadow)" />
                 <circle cx={station.x - station.r * 0.24} cy={station.y - station.r * 0.26} r={Math.max(2.5, station.r * 0.17)} fill="#ffffff" opacity="0.7" />
                 {labelVisible ? (
-                  <g transform={`translate(${station.x - 54} ${station.y + station.r + 10})`}>
-                    <rect width="108" height="27" rx="8" fill="#ffffff" fillOpacity="0.96" stroke="#f2dfd2" />
-                    <text x="54" y="18" textAnchor="middle" fill="#111827" fontSize="11.5" fontWeight="750">{clipLabel(station.node.name, 8)}</text>
+                  <g transform={`translate(${label.x} ${label.y})`}>
+                    <rect width={label.width} height="34" rx="9" fill="#ffffff" fillOpacity="0.97" stroke="#f2dfd2" />
+                    <text x={label.width / 2} y="14" textAnchor="middle" fill="#111827" fontSize="11.5" fontWeight="800">{clipLabel(station.node.name, 9)}</text>
+                    <text x={label.width / 2} y="27" textAnchor="middle" fill="#9a3412" fontSize="9.5" fontWeight="750">{station.heat.toFixed(1)}</text>
                   </g>
                 ) : null}
                 <title>{`${station.chain.name}｜${station.node.name}｜热度 ${station.heat.toFixed(1)}｜${border.label}`}</title>
@@ -266,6 +269,24 @@ export function IndustryMetroSankeyMap({ nodes, edges, selectedNodeKey, onSelect
           <Legend activeChain={activeChain} />
         </svg>
       </div>
+      {activeChain ? (
+        <div className="border-t border-[#f7e9de] bg-white p-4 md:hidden">
+          <div className="text-sm font-semibold text-slate-950">{activeChain.name}节点</div>
+          <div className="mt-3 grid gap-2">
+            {activeChain.nodes.map((node) => (
+              <button
+                key={node.node_key}
+                type="button"
+                onClick={() => onSelect(node.node_key)}
+                className="flex items-center justify-between rounded-md border border-[#f2dfd2] px-3 py-2 text-left"
+              >
+                <span className="text-sm font-semibold text-slate-900">{node.name}</span>
+                <span className="mono text-xs font-semibold text-orange-700">{nodeHeat(node).toFixed(1)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -305,8 +326,8 @@ function buildMetro(nodes: ChainNode[], edges: ChainEdge[], selectedNodeKey: str
         id: `${line.key}:${node.node_key}:${order}`,
         node,
         chain: line,
-        x: stageX(stage) + (offset - 0.5) * 22,
-        y: lineY(lineIndex) + (offset % 2 ? 16 : 0),
+        x: stageX(stage) + (offset - 0.5) * 30,
+        y: lineY(lineIndex) + (offset % 2 ? 24 : -4),
         r: 9 + intensity * 9 + Math.min(node.stock_count ?? 0, 14) * 0.35,
         stageIndex: stage,
         order,
@@ -352,7 +373,7 @@ function stageX(index: number) {
 }
 
 function lineY(index: number) {
-  return TOP + index * 82;
+  return TOP + index * LINE_GAP;
 }
 
 function segmentPath(source: Station, target: Station) {
@@ -383,9 +404,19 @@ function momentumBorder(node: ChainNode) {
   return { color: "#f59e0b", width: 2.4, label: "横盘蓄势" };
 }
 
+function stationLabel(station: Station) {
+  const width = Math.max(104, Math.min(132, station.node.name.length * 13 + 28));
+  const above = station.order % 2 === 0;
+  return {
+    width,
+    x: station.x - width / 2,
+    y: above ? station.y - station.r - 45 : station.y + station.r + 12
+  };
+}
+
 function Legend({ activeChain }: { activeChain: ChainLine | null }) {
   return (
-    <g transform="translate(1038 526)">
+    <g transform="translate(1038 636)">
       <rect width="250" height="92" rx="14" fill="#ffffff" fillOpacity="0.95" stroke="#f2dfd2" />
       <g transform="translate(16 22)">
         <RadioTower size={15} color="#ea580c" />

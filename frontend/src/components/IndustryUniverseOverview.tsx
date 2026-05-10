@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { ArrowUpRight, Cpu, RadioTower, Sparkles } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { ArrowUpRight, RotateCcw, Sparkles } from "lucide-react";
 import type { ChainEdge, ChainNode } from "@/lib/api";
 
 type IndustryUniverseOverviewProps = {
@@ -22,6 +22,17 @@ type ClusterRule = {
   priority: number;
 };
 
+type Vec3 = {
+  x: number;
+  y: number;
+  z: number;
+};
+
+type Rotation = {
+  x: number;
+  y: number;
+};
+
 type UniverseCluster = {
   key: string;
   name: string;
@@ -33,26 +44,47 @@ type UniverseCluster = {
   intensity: number;
   hottestNode: ChainNode | null;
   stockCount: number;
-  x: number;
-  y: number;
+  base: Vec3;
   r: number;
-  z: number;
   selected: boolean;
-  ring: number;
   rank: number;
+};
+
+type ProjectedCluster = UniverseCluster & {
+  sx: number;
+  sy: number;
+  depth: number;
+  scale: number;
+  opacity: number;
 };
 
 type ClusterRelation = {
   key: string;
-  source: UniverseCluster;
-  target: UniverseCluster;
+  source: string;
+  target: string;
   weight: number;
 };
 
-const WIDTH = 1240;
-const HEIGHT = 580;
-const CENTER_X = 565;
-const CENTER_Y = 292;
+type ProjectedRelation = {
+  key: string;
+  source: ProjectedCluster;
+  target: ProjectedCluster;
+  weight: number;
+  depth: number;
+};
+
+type PointerState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  origin: Rotation;
+};
+
+const WIDTH = 1180;
+const HEIGHT = 620;
+const CENTER_X = 560;
+const CENTER_Y = 310;
+const SPHERE_RADIUS = 226;
 const MAX_VISIBLE_CLUSTERS = 12;
 
 const CLUSTER_RULES: ClusterRule[] = [
@@ -181,10 +213,18 @@ const CLUSTER_RULES: ClusterRule[] = [
 const FALLBACK_COLORS = ["#f97316", "#0ea5e9", "#ef4444", "#22c55e", "#8b5cf6", "#14b8a6", "#f59e0b", "#ec4899"];
 
 export function IndustryUniverseOverview({ nodes, edges, selectedNodeKey, onOpenChain }: IndustryUniverseOverviewProps) {
+  const [rotation, setRotation] = useState<Rotation>({ x: -0.28, y: -0.62 });
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const pointerRef = useRef<PointerState | null>(null);
+  const suppressClickRef = useRef(false);
+
   const model = useMemo(() => buildUniverse(nodes, edges, selectedNodeKey), [edges, nodes, selectedNodeKey]);
-  const hovered = hoveredKey ? model.clusters.find((cluster) => cluster.key === hoveredKey) : null;
-  const featured = hovered ?? model.clusters.find((cluster) => cluster.selected) ?? model.clusters[0] ?? null;
+  const projection = useMemo(() => projectUniverse(model, rotation), [model, rotation]);
+  const hovered = hoveredKey ? projection.clusters.find((cluster) => cluster.key === hoveredKey) : null;
+  const featured = hovered ?? projection.clusters.find((cluster) => cluster.selected) ?? projection.clusters[0] ?? null;
+
+  const resetRotation = () => setRotation({ x: -0.28, y: -0.62 });
 
   return (
     <section className="overflow-hidden rounded-lg border border-[#dbeafe] bg-white shadow-[0_22px_70px_rgba(15,23,42,0.08)]">
@@ -194,147 +234,198 @@ export function IndustryUniverseOverview({ nodes, edges, selectedNodeKey, onOpen
             <Sparkles size={18} className="text-orange-600" />
             产业宇宙总览图
           </div>
-          <div className="mt-1 text-xs text-slate-500">全市场产业簇热度扫描</div>
+          <div className="mt-1 text-xs text-slate-500">按住球面拖动旋转，点击产业簇进入地铁链路。</div>
         </div>
         <div className="flex flex-wrap gap-2">
           <DataPill label="产业簇" value={model.clusters.length} />
           <DataPill label="强关系" value={model.relations.length} />
           <DataPill label="覆盖节点" value={model.coveredNodeCount} />
+          <button
+            type="button"
+            onClick={resetRotation}
+            className="inline-flex h-9 items-center gap-2 rounded-full border border-[#dbeafe] bg-[#f8fbff] px-3 text-xs font-semibold text-slate-700 hover:border-orange-300"
+          >
+            <RotateCcw size={14} />
+            复位
+          </button>
         </div>
       </div>
 
       <div className="grid gap-4 bg-[#f8fbff] p-4 xl:grid-cols-[minmax(0,1fr)_292px]">
-        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="h-[580px] w-full rounded-lg border border-[#dbeafe] bg-white" role="img" aria-label="产业宇宙总览图">
+        <svg
+          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+          className="h-[620px] w-full select-none rounded-lg border border-[#dbeafe] bg-white"
+          role="img"
+          aria-label="可旋转 3D 产业宇宙总览图"
+          onPointerDown={(event) => {
+            if (event.pointerType === "mouse" && event.button !== 0) return;
+            pointerRef.current = {
+              pointerId: event.pointerId,
+              startX: event.clientX,
+              startY: event.clientY,
+              origin: rotation
+            };
+            suppressClickRef.current = false;
+            setDragging(true);
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const pointer = pointerRef.current;
+            if (!pointer || pointer.pointerId !== event.pointerId) return;
+            const dx = event.clientX - pointer.startX;
+            const dy = event.clientY - pointer.startY;
+            if (Math.abs(dx) + Math.abs(dy) > 4) suppressClickRef.current = true;
+            setRotation({
+              x: clamp(pointer.origin.x + dy * 0.006, -1.16, 1.16),
+              y: pointer.origin.y + dx * 0.008
+            });
+          }}
+          onPointerUp={(event) => {
+            if (pointerRef.current?.pointerId === event.pointerId) pointerRef.current = null;
+            setDragging(false);
+          }}
+          onPointerCancel={() => {
+            pointerRef.current = null;
+            setDragging(false);
+          }}
+          style={{ cursor: dragging ? "grabbing" : "grab", touchAction: "none" }}
+        >
           <defs>
-            <radialGradient id="tech-universe-bg" cx="52%" cy="46%" r="74%">
+            <radialGradient id="industry-sphere-bg" cx="48%" cy="36%" r="70%">
               <stop offset="0" stopColor="#ffffff" />
-              <stop offset="0.52" stopColor="#f8fbff" />
-              <stop offset="1" stopColor="#eef6ff" />
+              <stop offset="0.58" stopColor="#f8fbff" />
+              <stop offset="1" stopColor="#e8f3ff" />
             </radialGradient>
-            <linearGradient id="tech-axis" x1="0" x2="1" y1="0" y2="1">
-              <stop offset="0" stopColor="#38bdf8" stopOpacity="0.08" />
-              <stop offset="0.45" stopColor="#f97316" stopOpacity="0.22" />
-              <stop offset="1" stopColor="#ef4444" stopOpacity="0.06" />
-            </linearGradient>
-            <filter id="tech-cluster-glow" x="-80%" y="-80%" width="260%" height="260%">
-              <feGaussianBlur stdDeviation="16" result="blur" />
+            <radialGradient id="industry-sphere-gloss" cx="35%" cy="26%" r="40%">
+              <stop offset="0" stopColor="#ffffff" stopOpacity="0.82" />
+              <stop offset="0.62" stopColor="#ffffff" stopOpacity="0.16" />
+              <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
+            </radialGradient>
+            <clipPath id="industry-universe-clip">
+              <circle cx={CENTER_X} cy={CENTER_Y} r={SPHERE_RADIUS + 8} />
+            </clipPath>
+            <filter id="industry-universe-glow" x="-80%" y="-80%" width="260%" height="260%">
+              <feGaussianBlur stdDeviation="10" result="blur" />
               <feMerge>
                 <feMergeNode in="blur" />
                 <feMergeNode in="SourceGraphic" />
               </feMerge>
             </filter>
-            <filter id="tech-node-shadow" x="-50%" y="-50%" width="200%" height="210%">
-              <feDropShadow dx="0" dy="18" stdDeviation="16" floodColor="#0f172a" floodOpacity="0.13" />
+            <filter id="industry-universe-shadow" x="-40%" y="-40%" width="180%" height="190%">
+              <feDropShadow dx="0" dy="18" stdDeviation="16" floodColor="#0f172a" floodOpacity="0.14" />
             </filter>
-            <pattern id="tech-grid" width="36" height="36" patternUnits="userSpaceOnUse">
-              <path d="M 36 0 L 0 0 0 36" fill="none" stroke="#dbeafe" strokeWidth="0.8" opacity="0.62" />
-            </pattern>
           </defs>
 
-          <rect width={WIDTH} height={HEIGHT} fill="url(#tech-universe-bg)" />
-          <rect width={WIDTH} height={HEIGHT} fill="url(#tech-grid)" opacity="0.42" />
-          <path d={`M 64 ${CENTER_Y + 126} C 278 ${CENTER_Y - 106}, 822 ${CENTER_Y - 120}, 1176 ${CENTER_Y + 98}`} fill="none" stroke="url(#tech-axis)" strokeWidth="56" strokeLinecap="round" />
+          <rect width={WIDTH} height={HEIGHT} fill="#fbfdff" />
+          <ellipse cx={CENTER_X} cy={CENTER_Y + SPHERE_RADIUS + 32} rx={SPHERE_RADIUS * 0.96} ry="31" fill="#bfdbfe" opacity="0.26" />
+          <circle cx={CENTER_X} cy={CENTER_Y} r={SPHERE_RADIUS} fill="url(#industry-sphere-bg)" stroke="#c7ddff" filter="url(#industry-universe-shadow)" />
 
-          {[118, 196, 278, 356].map((r, index) => (
-            <ellipse
-              key={r}
-              cx={CENTER_X}
-              cy={CENTER_Y}
-              rx={r * 1.42}
-              ry={r * 0.48}
-              fill="none"
-              stroke={index === 2 ? "#fdba74" : "#93c5fd"}
-              strokeWidth={index === 2 ? 1.4 : 1}
-              strokeDasharray={index % 2 ? "6 13" : "2 11"}
-              opacity={index === 2 ? 0.56 : 0.34}
-              transform={`rotate(${-12 + index * 7} ${CENTER_X} ${CENTER_Y})`}
-            />
-          ))}
+          <g clipPath="url(#industry-universe-clip)">
+            {[-58, -28, 0, 28, 58].map((offset) => (
+              <ellipse
+                key={`lat-${offset}`}
+                cx={CENTER_X}
+                cy={CENTER_Y + offset * 0.9}
+                rx={SPHERE_RADIUS * Math.cos(Math.abs(offset) / 90)}
+                ry={Math.max(12, SPHERE_RADIUS * 0.12 * Math.cos(Math.abs(offset) / 100))}
+                fill="none"
+                stroke="#bcd7ff"
+                strokeWidth="1"
+                strokeDasharray="4 10"
+                opacity="0.36"
+              />
+            ))}
+            {[-60, -30, 0, 30, 60].map((angle) => (
+              <ellipse
+                key={`lng-${angle}`}
+                cx={CENTER_X}
+                cy={CENTER_Y}
+                rx={SPHERE_RADIUS * 0.18}
+                ry={SPHERE_RADIUS}
+                fill="none"
+                stroke="#d7e7ff"
+                strokeWidth="1"
+                strokeDasharray="4 12"
+                opacity="0.34"
+                transform={`rotate(${angle + rotation.y * 18} ${CENTER_X} ${CENTER_Y})`}
+              />
+            ))}
 
-          <g transform={`translate(${CENTER_X - 92} ${CENTER_Y - 39})`}>
-            <rect width="184" height="78" rx="22" fill="#ffffff" fillOpacity="0.92" stroke="#bfdbfe" />
-            <g transform="translate(22 24)">
-              <Cpu size={19} color="#f97316" />
-              <text x="29" y="5" fill="#0f172a" fontSize="13" fontWeight="850">Market Heat Core</text>
-              <text x="29" y="26" fill="#64748b" fontSize="11.5" fontWeight="700">全市场产业簇</text>
+            <g fill="none">
+              {projection.relations.map((relation) => {
+                const active = relation.source.key === hoveredKey || relation.target.key === hoveredKey || relation.source.selected || relation.target.selected;
+                return (
+                  <path
+                    key={relation.key}
+                    d={projectedRelationPath(relation.source, relation.target)}
+                    stroke={active ? "#f97316" : "#60a5fa"}
+                    strokeWidth={active ? 1.9 + relation.weight * 2.1 : 0.8 + relation.weight * 1.4}
+                    strokeOpacity={active ? 0.58 : 0.15 + relation.weight * 0.12}
+                    strokeLinecap="round"
+                  />
+                );
+              })}
             </g>
-          </g>
 
-          <g fill="none">
-            {model.relations.map((relation) => {
-              const active = relation.source.key === hoveredKey || relation.target.key === hoveredKey || relation.source.selected || relation.target.selected;
+            {projection.clusters.map((cluster) => {
+              const active = cluster.selected || cluster.key === hoveredKey;
+              const labelVisible = active || cluster.rank < 7 || cluster.depth > 0.38;
               return (
-                <path
-                  key={relation.key}
-                  d={relationPath(relation.source, relation.target)}
-                  stroke={active ? "#f97316" : "#38bdf8"}
-                  strokeWidth={active ? 2.2 + relation.weight * 3.4 : 0.9 + relation.weight * 2.2}
-                  strokeOpacity={active ? 0.58 : 0.15}
-                  strokeLinecap="round"
-                  strokeDasharray={active ? "0" : "4 10"}
-                />
+                <g
+                  key={cluster.key}
+                  role="button"
+                  tabIndex={0}
+                  transform={`translate(${cluster.sx} ${cluster.sy}) scale(${active ? cluster.scale * 1.08 : cluster.scale})`}
+                  className="cursor-pointer outline-none"
+                  opacity={active ? 1 : cluster.opacity}
+                  onMouseEnter={() => setHoveredKey(cluster.key)}
+                  onMouseLeave={() => setHoveredKey(null)}
+                  onFocus={() => setHoveredKey(cluster.key)}
+                  onBlur={() => setHoveredKey(null)}
+                  onClick={() => {
+                    if (!suppressClickRef.current && cluster.hottestNode) onOpenChain(cluster.hottestNode.node_key);
+                  }}
+                  onKeyDown={(event) => {
+                    if ((event.key === "Enter" || event.key === " ") && cluster.hottestNode) {
+                      event.preventDefault();
+                      onOpenChain(cluster.hottestNode.node_key);
+                    }
+                  }}
+                >
+                  <circle r={cluster.r + 18} fill={cluster.color} opacity={active ? 0.28 : 0.1 + cluster.intensity * 0.12} filter="url(#industry-universe-glow)" />
+                  <circle r={cluster.r} fill="#ffffff" stroke={active ? "#0f172a" : cluster.color} strokeWidth={active ? 2.6 : 1.4} />
+                  <circle r={Math.max(10, cluster.r * 0.32)} fill={warmColor(cluster.intensity)} />
+                  <text y="4" textAnchor="middle" fill="#ffffff" fontSize="10" fontWeight="900">
+                    {cluster.rank + 1}
+                  </text>
+                  {labelVisible ? (
+                    <g transform={`translate(${-Math.max(50, cluster.shortName.length * 7.4)} ${cluster.r + 11})`}>
+                      <rect width={Math.max(100, cluster.shortName.length * 14.8)} height="30" rx="9" fill="#ffffff" fillOpacity="0.96" stroke="#dbeafe" />
+                      <text x={Math.max(50, cluster.shortName.length * 7.4)} y="13" textAnchor="middle" fill="#0f172a" fontSize="11.5" fontWeight="850">
+                        {cluster.shortName}
+                      </text>
+                      <text x={Math.max(50, cluster.shortName.length * 7.4)} y="25" textAnchor="middle" fill="#ea580c" fontSize="9.5" fontWeight="800">
+                        {cluster.heat.toFixed(1)}
+                      </text>
+                    </g>
+                  ) : null}
+                  <title>{`${cluster.name}｜热度 ${cluster.heat.toFixed(1)}｜拖动旋转，点击进入链路`}</title>
+                </g>
               );
             })}
           </g>
 
-          {model.clusters.map((cluster) => {
-            const active = cluster.selected || cluster.key === hoveredKey;
-            const front = cluster.rank < 4 || active;
-            const labelVisible = front || cluster.rank < 9;
-            const scale = active ? 1.12 : front ? 1.04 : 1;
-            return (
-              <g
-                key={cluster.key}
-                role="button"
-                tabIndex={0}
-                transform={`translate(${cluster.x} ${cluster.y}) scale(${scale})`}
-                className="cursor-pointer outline-none"
-                onMouseEnter={() => setHoveredKey(cluster.key)}
-                onMouseLeave={() => setHoveredKey(null)}
-                onFocus={() => setHoveredKey(cluster.key)}
-                onBlur={() => setHoveredKey(null)}
-                onClick={() => cluster.hottestNode && onOpenChain(cluster.hottestNode.node_key)}
-                onKeyDown={(event) => {
-                  if ((event.key === "Enter" || event.key === " ") && cluster.hottestNode) {
-                    event.preventDefault();
-                    onOpenChain(cluster.hottestNode.node_key);
-                  }
-                }}
-                opacity={front ? 1 : 0.82}
-              >
-                <circle r={cluster.r + 31} fill={cluster.color} opacity={active ? 0.28 : 0.12 + cluster.intensity * 0.16} filter="url(#tech-cluster-glow)" />
-                <circle r={cluster.r + 12} fill="#ffffff" stroke={cluster.halo} strokeWidth="9" opacity="0.9" />
-                <circle r={cluster.r} fill="#ffffff" stroke={active ? "#0f172a" : cluster.color} strokeWidth={active ? 2.6 : 1.7} filter="url(#tech-node-shadow)" />
-                <path d={gaugePath(cluster.r * 0.78)} fill="none" stroke={warmColor(cluster.intensity)} strokeWidth="7" strokeLinecap="round" />
-                <circle r={Math.max(11, cluster.r * 0.27)} fill={warmColor(cluster.intensity)} opacity="0.96" />
-                <text y="5" textAnchor="middle" fill="#ffffff" fontSize="10.5" fontWeight="900">
-                  {cluster.rank + 1}
-                </text>
-                {labelVisible ? (
-                  <g transform={`translate(${-Math.max(58, cluster.shortName.length * 8)} ${cluster.r + 15})`}>
-                    <rect width={Math.max(116, cluster.shortName.length * 16)} height="34" rx="11" fill="#ffffff" fillOpacity="0.96" stroke="#dbeafe" />
-                    <text x={Math.max(58, cluster.shortName.length * 8)} y="14" textAnchor="middle" fill="#0f172a" fontSize="12" fontWeight="850">
-                      {cluster.shortName}
-                    </text>
-                    <text x={Math.max(58, cluster.shortName.length * 8)} y="28" textAnchor="middle" fill="#ea580c" fontSize="10.5" fontWeight="800">
-                      {cluster.heat.toFixed(1)} / {cluster.nodes.length} 节点
-                    </text>
-                  </g>
-                ) : null}
-                <title>{`${cluster.name}｜热度 ${cluster.heat.toFixed(1)}｜最热节点 ${cluster.hottestNode?.name ?? "--"}`}</title>
-              </g>
-            );
-          })}
+          <circle cx={CENTER_X} cy={CENTER_Y} r={SPHERE_RADIUS} fill="url(#industry-sphere-gloss)" pointerEvents="none" />
+          <text x={CENTER_X} y={CENTER_Y + SPHERE_RADIUS + 74} textAnchor="middle" fill="#64748b" fontSize="12" fontWeight="700">
+            鼠标按住拖动 / 手机触屏拖动旋转
+          </text>
         </svg>
 
         <aside className="space-y-3">
           <section className="rounded-lg border border-[#dbeafe] bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.05)]">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
-              <RadioTower size={16} className="text-orange-600" />
-              热点产业簇
-            </div>
+            <div className="text-sm font-semibold text-slate-950">发热产业簇</div>
             <div className="mt-3 space-y-2">
-              {model.clusters.slice(0, 8).map((cluster) => (
+              {projection.clusters.slice(0, 8).map((cluster) => (
                 <button
                   key={cluster.key}
                   type="button"
@@ -413,18 +504,69 @@ function buildUniverse(nodes: ChainNode[], edges: ChainEdge[], selectedNodeKey: 
   const fallbackClusters = buildFallbackIndustryClusters(nodes, selectedNodeKey, ruleClusters.assignedNodeKeys);
   const rawClusters = [...ruleClusters.clusters, ...fallbackClusters]
     .filter((cluster) => cluster.nodes.length)
-    .sort((left, right) => right.heat - left.heat || right.nodes.length - left.nodes.length)
+    .sort((left, right) => right.heat - left.heat || right.priority - left.priority)
     .slice(0, MAX_VISIBLE_CLUSTERS);
 
   const maxHeat = Math.max(...rawClusters.map((cluster) => cluster.heat), 1);
-  const placed = rawClusters.map((cluster, index) => placeCluster(cluster, index, rawClusters.length, maxHeat));
-  const nodeCluster = assignNodesToVisibleClusters(placed);
-  const relations = buildRelations(placed, edges, nodeCluster);
+  const clusters = rawClusters.map((cluster, index) => placeCluster(cluster, index, rawClusters.length, maxHeat));
+  const nodeCluster = assignNodesToVisibleClusters(clusters);
+  const relations = buildRelations(clusters, edges, nodeCluster);
 
   return {
-    clusters: placed,
+    clusters,
     relations,
-    coveredNodeCount: new Set(placed.flatMap((cluster) => cluster.nodes.map((node) => node.node_key))).size
+    coveredNodeCount: new Set(clusters.flatMap((cluster) => cluster.nodes.map((node) => node.node_key))).size
+  };
+}
+
+function projectUniverse(model: ReturnType<typeof buildUniverse>, rotation: Rotation) {
+  const clusters = model.clusters
+    .map((cluster) => projectCluster(cluster, rotation))
+    .sort((left, right) => left.depth - right.depth);
+  const clusterMap = new Map(clusters.map((cluster) => [cluster.key, cluster]));
+  const relations = model.relations
+    .map((relation) => {
+      const source = clusterMap.get(relation.source);
+      const target = clusterMap.get(relation.target);
+      if (!source || !target) return null;
+      return {
+        key: relation.key,
+        source,
+        target,
+        weight: relation.weight,
+        depth: (source.depth + target.depth) / 2
+      };
+    })
+    .filter((relation): relation is ProjectedRelation => Boolean(relation))
+    .sort((left, right) => left.depth - right.depth);
+  return { clusters, relations };
+}
+
+function projectCluster(cluster: UniverseCluster, rotation: Rotation): ProjectedCluster {
+  const point = rotatePoint(cluster.base, rotation);
+  const depth = (point.z + SPHERE_RADIUS) / (SPHERE_RADIUS * 2);
+  const perspective = 0.72 + depth * 0.48;
+  return {
+    ...cluster,
+    sx: CENTER_X + point.x * perspective,
+    sy: CENTER_Y + point.y * perspective,
+    depth,
+    scale: 0.72 + depth * 0.48,
+    opacity: 0.34 + depth * 0.66
+  };
+}
+
+function rotatePoint(point: Vec3, rotation: Rotation): Vec3 {
+  const cosY = Math.cos(rotation.y);
+  const sinY = Math.sin(rotation.y);
+  const x1 = point.x * cosY + point.z * sinY;
+  const z1 = -point.x * sinY + point.z * cosY;
+  const cosX = Math.cos(rotation.x);
+  const sinX = Math.sin(rotation.x);
+  return {
+    x: x1,
+    y: point.y * cosX - z1 * sinX,
+    z: point.y * sinX + z1 * cosX
   };
 }
 
@@ -478,12 +620,9 @@ function clusterFromNodes(rule: ClusterRule, clusterNodes: ChainNode[], selected
     intensity: 0,
     hottestNode,
     stockCount,
-    x: 0,
-    y: 0,
+    base: { x: 0, y: 0, z: 0 },
     r: 0,
-    z: 0,
     selected: Boolean(selectedNodeKey && clusterNodes.some((node) => node.node_key === selectedNodeKey)),
-    ring: 0,
     rank: 0,
     priority: rule.priority
   };
@@ -491,25 +630,19 @@ function clusterFromNodes(rule: ClusterRule, clusterNodes: ChainNode[], selected
 
 function placeCluster(cluster: ReturnType<typeof clusterFromNodes>, index: number, total: number, maxHeat: number): UniverseCluster {
   const intensity = Math.min(Math.max(cluster.heat / maxHeat, 0), 1);
-  const rank = index;
-  const ring = index < 4 ? 0 : index < 8 ? 1 : 2;
-  const ringIndex = ring === 0 ? index : ring === 1 ? index - 4 : index - 8;
-  const ringCount = ring === 0 ? Math.min(4, total) : ring === 1 ? Math.min(4, Math.max(total - 4, 1)) : Math.max(total - 8, 1);
-  const angleBase = ring === 0 ? -92 : ring === 1 ? -56 : -102;
-  const angle = (angleBase + ringIndex * (360 / ringCount) + ring * 14) * Math.PI / 180;
-  const orbit = ring === 0 ? 142 + intensity * 48 : ring === 1 ? 235 + intensity * 50 : 322 + intensity * 34;
-  const x = CENTER_X + Math.cos(angle) * orbit * 1.34;
-  const y = CENTER_Y + Math.sin(angle) * orbit * 0.52 - intensity * 24 + ring * 6;
-  const z = Math.sin(angle) + intensity * 0.42 - ring * 0.08;
+  const phi = Math.acos(1 - 2 * ((index + 0.5) / Math.max(total, 1)));
+  const theta = index * Math.PI * (3 - Math.sqrt(5));
+  const radius = SPHERE_RADIUS * (0.72 + intensity * 0.2);
   return {
     ...cluster,
     intensity,
-    x,
-    y,
-    r: 28 + intensity * 31 + Math.min(cluster.stockCount, 48) * 0.12,
-    z,
-    ring,
-    rank
+    base: {
+      x: Math.cos(theta) * Math.sin(phi) * radius,
+      y: Math.sin(theta) * Math.sin(phi) * radius,
+      z: Math.cos(phi) * radius
+    },
+    r: 17 + intensity * 18 + Math.min(cluster.stockCount, 48) * 0.08,
+    rank: index
   };
 }
 
@@ -530,17 +663,14 @@ function assignNodesToVisibleClusters(clusters: UniverseCluster[]) {
 }
 
 function buildRelations(clusters: UniverseCluster[], edges: ChainEdge[], nodeCluster: Map<string, string>) {
-  const clusterMap = new Map(clusters.map((cluster) => [cluster.key, cluster]));
+  const visibleKeys = new Set(clusters.map((cluster) => cluster.key));
   const relationMap = new Map<string, ClusterRelation>();
 
   for (const edge of edges) {
-    const sourceKey = nodeCluster.get(edge.source);
-    const targetKey = nodeCluster.get(edge.target);
-    if (!sourceKey || !targetKey || sourceKey === targetKey) continue;
-    const source = clusterMap.get(sourceKey);
-    const target = clusterMap.get(targetKey);
-    if (!source || !target) continue;
-    const key = `${sourceKey}->${targetKey}`;
+    const source = nodeCluster.get(edge.source);
+    const target = nodeCluster.get(edge.target);
+    if (!source || !target || source === target || !visibleKeys.has(source) || !visibleKeys.has(target)) continue;
+    const key = `${source}->${target}`;
     const weight = edgeScore(edge);
     const current = relationMap.get(key);
     if (current) current.weight += weight;
@@ -556,17 +686,10 @@ function buildRelations(clusters: UniverseCluster[], edges: ChainEdge[], nodeClu
   }));
 }
 
-function relationPath(source: UniverseCluster, target: UniverseCluster) {
-  const midX = (source.x + target.x) / 2;
-  const midY = (source.y + target.y) / 2;
-  const bend = source.ring === target.ring ? -48 : 22;
-  const controlX = CENTER_X + (midX - CENTER_X) * 0.28;
-  const controlY = CENTER_Y + (midY - CENTER_Y) * 0.24 + bend;
-  return `M ${source.x} ${source.y} Q ${controlX} ${controlY} ${target.x} ${target.y}`;
-}
-
-function gaugePath(radius: number) {
-  return `M ${-radius * 0.76} ${radius * 0.3} A ${radius} ${radius} 0 1 1 ${radius * 0.72} ${radius * 0.38}`;
+function projectedRelationPath(source: ProjectedCluster, target: ProjectedCluster) {
+  const controlX = CENTER_X + ((source.sx + target.sx) / 2 - CENTER_X) * 0.24;
+  const controlY = CENTER_Y + ((source.sy + target.sy) / 2 - CENTER_Y) * 0.24;
+  return `M ${source.sx} ${source.sy} Q ${controlX} ${controlY} ${target.sx} ${target.sy}`;
 }
 
 function nodeText(node: ChainNode) {
@@ -591,4 +714,8 @@ function warmColor(intensity: number) {
   if (intensity >= 0.62) return "#ea580c";
   if (intensity >= 0.36) return "#f59e0b";
   return "#facc15";
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
