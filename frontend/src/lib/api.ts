@@ -1,5 +1,7 @@
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "";
+const DEFAULT_GET_CACHE_MS = 30_000;
+const getCache = new Map<string, { expiresAt: number; promise?: Promise<unknown>; value?: unknown }>();
 
 export type MarketSummary = {
   stock_count: number;
@@ -412,71 +414,6 @@ export type IndustryTimeline = {
   timeline: IndustryTimelineItem[];
 };
 
-export type HotTermsWindow = "1d" | "7d";
-
-export type HotTermsSourceStatus = "empty" | "partial" | "local_aggregate" | string;
-
-export type HotTermsIndustryRow = {
-  industry_id: number | null;
-  name: string;
-  score: number;
-  heat_score: number;
-  heat_rows: number;
-  article_count: number;
-  keyword_count: number;
-  latest_trade_date: string | null;
-  latest_heat_score: number;
-  heat_1d: number;
-  heat_7d: number;
-  heat_30d: number;
-  heat_change_7d: number;
-  heat_change_30d: number;
-  top_keywords: string[];
-  related_terms: string[];
-  article_sources: Record<string, number>;
-  source_mix: string[];
-  source_status: HotTermsSourceStatus;
-  explanation: string;
-};
-
-export type HotTermsTermRow = {
-  term: string;
-  score: number;
-  heat_mentions: number;
-  article_mentions: number;
-  keyword_mentions: number;
-  industry_mentions: number;
-  related_industries: string[];
-  article_sources: Record<string, number>;
-  source_mix: string[];
-  source_status: HotTermsSourceStatus;
-};
-
-export type HotTermsResponse = {
-  window: HotTermsWindow;
-  window_days: number;
-  source_status: HotTermsSourceStatus;
-  source_mix: string[];
-  latest_trade_date: string | null;
-  window_start_date: string | null;
-  summary: {
-    industry_count: number;
-    term_count: number;
-    heat_row_count: number;
-    article_count: number;
-    keyword_count: number;
-    article_source_count: number;
-  };
-  source_breakdown: {
-    industry_heat_rows: number;
-    news_article_rows: number;
-    industry_keyword_rows: number;
-    article_sources: Record<string, number>;
-  };
-  industries: HotTermsIndustryRow[];
-  terms: HotTermsTermRow[];
-};
-
 export type IndustryDetailStock = {
   code: string;
   name: string;
@@ -523,10 +460,17 @@ export type IndustryDetail = {
     title: string;
     summary: string;
     source: string;
+    source_kind?: string;
+    source_confidence?: number;
+    source_channel?: string;
+    source_label?: string;
+    source_rank?: number;
     source_url: string;
     published_at: string;
     matched_keywords: string[];
     related_stocks: string[];
+    match_reason?: string;
+    is_synthetic?: boolean;
   }[];
 };
 
@@ -980,7 +924,17 @@ export type ResearchHotTerm = {
   sources: HotTermFacet[];
   industries: HotTermFacet[];
   latest_at: string | null;
-  examples: { title: string; source: string; url?: string }[];
+  examples: {
+    title: string;
+    source: string;
+    url?: string;
+    source_channel?: string;
+    source_label?: string;
+    source_rank?: number;
+    match_reason?: string;
+    match_reason_raw?: string;
+    is_synthetic?: boolean;
+  }[];
 };
 
 export type ResearchHotIndustry = {
@@ -997,8 +951,18 @@ export type ResearchHotSource = {
   key: string;
   label: string;
   kind: string;
-  status: "active" | "pending_connector" | "internal_ready" | string;
+  status: "active" | "pending_connector" | "internal_ready" | "connected_empty" | "degraded" | "error" | string;
+  connector_status?: string;
+  window_data_status?: string;
   article_count: number;
+  last_run_status?: string | null;
+  last_error?: string;
+  last_run_at?: string | null;
+  connector_item_count?: number;
+  last_inserted?: number;
+  last_skipped?: number;
+  last_irrelevant?: number;
+  relevance_rate?: number | null;
 };
 
 export type ResearchPlatformTerms = ResearchHotSource & {
@@ -1010,21 +974,46 @@ export type ResearchPlatformTerms = ResearchHotSource & {
   }[];
 };
 
+export type ResearchHotTermsSummary = {
+  term_count: number;
+  industry_count: number;
+  article_count: number;
+  matched_article_count?: number;
+  unmatched_article_count?: number;
+  data_lag_days?: number | null;
+  is_stale?: boolean;
+  source_count: number;
+  data_mode: string;
+};
+
 export type ResearchHotTerms = {
   latest_date: string | null;
   updated_at: string;
   window: "1d" | "7d" | string;
-  summary: {
-    term_count: number;
-    industry_count: number;
-    article_count: number;
-    source_count: number;
-    data_mode: string;
-  };
+  summary: ResearchHotTermsSummary;
   sources: ResearchHotSource[];
   hot_terms: ResearchHotTerm[];
   hot_industries: ResearchHotIndustry[];
   platform_terms: ResearchPlatformTerms[];
+};
+
+export type ResearchHotTermsRefresh = {
+  status: string;
+  inserted: number;
+  skipped: number;
+  failed_sources: number;
+  source_count: number;
+  sources: {
+    key: string;
+    label: string;
+    status: string;
+    fetched: number;
+    inserted: number;
+    skipped: number;
+    irrelevant?: number;
+    error: string;
+  }[];
+  snapshot: ResearchHotTerms;
 };
 
 export type ResearchFocusStock = {
@@ -1072,18 +1061,197 @@ export type ResearchBrief = {
   markdown: string;
 };
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`${path} failed: ${response.status}`);
+export type TenbaggerThesisRow = {
+  stock_code: string;
+  trade_date: string;
+  thesis_score: number;
+  opportunity_score: number;
+  growth_score: number;
+  quality_score: number;
+  valuation_score: number;
+  timing_score: number;
+  evidence_score: number;
+  risk_score: number;
+  readiness_score: number;
+  stage: string;
+  data_gate_status: string;
+  investment_thesis: string;
+  base_case: string;
+  bull_case: string;
+  bear_case: string;
+  key_milestones: string[];
+  disconfirming_evidence: string[];
+  missing_evidence: string[];
+  source_refs: { title: string; url: string; source: string; source_kind: string }[];
+  explanation: string;
+  stock: {
+    code: string;
+    name: string;
+    market: string;
+    board: string;
+    industry: string;
+    industry_level2: string;
+    market_cap: number;
+    float_market_cap: number;
+  };
+  score: {
+    final_score: number;
+    raw_score: number;
+    rating: string;
+    industry_score: number;
+    company_score: number;
+    trend_score: number;
+    catalyst_score: number;
+    risk_penalty: number;
+    confidence_level: string;
+    source_confidence: number;
+    data_confidence: number;
+    fundamental_confidence: number;
+    news_confidence: number;
+    evidence_confidence: number;
+  };
+};
+
+export type TenbaggerThesisList = {
+  latest_date: string | null;
+  summary: {
+    count: number;
+    average_thesis_score: number;
+    candidate_count: number;
+    verification_count: number;
+    blocked_count: number;
+    stage_counts: Record<string, number>;
+    gate_counts: Record<string, number>;
+  };
+  rows: TenbaggerThesisRow[];
+};
+
+export type ResearchDataGate = {
+  latest_date: string | null;
+  summary: {
+    count: number;
+    pass_count: number;
+    warn_count: number;
+    fail_count: number;
+    formal_ready_ratio: number;
+  };
+  rows: {
+    code: string;
+    name: string;
+    market: string;
+    board: string;
+    industry: string;
+    final_score: number;
+    rating: string;
+    status: "PASS" | "WARN" | "FAIL";
+    gate_score: number;
+    reasons: string[];
+    required_actions: string[];
+  }[];
+};
+
+export type SignalBacktestRun = {
+  run_key?: string;
+  as_of_date: string;
+  horizon_days: number;
+  min_score: number;
+  market: string;
+  board: string;
+  status: string;
+  sample_count: number;
+  average_forward_return: number;
+  median_forward_return: number;
+  average_max_return: number;
+  hit_rate_2x: number;
+  hit_rate_5x: number;
+  hit_rate_10x: number;
+  bucket_summary: {
+    bucket: string;
+    sample_count: number;
+    average_forward_return: number;
+    median_forward_return: number;
+    average_max_return: number;
+    hit_rate_2x: number;
+    hit_rate_5x: number;
+    hit_rate_10x: number;
+  }[];
+  rating_summary: {
+    bucket: string;
+    sample_count: number;
+    average_forward_return: number;
+    median_forward_return: number;
+    average_max_return: number;
+    hit_rate_2x: number;
+    hit_rate_5x: number;
+    hit_rate_10x: number;
+  }[];
+  confidence_summary: {
+    bucket: string;
+    sample_count: number;
+    average_forward_return: number;
+    median_forward_return: number;
+    average_max_return: number;
+    hit_rate_2x: number;
+    hit_rate_5x: number;
+    hit_rate_10x: number;
+  }[];
+  failures: string[];
+  explanation: string;
+  created_at?: string;
+};
+
+export type SignalBacktestLatest = {
+  latest: SignalBacktestRun | null;
+  runs: SignalBacktestRun[];
+};
+
+export type SignalBacktestRunResponse = {
+  result: {
+    backtest_runs: number;
+    run_key: string;
+    sample_count: number;
+  };
+  run: SignalBacktestRun | null;
+};
+
+async function getJson<T>(path: string, options?: { cacheMs?: number }): Promise<T> {
+  const cacheMs = options?.cacheMs ?? DEFAULT_GET_CACHE_MS;
+  const cacheKey = `${API_BASE_URL}${path}`;
+  const now = Date.now();
+  if (cacheMs > 0) {
+    const cached = getCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      if ("value" in cached) return cached.value as T;
+      if (cached.promise) return cached.promise as Promise<T>;
+    }
   }
-  return response.json() as Promise<T>;
+
+  const request = fetch(cacheKey, { cache: "no-store" }).then((response) => {
+    if (!response.ok) {
+      throw new Error(`${path} failed: ${response.status}`);
+    }
+    return response.json() as Promise<T>;
+  });
+
+  if (cacheMs > 0) {
+    getCache.set(cacheKey, { expiresAt: now + cacheMs, promise: request });
+    request
+      .then((value) => getCache.set(cacheKey, { expiresAt: Date.now() + cacheMs, value }))
+      .catch(() => getCache.delete(cacheKey));
+  }
+
+  return request;
 }
 
 export const api = {
   marketSummary: () => getJson<MarketSummary>("/api/market/summary"),
   marketSegments: () => getJson<MarketSegment[]>("/api/market/segments"),
-  dataStatus: () => getJson<DataStatus>("/api/market/data-status"),
+  dataStatus: (options?: { includeSourceCoverage?: boolean }) => {
+    const params = new URLSearchParams();
+    if (options?.includeSourceCoverage) params.set("include_source_coverage", "true");
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<DataStatus>(`/api/market/data-status${suffix}`);
+  },
   dataQuality: () => getJson<DataQuality>("/api/market/data-quality"),
   ingestionPlan: () => getJson<IngestionPlan>("/api/market/ingestion-plan"),
   backfillManifest: () => getJson<BackfillManifest>("/api/market/backfill-manifest"),
@@ -1183,6 +1351,15 @@ export const api = {
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return getJson<ResearchHotTerms>(`/api/research/hot-terms${suffix}`);
   },
+  refreshHotTerms: (options?: { sources?: string[]; limitPerSource?: number; timeoutSeconds?: number; window?: "1d" | "7d" }) => {
+    const params = new URLSearchParams();
+    if (options?.sources?.length) params.set("sources", options.sources.join(","));
+    if (options?.limitPerSource) params.set("limit_per_source", String(options.limitPerSource));
+    if (options?.timeoutSeconds) params.set("timeout_seconds", String(options.timeoutSeconds));
+    if (options?.window) params.set("window", options.window);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return postJson<ResearchHotTermsRefresh>(`/api/research/hot-terms/refresh${suffix}`, {});
+  },
   hotTerms: (filters?: { window?: "1d" | "7d"; limit?: number }) => {
     const params = new URLSearchParams();
     if (filters?.window) params.set("window", filters.window);
@@ -1190,6 +1367,29 @@ export const api = {
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return getJson<ResearchHotTerms>(`/api/research/hot-terms${suffix}`);
   },
+  tenbaggerTheses: (filters?: { market?: string; board?: string; stage?: string; dataGateStatus?: string; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    if (filters?.board && filters.board !== "all") params.set("board", filters.board);
+    if (filters?.stage && filters.stage !== "all") params.set("stage", filters.stage);
+    if (filters?.dataGateStatus && filters.dataGateStatus !== "ALL") params.set("data_gate_status", filters.dataGateStatus);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.offset) params.set("offset", String(filters.offset));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<TenbaggerThesisList>(`/api/research/thesis${suffix}`);
+  },
+  tenbaggerThesis: (code: string) => getJson<{ latest: TenbaggerThesisRow; history: TenbaggerThesisRow[] }>(`/api/research/thesis/${encodeURIComponent(code)}`),
+  researchDataGate: (filters?: { market?: string; board?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
+    if (filters?.board && filters.board !== "all") params.set("board", filters.board);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return getJson<ResearchDataGate>(`/api/research/data-gate${suffix}`);
+  },
+  latestBacktest: () => getJson<SignalBacktestLatest>("/api/research/backtest/latest"),
+  runBacktest: (payload: { as_of_date?: string | null; horizon_days?: number; min_score?: number; market?: string; board?: string }) =>
+    postJson<SignalBacktestRunResponse>("/api/research/backtest/run", payload),
   researchUniverse: () => getJson<ResearchUniverse>("/api/market/research-universe"),
   trendPool: (filters?: { market?: string; board?: string; researchUniverseOnly?: boolean; limit?: number; offset?: number }) => {
     const params = new URLSearchParams();
@@ -1221,6 +1421,7 @@ export const api = {
 };
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
+  getCache.clear();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

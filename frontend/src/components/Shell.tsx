@@ -1,63 +1,167 @@
 "use client";
 
-import { usePathname } from "next/navigation";
-import { BarChart3, ClipboardCheck, Database, FileText, Flame, Gauge, Layers3, Map as MapIcon, Repeat2, Search, TrendingUp } from "lucide-react";
+import { useEffect } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import Link from "next/link";
+import { 
+  BarChart3, 
+  ClipboardCheck, 
+  Database, 
+  FileText, 
+  FlaskConical,
+  Flame, 
+  Gauge, 
+  Layers3, 
+  Map as MapIcon, 
+  Network,
+  Repeat2, 
+  ShieldCheck,
+  TrendingUp,
+  LayoutGrid,
+  Activity,
+  Share2
+} from "lucide-react";
+import { motion } from "framer-motion";
 import { StockSearch } from "@/components/StockSearch";
 
 const navItems = [
-  { href: "/", label: "Dashboard", icon: Gauge },
-  { href: "/universe", label: "证券主数据", icon: Database },
+  { href: "/", label: "总览", icon: Gauge },
+  { href: "/universe", label: "证券库", icon: Database },
   { href: "/industry", label: "产业雷达", icon: Layers3 },
-  { href: "/industry/chain", label: "产业链地图", icon: MapIcon },
-  { href: "/industry/review", label: "赛道复盘", icon: Flame },
+  { href: "/industry/chain", label: "产业链", icon: MapIcon },
+  { href: "/industry/review", label: "复盘", icon: Flame },
   { href: "/trend", label: "趋势池", icon: BarChart3 },
-  { href: "/watchlist", label: "观察池复盘", icon: Repeat2 },
-  { href: "/research", label: "研究任务", icon: ClipboardCheck },
-  { href: "/research/hot-terms", label: "热词雷达", icon: TrendingUp },
-  { href: "/stocks/300308", label: "单股证据链", icon: Search },
-  { href: "/report", label: "每日简报", icon: FileText }
+  { href: "/watchlist", label: "观察池", icon: Repeat2 },
+  { href: "/research", label: "研究", icon: ClipboardCheck },
+  { href: "/research/ai-infra-map", label: "AI图谱", icon: Network },
+  { href: "/research/ai-big-graph", label: "AI大图谱", icon: Share2 },
+  { href: "/research/evidence", label: "证据", icon: FileText },
+  { href: "/research/stock-pool", label: "股票池", icon: TrendingUp },
+  { href: "/research/thesis", label: "十倍假设", icon: FlaskConical },
+  { href: "/research/data-quality", label: "门控", icon: ShieldCheck },
+  { href: "/research/hot-terms", label: "热词", icon: TrendingUp },
+  { href: "/portfolio/dashboard", label: "组合", icon: BarChart3 },
+  { href: "/report", label: "简报", icon: FileText }
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const activeHref = navItems
     .filter((item) => item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`))
     .sort((a, b) => b.href.length - a.href.length)[0]?.href;
 
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      for (const item of navItems) {
+        if (item.href !== pathname) router.prefetch(item.href);
+      }
+    }, 800);
+    return () => window.clearTimeout(id);
+  }, [pathname, router]);
+
   return (
-    <div className="app-shell">
-      <header className="border-b border-line bg-white">
-        <div className="mx-auto flex w-[min(1440px,calc(100vw-32px))] flex-wrap items-center justify-between gap-3 py-4">
-          <div>
-            <div className="text-xl font-semibold tracking-normal">AlphaRadar</div>
-            <div className="label mt-1">AI 产业趋势雷达与早期特征观察系统</div>
+    <div className="flex min-h-screen bg-slate-50 text-slate-900">
+      {/* Sidebar Navigation */}
+      <aside className="fixed inset-y-0 left-0 z-50 w-20 flex-col border-r border-slate-200 bg-white hidden md:flex">
+        <div className="flex h-16 items-center justify-center border-b border-slate-100">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm">
+            <LayoutGrid size={20} />
           </div>
-          <div className="w-full md:w-80 lg:w-96">
-            <StockSearch compact placeholder="搜索 A股 / 港股 / 美股" />
-          </div>
-          <nav className="relative z-50 flex flex-wrap items-center gap-2">
-            {navItems.map((item) => {
-              const active = item.href === activeHref;
-              const Icon = item.icon;
-              return (
-                <a
-                  key={item.href}
-                  href={item.href}
-                  className={`flex h-10 items-center gap-2 rounded-md border px-3 text-sm ${
-                    active
-                      ? "border-mint bg-mint text-white"
-                      : "border-line bg-white text-ink hover:border-mint"
-                  }`}
-                >
-                  <Icon size={16} aria-hidden="true" />
-                  <span>{item.label}</span>
-                </a>
-              );
-            })}
-          </nav>
         </div>
-      </header>
-      <main>{children}</main>
+        <nav className="flex flex-1 flex-col items-center gap-4 py-8">
+          {navItems.map((item) => {
+            const active = item.href === activeHref;
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                prefetch
+                onMouseEnter={() => router.prefetch(item.href)}
+                title={item.label}
+                className={`group relative flex h-12 w-12 items-center justify-center rounded-xl transition-all duration-200 ${
+                  active
+                    ? "bg-slate-100 text-slate-900 shadow-inner"
+                    : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+                }`}
+              >
+                <Icon size={20} strokeWidth={active ? 2.5 : 2} />
+                {active && (
+                  <motion.div
+                    layoutId="sidebar-active"
+                    className="absolute left-0 h-6 w-1 rounded-r-full bg-slate-900"
+                  />
+                )}
+                {/* Tooltip - simplified for density */}
+                <div className="absolute left-16 hidden group-hover:block z-50">
+                   <div className="bg-slate-900 text-white text-[10px] font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap">
+                      {item.label}
+                   </div>
+                </div>
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="border-t border-slate-100 p-4">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+             <Activity size={18} />
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="flex flex-1 flex-col md:pl-20">
+        <header className="sticky top-0 z-[60] border-b border-slate-200 bg-white/80 backdrop-blur-md">
+          <div className="flex h-16 w-full items-center justify-between gap-8 px-8">
+            <div className="flex items-center gap-6">
+              <div>
+                <div className="text-sm font-black tracking-tight text-slate-900">ALPHA RADAR</div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Terminal v2.0</div>
+              </div>
+              
+              <div className="h-6 w-px bg-slate-200 mx-2" />
+
+              <div className="flex items-center gap-3 rounded-full bg-slate-50 px-3 py-1.5 border border-slate-100">
+                <div className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-600">Research Loop</span>
+                <span className="text-[11px] font-bold text-slate-900 mono">Thesis / Gate / Backtest</span>
+              </div>
+            </div>
+
+            <div className="max-w-md flex-1">
+              <StockSearch compact />
+            </div>
+
+            <div className="flex items-center gap-4">
+               <div className="text-right">
+                  <div className="text-[10px] font-black uppercase text-slate-400 leading-none">Status</div>
+                  <div className="text-[11px] font-bold text-slate-900">Gate Active</div>
+               </div>
+               <div className="h-8 w-8 rounded-full bg-slate-100 border border-slate-200" />
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 p-8">
+          {children}
+        </main>
+        
+        <footer className="border-t border-slate-200 bg-white py-8 px-8">
+          <div className="flex flex-col items-center justify-between gap-6 md:flex-row">
+            <div>
+              <div className="text-xs font-bold text-slate-900">AlphaRadar Executive</div>
+              <p className="mt-1 text-[10px] text-slate-500 uppercase tracking-wider">AI-Powered Industrial Intelligence System</p>
+            </div>
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+              © 2024 ALPHA RADAR LABS. 
+            </div>
+          </div>
+        </footer>
+      </div>
     </div>
   );
 }

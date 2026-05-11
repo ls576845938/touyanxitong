@@ -2,11 +2,25 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Database, Filter, PlayCircle } from "lucide-react";
+import { Database, Filter, PlayCircle, Search, Layers, Activity, ChevronRight, AlertCircle, RefreshCw } from "lucide-react";
+import { motion } from "framer-motion";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { api, type IngestionBatch, type IngestionPlan, type IngestionPriority, type IngestionTask, type InstrumentsResponse } from "@/lib/api";
 import { A_BOARD_OPTIONS, MARKET_OPTIONS, boardLabel, marketLabel } from "@/lib/markets";
+
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: { 
+    opacity: 1,
+    transition: { staggerChildren: 0.05 }
+  }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 10 },
+  visible: { opacity: 1, y: 0 }
+};
 
 export default function UniversePage() {
   const [payload, setPayload] = useState<InstrumentsResponse | null>(null);
@@ -48,11 +62,10 @@ export default function UniversePage() {
   }, [market, board, assetType, query, offset, refreshKey]);
 
   const queueBatch = (targetMarket: string) => {
-    setAction("正在创建行情补齐任务...");
-    setQueueMessage("");
+    setAction("创建中...");
     api.createIngestionTask({ task_type: "batch", market: targetMarket, board: targetMarket === "A" ? board : "all", source: "akshare", batch_limit: 20, periods: 320 })
       .then((task) => {
-        setQueueMessage(`已创建 1 个任务：${task.market}/${task.board}`);
+        setQueueMessage(`已创建任务：${task.market}/${task.board}`);
         setRefreshKey((value) => value + 1);
       })
       .catch((err: Error) => setError(`创建任务失败：${err.message}`))
@@ -61,8 +74,7 @@ export default function UniversePage() {
 
   const queueBackfill = () => {
     const markets = market === "ALL" ? ["A", "US", "HK"] : [market];
-    setAction("正在批量创建全市场补齐队列...");
-    setQueueMessage("");
+    setAction("批量入队中...");
     api.createIngestionBackfill({
       markets,
       board: market === "A" ? board : "all",
@@ -72,7 +84,7 @@ export default function UniversePage() {
       periods: 320
     })
       .then((result) => {
-        setQueueMessage(`已入队 ${result.queued_count} 个任务，跳过 ${result.skipped_count} 个已有队列。`);
+        setQueueMessage(`已入队 ${result.queued_count} 个任务`);
         setRefreshKey((value) => value + 1);
       })
       .catch((err: Error) => setError(`批量入队失败：${err.message}`))
@@ -80,241 +92,306 @@ export default function UniversePage() {
   };
 
   const runNext = () => {
-    setAction("正在运行最高优先级任务...");
-    setQueueMessage("");
+    setAction("运行中...");
     api.runNextIngestionTask()
       .then((task) => {
-        setQueueMessage(`已运行任务：${task.market}/${task.board}，状态 ${task.status}，处理 ${task.processed} 只。`);
+        setQueueMessage(`已运行：${task.market}/${task.board}`);
         setRefreshKey((value) => value + 1);
       })
       .catch((err: Error) => setError(`运行任务失败：${err.message}`))
       .finally(() => setAction(""));
   };
 
-  const runQueue = () => {
-    setAction("正在连续运行任务队列...");
-    setQueueMessage("");
-    api.runIngestionQueue(3)
-      .then((result) => {
-        setQueueMessage(`已运行 ${result.tasks_run} 个任务，停止原因：${result.stopped_reason}。`);
-        setRefreshKey((value) => value + 1);
-      })
-      .catch((err: Error) => setError(`运行队列失败：${err.message}`))
-      .finally(() => setAction(""));
-  };
-
-  if (loading) return <div className="page-shell"><LoadingState label="正在加载证券主数据" /></div>;
-  if (error) return <div className="page-shell"><ErrorState message={error} /></div>;
+  if (loading) return <div className="min-h-screen bg-slate-50 p-8"><LoadingState label="正在加载证券主数据" /></div>;
+  if (error) return <div className="min-h-screen bg-slate-50 p-8"><ErrorState message={error} /></div>;
 
   return (
-    <div className="page-shell space-y-5">
-      <section className="panel p-5">
-        <div className="label">Security Master</div>
-        <h1 className="mt-2 text-2xl font-semibold">全市场证券主数据</h1>
-        <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-          先建立 A股、港股、美股的证券主数据，再分批拉取行情。全市场分析必须先经过数据覆盖和研究准入门。
-        </p>
-      </section>
-
-      <section className="panel p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          {MARKET_OPTIONS.map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => {
-                setMarket(option);
-                setOffset(0);
-                if (option !== "A") setBoard("all");
-              }}
-              className={`h-10 rounded-md border px-4 text-sm ${
-                market === option ? "border-mint bg-mint text-white" : "border-line bg-white text-ink hover:border-mint"
-              }`}
-            >
-              {marketLabel(option)}
-            </button>
-          ))}
+    <motion.div 
+      initial="hidden"
+      animate="visible"
+      variants={containerVariants}
+      className="min-h-screen bg-slate-50 px-6 py-8 space-y-6"
+    >
+      <motion.section variants={itemVariants} className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
+        <div className="flex flex-wrap items-center justify-between gap-6">
+          <div>
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">SECURITY MASTER TERMINAL</div>
+            <h1 className="text-3xl font-black text-slate-900 tracking-tight">全市场证券主数据</h1>
+            <p className="mt-2 text-sm font-medium text-slate-500 max-w-2xl">
+              构建跨市场的基础证券数据库，管理全球资产覆盖与行情接入进度。
+            </p>
+          </div>
+          <div className="flex gap-4">
+             <StatCard label="TOTAL INSTRUMENTS" value={payload?.total ?? 0} />
+             <StatCard label="MARKET COVERAGE" value={Math.round((plan?.markets[0]?.coverage_ratio ?? 0) * 100)} unit="%" highlight />
+          </div>
         </div>
-        {market === "A" ? (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+      </motion.section>
+
+      <motion.section variants={itemVariants} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200">
+        <div className="flex flex-wrap items-center gap-6">
+          <div className="flex bg-slate-100 rounded-xl p-1">
+            {MARKET_OPTIONS.map((option) => (
+              <button
+                key={option}
+                onClick={() => {
+                  setMarket(option);
+                  setOffset(0);
+                  if (option !== "A") setBoard("all");
+                }}
+                className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${
+                  market === option ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {marketLabel(option)}
+              </button>
+            ))}
+          </div>
+
+          <div className="h-8 w-px bg-slate-200" />
+
+          <div className="flex items-center gap-3 flex-1 min-w-[300px]">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                className="w-full bg-slate-50 border border-slate-100 rounded-xl pl-10 pr-4 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 transition-all placeholder:text-slate-300"
+                placeholder="搜索代码或名称..."
+                value={query}
+                onChange={(e) => { setQuery(e.target.value); setOffset(0); }}
+              />
+            </div>
+            
+            <select 
+              className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 transition-all"
+              value={assetType} 
+              onChange={(e) => { setAssetType(e.target.value); setOffset(0); }}
+            >
+              <option value="all">所有类型</option>
+              <option value="equity">股票</option>
+              <option value="etf">ETF</option>
+            </select>
+          </div>
+
+          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+            PAGE {Math.floor(offset / limit) + 1} / {Math.ceil((payload?.total ?? 0) / limit)}
+          </div>
+        </div>
+
+        {market === "A" && (
+          <div className="mt-3 flex flex-wrap gap-1.5 pl-1">
             {A_BOARD_OPTIONS.map((option) => (
               <button
                 key={option}
-                type="button"
-                onClick={() => {
-                  setBoard(option);
-                  setOffset(0);
-                }}
-                className={`h-9 rounded-md border px-3 text-sm ${
-                  board === option ? "border-amber bg-amber text-white" : "border-line bg-white text-ink hover:border-amber"
+                onClick={() => { setBoard(option); setOffset(0); }}
+                className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all ${
+                  board === option ? "bg-indigo-50 text-indigo-700 border border-indigo-100" : "text-slate-400 hover:text-slate-600"
                 }`}
               >
                 {boardLabel(option)}
               </button>
             ))}
           </div>
-        ) : null}
-      </section>
+        )}
+      </motion.section>
 
-      <section className="panel p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 text-sm font-semibold"><Filter size={16} />筛选</div>
-          <select className="h-10 rounded-md border border-line bg-white px-3 text-sm" value={assetType} onChange={(event) => { setAssetType(event.target.value); setOffset(0); }}>
-            <option value="all">全部类型</option>
-            <option value="equity">股票</option>
-            <option value="etf">ETF</option>
-          </select>
-          <input
-            className="h-10 w-56 rounded-md border border-line bg-white px-3 text-sm"
-            placeholder="代码或名称"
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setOffset(0);
-            }}
-          />
-          <div className="label ml-auto">共 {payload?.total ?? 0} 条，当前 {payload?.offset ?? 0} - {Math.min((payload?.offset ?? 0) + (payload?.rows.length ?? 0), payload?.total ?? 0)}</div>
-        </div>
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr]">
-        <div className="panel overflow-hidden">
-          <div className="border-b border-line p-5">
-            <h2 className="text-lg font-semibold">证券列表</h2>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1120px] text-left text-sm">
-              <thead className="bg-slate-50 text-slate-500">
-                <tr>
-                  <th className="px-4 py-3">代码</th>
-                  <th className="px-4 py-3">市场</th>
-                  <th className="px-4 py-3">类型</th>
-                  <th className="px-4 py-3">行业</th>
-                  <th className="px-4 py-3 text-right">市值</th>
-                  <th className="px-4 py-3">状态</th>
-                  <th className="px-4 py-3">K线</th>
-                  <th className="px-4 py-3">数据源</th>
+      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+        <motion.section variants={itemVariants} className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+          <div className="overflow-x-auto flex-1">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-100/50">
+                  <th className="pl-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-500">INSTRUMENT</th>
+                  <th className="py-5 text-[10px] font-black uppercase tracking-widest text-slate-500">CLASSIFICATION</th>
+                  <th className="py-5 text-[10px] font-black uppercase tracking-widest text-slate-500 text-right">MARKET CAP</th>
+                  <th className="py-5 text-[10px] font-black uppercase tracking-widest text-slate-500">DATA SYNC</th>
+                  <th className="pr-8 py-5 text-[10px] font-black uppercase tracking-widest text-slate-500 text-right">ACTION</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-slate-100">
                 {(payload?.rows ?? []).map((row) => (
-                  <tr key={`${row.market}-${row.code}`} className="border-t border-line">
-                    <td className="px-4 py-3 font-medium">
-                      <Link href={`/stocks/${encodeURIComponent(row.code)}?from=/universe`} className="hover:text-mint">
-                        {row.name}
-                      </Link>
-                      <div className="label">{row.code}</div>
+                  <tr key={`${row.market}-${row.code}`} className="hover:bg-indigo-50/30 even:bg-slate-50/50 transition-all group">
+                    <td className="pl-8 py-5">
+                      <div className="flex items-center gap-3">
+                         <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-[10px] font-black text-slate-400">
+                           {row.market}
+                         </div>
+                         <div>
+                            <div className="font-black text-slate-900 tracking-tight group-hover:text-indigo-600 transition-colors">{row.name}</div>
+                            <div className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-tighter">{row.code}</div>
+                         </div>
+                      </div>
                     </td>
-                    <td className="px-4 py-3">{marketLabel(row.market)}<div className="label">{boardLabel(row.board)} / {row.exchange}</div></td>
-                    <td className="px-4 py-3">{row.asset_type}<div className="label">{row.currency}{row.is_etf ? " / ETF" : ""}{row.is_adr ? " / ADR" : ""}</div></td>
-                    <td className="px-4 py-3">{row.industry_level1}<div className="label">{row.industry_level2 || "-"}</div></td>
-                    <td className="mono px-4 py-3 text-right">{row.market_cap.toFixed(1)}</td>
-                    <td className="px-4 py-3">{row.listing_status}<div className="label">{row.is_active ? "active" : "inactive"}{row.is_st ? " / ST" : ""}</div></td>
-                    <td className="px-4 py-3">
-                      <Link href={`/stocks/${encodeURIComponent(row.code)}?from=/universe`} className="text-mint">查看</Link>
-                      <div className="label">{row.bars_count} 根 / {row.latest_trade_date ?? "未下载"}</div>
+                    <td className="py-5">
+                      <div className="space-y-1">
+                         <div className="text-xs font-bold text-slate-600">{row.industry_level1}</div>
+                         <div className="flex items-center gap-1.5">
+                            <span className="text-[9px] font-black uppercase tracking-tighter text-slate-400 px-1.5 py-0.5 bg-slate-100 rounded-md">
+                              {row.asset_type}
+                            </span>
+                            {row.is_etf && <span className="text-[9px] font-black uppercase tracking-tighter text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-md">ETF</span>}
+                         </div>
+                      </div>
                     </td>
-                    <td className="px-4 py-3">{row.data_vendor}<div className="label">{row.source}</div></td>
+                    <td className="py-5 text-right font-mono text-sm font-black text-slate-700">
+                      {row.market_cap.toFixed(1)}
+                    </td>
+                    <td className="py-5">
+                       <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-2">
+                             <div className={`w-1.5 h-1.5 rounded-full ${row.bars_count > 0 ? 'bg-emerald-500' : 'bg-slate-200'}`} />
+                             <span className="text-[10px] font-bold text-slate-600">{row.bars_count} BARS</span>
+                          </div>
+                          <div className="text-[9px] font-bold text-slate-400">{row.latest_trade_date || "NO DATA"}</div>
+                       </div>
+                    </td>
+                    <td className="pr-8 py-5 text-right">
+                       <Link href={`/stocks/${encodeURIComponent(row.code)}?from=/universe`} className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-indigo-600 transition-colors">
+                         TERMINAL <ChevronRight size={12} />
+                       </Link>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div className="flex items-center justify-between border-t border-line p-4">
-            <button type="button" disabled={offset <= 0} onClick={() => setOffset(Math.max(0, offset - limit))} className="rounded-md border border-line px-3 py-2 text-sm disabled:opacity-40">上一页</button>
-            <button type="button" disabled={offset + limit >= (payload?.total ?? 0)} onClick={() => setOffset(offset + limit)} className="rounded-md border border-line px-3 py-2 text-sm disabled:opacity-40">下一页</button>
+          <div className="p-4 bg-slate-50/50 border-t border-slate-100 flex items-center justify-between">
+            <button 
+              disabled={offset <= 0} 
+              onClick={() => setOffset(Math.max(0, offset - limit))} 
+              className="px-6 py-2 rounded-xl bg-white border border-slate-200 text-xs font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 disabled:opacity-30 transition-all shadow-sm"
+            >
+              PREVIOUS
+            </button>
+            <button 
+              disabled={offset + limit >= (payload?.total ?? 0)} 
+              onClick={() => setOffset(offset + limit)} 
+              className="px-6 py-2 rounded-xl bg-white border border-slate-200 text-xs font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 disabled:opacity-30 transition-all shadow-sm"
+            >
+              NEXT
+            </button>
           </div>
-        </div>
+        </motion.section>
 
-        <div className="space-y-4">
-          <section className="panel p-5">
-          <div className="mb-4 flex items-center gap-2 text-lg font-semibold"><PlayCircle size={18} />全市场接入计划</div>
-            <div className="mb-4 flex flex-wrap gap-2">
-              <button type="button" onClick={() => queueBatch(market === "ALL" ? "A" : market)} disabled={Boolean(action)} className="rounded-md bg-mint px-3 py-2 text-sm text-white disabled:opacity-50">创建下一批</button>
-              <button type="button" onClick={queueBackfill} disabled={Boolean(action)} className="rounded-md border border-line px-3 py-2 text-sm hover:border-mint disabled:opacity-50">批量入队</button>
-              <button type="button" onClick={runNext} disabled={Boolean(action)} className="rounded-md border border-line px-3 py-2 text-sm hover:border-mint disabled:opacity-50">运行最高优先级</button>
-              <button type="button" onClick={runQueue} disabled={Boolean(action)} className="rounded-md border border-line px-3 py-2 text-sm hover:border-mint disabled:opacity-50">连续运行3个</button>
-              {action ? <span className="self-center text-sm text-slate-600">{action}</span> : null}
+        <motion.aside variants={itemVariants} className="space-y-6">
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
+            <div className="flex items-center gap-3 mb-6">
+               <div className="w-10 h-10 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-lg shadow-indigo-100">
+                 <PlayCircle size={20} />
+               </div>
+               <div>
+                 <h2 className="text-lg font-black text-slate-900 tracking-tight">接入控制中心</h2>
+                 <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">INGESTION PIPELINE</div>
+               </div>
             </div>
-            {queueMessage ? <div className="mb-4 rounded-md border border-line bg-slate-50 p-3 text-sm text-slate-700">{queueMessage}</div> : null}
+
+            <div className="grid grid-cols-2 gap-2 mb-6">
+               <ActionButton icon={<Layers size={14} />} label="创建批次" onClick={() => queueBatch(market === "ALL" ? "A" : market)} loading={action === "创建中..."} />
+               <ActionButton icon={<Database size={14} />} label="批量入队" onClick={queueBackfill} loading={action === "批量入队中..."} />
+               <ActionButton icon={<Activity size={14} />} label="最高优先" onClick={runNext} loading={action === "运行中..."} />
+               <ActionButton icon={<RefreshCw size={14} />} label="连跑3个" onClick={() => api.runIngestionQueue(3).then(() => setRefreshKey(v => v+1))} />
+            </div>
+
+            {queueMessage && (
+              <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-2xl text-xs font-bold text-indigo-700 animate-in fade-in slide-in-from-top-2">
+                {queueMessage}
+              </div>
+            )}
+
             <div className="space-y-3">
               {(plan?.markets ?? []).map((item) => (
-                <div key={item.market} className="rounded-md border border-line bg-slate-50 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="font-medium">{marketLabel(item.market)}</div>
-                    <div className="mono text-sm">{item.stocks_with_bars}/{item.stock_count}</div>
+                <div key={item.market} className="bg-slate-50 rounded-2xl p-4 border border-slate-100 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 h-full w-1 bg-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">{marketLabel(item.market)}</span>
+                    <span className="text-xs font-black font-mono text-slate-900">{Math.round(item.coverage_ratio * 100)}%</span>
                   </div>
-                  <div className="label mt-1">覆盖 {Math.round(item.coverage_ratio * 100)}%，下一批 {item.next_batch_size}，offset {item.next_batch_offset}</div>
+                  <div className="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden mb-3">
+                     <div className="h-full bg-indigo-600 rounded-full" style={{ width: `${item.coverage_ratio * 100}%` }} />
+                  </div>
+                  <div className="flex justify-between text-[10px] font-bold text-slate-500 font-mono">
+                    <span>{item.stocks_with_bars} / {item.stock_count}</span>
+                    <span className="text-indigo-600">OFFSET: {item.next_batch_offset}</span>
+                  </div>
                 </div>
               ))}
-            </div>
-            <div className="mt-4 space-y-2">
-              {(plan?.discovery_commands ?? []).slice(0, 3).map((command) => <Command key={command} value={command} />)}
-              {(plan?.recommended_commands ?? []).slice(0, 3).map((command) => <Command key={command} value={command} />)}
             </div>
           </section>
 
-          <section className="panel p-5">
-            <div className="mb-4 flex items-center gap-2 text-lg font-semibold"><PlayCircle size={18} />行情任务中心</div>
-            <div className="space-y-2">
-              {tasks.slice(0, 8).map((task) => (
-                <div key={task.task_key} className="rounded-md border border-line bg-slate-50 p-3 text-sm">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-medium">{task.task_type} / {task.market}{task.stock_code ? ` / ${task.stock_code}` : ""}</div>
-                    <span className={`rounded-md px-2 py-1 text-xs ${task.status === "success" ? "bg-mint text-white" : task.status === "failed" ? "bg-red-100 text-red-700" : task.status === "running" ? "bg-amber text-white" : "bg-white text-slate-600"}`}>{task.status}</span>
-                  </div>
-                  <div className="label mt-1">source {task.source} / requested {task.requested} / processed {task.processed} / failed {task.failed} / retry {task.retry_count}</div>
-                  {task.error ? <div className="mt-2 text-xs text-rose">{task.error}</div> : null}
-                  {task.status !== "running" && task.status !== "success" ? (
-                    <button type="button" onClick={() => api.runIngestionTask(task.id).then(() => setRefreshKey((value) => value + 1)).catch((err: Error) => setError(`运行任务失败：${err.message}`))} className="mt-2 rounded-md border border-line px-2 py-1 text-xs hover:border-mint">运行</button>
-                  ) : null}
-                </div>
-              ))}
-              {tasks.length === 0 ? <div className="text-sm text-slate-600">暂无任务，先创建下一批。</div> : null}
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
+            <h2 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-6 border-b border-slate-100 pb-3">
+              优先级补齐候选
+            </h2>
+            <div className="space-y-4">
+               {(priority?.candidates ?? []).slice(0, 5).map((row) => (
+                 <div key={row.code} className="flex items-center justify-between group">
+                    <div className="flex flex-col">
+                       <Link href={`/stocks/${encodeURIComponent(row.code)}?from=/universe`} className="text-xs font-black text-slate-700 hover:text-indigo-600 transition-colors">
+                         {row.name}
+                       </Link>
+                       <span className="text-[10px] font-bold text-slate-400 font-mono">{row.code}</span>
+                    </div>
+                    <div className="text-right">
+                       <div className="text-xs font-black font-mono text-slate-900">{row.priority_score.toFixed(1)}</div>
+                       <div className="text-[9px] font-bold text-slate-400">MISS {row.missing_bars}</div>
+                    </div>
+                 </div>
+               ))}
             </div>
           </section>
 
-          <section className="panel p-5">
-            <div className="mb-4 text-lg font-semibold">优先补齐候选</div>
-            <div className="space-y-2">
-              {(priority?.candidates ?? []).slice(0, 8).map((row) => (
-                <div key={row.code} className="flex items-center justify-between gap-3 rounded-md border border-line bg-slate-50 p-3 text-sm">
-                  <div>
-                    <Link href={`/stocks/${encodeURIComponent(row.code)}?from=/universe`} className="font-medium hover:text-mint">{row.name}<span className="label ml-2">{row.code}</span></Link>
-                    <div className="label">{boardLabel(row.board)} / 已有 {row.bars_count} 根 / 缺 {row.missing_bars} 根</div>
+          <section className="bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-800 text-slate-300">
+             <div className="flex items-center gap-2 mb-6">
+                <AlertCircle size={16} className="text-indigo-400" />
+                <span className="text-xs font-black uppercase tracking-widest text-white">Active Tasks</span>
+             </div>
+             <div className="space-y-3">
+                {tasks.slice(0, 5).map((task) => (
+                  <div key={task.task_key} className="bg-slate-800/50 border border-slate-700 rounded-xl p-3">
+                     <div className="flex justify-between items-center mb-1">
+                        <span className="text-[9px] font-black text-indigo-300 uppercase">{task.market} / {task.task_type}</span>
+                        <span className={`text-[8px] font-black px-1.5 py-0.5 rounded-md ${
+                          task.status === "success" ? "bg-emerald-500/20 text-emerald-400" : 
+                          task.status === "running" ? "bg-indigo-500/20 text-indigo-400 animate-pulse" : 
+                          "bg-slate-700 text-slate-400"
+                        }`}>
+                          {task.status.toUpperCase()}
+                        </span>
+                     </div>
+                     <div className="text-[10px] font-mono text-slate-400">
+                        REQ:{task.requested} PROC:{task.processed} FAIL:{task.failed}
+                     </div>
                   </div>
-                  <div className="mono text-right text-xs">{row.priority_score.toFixed(1)}</div>
-                </div>
-              ))}
-              {(priority?.candidates ?? []).length === 0 ? <div className="text-sm text-slate-600">当前筛选范围没有待补齐候选。</div> : null}
-            </div>
+                ))}
+             </div>
           </section>
+        </motion.aside>
+      </div>
+    </motion.div>
+  );
+}
 
-          <section className="panel p-5">
-            <div className="mb-4 flex items-center gap-2 text-lg font-semibold"><Database size={18} />最近批次</div>
-            <div className="space-y-2">
-              {batches.slice(0, 8).map((batch) => (
-                <div key={batch.batch_key} className="rounded-md border border-line bg-slate-50 p-3 text-sm">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-medium">{batch.job_name} / {batch.market}</div>
-                    <span className={`rounded-md px-2 py-1 text-xs ${batch.status === "success" ? "bg-mint text-white" : batch.status === "failed" ? "bg-red-100 text-red-700" : "bg-amber text-white"}`}>{batch.status}</span>
-                  </div>
-                  <div className="label mt-1">offset {batch.offset} / requested {batch.requested} / processed {batch.processed} / failed {batch.failed}</div>
-                </div>
-              ))}
-              {batches.length === 0 ? <div className="text-sm text-slate-600">暂无批次记录。</div> : null}
-            </div>
-          </section>
-        </div>
-      </section>
+function StatCard({ label, value, unit = "", highlight = false }: { label: string; value: number | string; unit?: string; highlight?: boolean }) {
+  return (
+    <div className={`px-6 py-3 rounded-2xl border ${highlight ? 'bg-indigo-600 border-indigo-500 shadow-lg shadow-indigo-100' : 'bg-slate-50 border-slate-100'}`}>
+      <div className={`text-[9px] font-black uppercase tracking-widest mb-0.5 ${highlight ? 'text-indigo-200' : 'text-slate-400'}`}>{label}</div>
+      <div className={`text-2xl font-black font-mono tracking-tight ${highlight ? 'text-white' : 'text-slate-900'}`}>
+        {value}{unit && <span className="text-sm ml-0.5 opacity-60 font-bold">{unit}</span>}
+      </div>
     </div>
   );
 }
 
-function Command({ value }: { value: string }) {
+function ActionButton({ icon, label, onClick, loading = false }: { icon: React.ReactNode; label: string; onClick: () => void; loading?: boolean }) {
   return (
-    <div className="overflow-x-auto rounded-md border border-line bg-slate-950 px-3 py-2 text-xs text-slate-100">
-      <code>{value}</code>
-    </div>
+    <button
+      onClick={onClick}
+      disabled={loading}
+      className="flex flex-col items-center justify-center gap-2 p-3 bg-slate-50 border border-slate-100 rounded-2xl hover:bg-white hover:border-indigo-100 hover:shadow-sm transition-all group disabled:opacity-50"
+    >
+       <div className="text-slate-400 group-hover:text-indigo-600 transition-colors">
+         {loading ? <RefreshCw size={14} className="animate-spin" /> : icon}
+       </div>
+       <span className="text-[10px] font-black uppercase tracking-tighter text-slate-500 group-hover:text-slate-900">{label}</span>
+    </button>
   );
 }

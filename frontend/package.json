@@ -6,15 +6,19 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "clsx": "^2.1.1",
     "echarts": "^5.5.1",
+    "framer-motion": "^12.38.0",
     "lightweight-charts": "^4.2.3",
     "lucide-react": "^0.475.0",
     "next": "^16.2.5",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.6",

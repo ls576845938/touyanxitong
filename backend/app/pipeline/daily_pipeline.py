@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from app.db.session import SessionLocal, init_db
+from app.pipeline.backtest_job import run_signal_backtest_job
 from app.pipeline.daily_report_job import run_daily_report_job
 from app.pipeline.evidence_chain_job import run_evidence_chain_job
 from app.pipeline.industry_heat_job import run_industry_heat_job
@@ -12,6 +13,7 @@ from app.pipeline.news_ingestion_job import run_news_ingestion_job
 from app.pipeline.sector_industry_mapping_job import run_sector_industry_mapping_job
 from app.pipeline.stock_universe_job import run_stock_universe_job
 from app.pipeline.tenbagger_score_job import run_tenbagger_score_job
+from app.pipeline.tenbagger_thesis_job import run_tenbagger_thesis_job
 from app.pipeline.trend_signal_job import run_trend_signal_job
 
 
@@ -45,5 +47,7 @@ def run_daily_pipeline(
         results["trend_signal"] = run_trend_signal_job(session, trade_date=target_date)
         results["tenbagger_score"] = run_tenbagger_score_job(session, trade_date=target_date)
         results["evidence_chain"] = run_evidence_chain_job(session, trade_date=target_date)
+        results["tenbagger_thesis"] = run_tenbagger_thesis_job(session, trade_date=target_date)
+        results["signal_backtest"] = run_signal_backtest_job(session, as_of_date=target_date)
         results["daily_report"] = run_daily_report_job(session, report_date=target_date)
     return results

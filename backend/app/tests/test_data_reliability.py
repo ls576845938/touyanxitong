@@ -50,6 +50,49 @@ def test_schema_migrations_are_versioned_and_add_legacy_columns(tmp_path) -> Non
         connection.execute(text("CREATE TABLE data_ingestion_task (id INTEGER PRIMARY KEY)"))
         connection.execute(text("CREATE TABLE daily_bar (id INTEGER PRIMARY KEY, source VARCHAR(64))"))
         connection.execute(text("CREATE TABLE data_source_run (id INTEGER PRIMARY KEY, requested_source VARCHAR(64), effective_source VARCHAR(64))"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE news_article (
+                    id INTEGER PRIMARY KEY,
+                    title TEXT,
+                    content TEXT DEFAULT '',
+                    summary TEXT DEFAULT '',
+                    source VARCHAR(64) DEFAULT 'mock',
+                    source_url TEXT DEFAULT '',
+                    published_at DATETIME,
+                    ingested_at DATETIME,
+                    matched_keywords TEXT DEFAULT '[]',
+                    related_industries TEXT DEFAULT '[]',
+                    related_stocks TEXT DEFAULT '[]'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO news_article (
+                    id, title, source, source_url, published_at, ingested_at, matched_keywords, related_industries, related_stocks
+                ) VALUES (
+                    1, 'legacy hot term article', 'reddit', 'https://example.com/legacy', '2026-05-08 00:00:00',
+                    '2026-05-08 00:00:00', '[]', '[]', '[]'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO news_article (
+                    id, title, source, source_url, published_at, ingested_at, matched_keywords, related_industries, related_stocks
+                ) VALUES (
+                    2, 'legacy mock article', 'mock', 'mock://legacy/2', '2026-05-08 00:00:00',
+                    '2026-05-08 00:00:00', '[]', '[]', '[]'
+                )
+                """
+            )
+        )
 
     run_schema_migrations(engine)
 
@@ -62,12 +105,33 @@ def test_schema_migrations_are_versioned_and_add_legacy_columns(tmp_path) -> Non
 
     bar_columns = {column["name"] for column in inspector.get_columns("daily_bar")} if inspector.has_table("daily_bar") else set()
     run_columns = {column["name"] for column in inspector.get_columns("data_source_run")} if inspector.has_table("data_source_run") else set()
+    article_columns = {column["name"] for column in inspector.get_columns("news_article")} if inspector.has_table("news_article") else set()
+    with engine.connect() as connection:
+        article_row = connection.execute(
+            text(
+                """
+                SELECT source_channel, source_label, source_rank, match_reason, is_synthetic
+                FROM news_article
+                WHERE id = 1
+                """
+            )
+        ).mappings().one()
+        mock_article_row = connection.execute(
+            text("SELECT is_synthetic FROM news_article WHERE id = 2")
+        ).mappings().one()
 
     assert {"market", "board", "asset_type", "currency", "is_etf", "metadata_json"}.issubset(stock_columns)
     assert {"raw_score", "data_confidence", "confidence_level", "confidence_reasons"}.issubset(score_columns)
     assert {"worker_id", "heartbeat_at", "lease_expires_at", "progress", "last_error", "last_stock"}.issubset(task_columns)
     assert {"source_kind", "source_confidence"}.issubset(bar_columns)
     assert {"source_kind", "source_confidence"}.issubset(run_columns)
+    assert {"source_channel", "source_label", "source_rank", "match_reason", "is_synthetic"}.issubset(article_columns)
+    assert article_row["source_channel"] == ""
+    assert article_row["source_label"] == "reddit"
+    assert article_row["source_rank"] == 0
+    assert article_row["match_reason"] == '{"primary":"none","keyword":[],"industry":[],"alias":[],"unmatched":["none"]}'
+    assert article_row["is_synthetic"] in {0, False}
+    assert mock_article_row["is_synthetic"] in {1, True}
     assert get_schema_version(engine) == SCHEMA_VERSION
     assert [row.version for row in migration_rows] == list(range(1, SCHEMA_VERSION + 1))
 

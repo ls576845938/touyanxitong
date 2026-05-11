@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, time
 
 from loguru import logger
 from sqlalchemy import delete, select
@@ -28,7 +28,7 @@ def run_tenbagger_score_job(session: Session, trade_date: date | None = None) ->
     industry_name_by_id = {item.id: item.name for item in industries}
     heats = session.scalars(select(IndustryHeat).where(IndustryHeat.trade_date == target_date)).all()
     heat_by_industry_name = {industry_name_by_id.get(item.industry_id, ""): item for item in heats}
-    articles = session.scalars(select(NewsArticle)).all()
+    articles = session.scalars(select(NewsArticle).where(NewsArticle.published_at <= _end_of_day(target_date))).all()
     articles_by_stock: dict[str, list[NewsArticle]] = defaultdict(list)
     for article in articles:
         for code in json_list(article.related_stocks):
@@ -60,3 +60,7 @@ def run_tenbagger_score_job(session: Session, trade_date: date | None = None) ->
     session.commit()
     logger.info("tenbagger early signal scores calculated: {}", len(metrics))
     return {"stock_scores": len(metrics)}
+
+
+def _end_of_day(value: date) -> datetime:
+    return datetime.combine(value, time.max)

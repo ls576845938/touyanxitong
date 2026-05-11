@@ -36,6 +36,18 @@ def test_get_news_client_auto_uses_free_google_news_rss(monkeypatch) -> None:
     assert client.source_kind == "rss"
 
 
+def test_normalize_news_article_marks_mock_and_fallback_as_synthetic() -> None:
+    mock_row = news_client.normalize_news_article({"source": "mock", "source_url": "mock://news/1"})
+    fallback_row = news_client.normalize_news_article(
+        {"source": "tencent+mock_fallback", "source_url": "https://example.test/news"}
+    )
+    real_row = news_client.normalize_news_article({"source": "google_news_rss", "source_url": "https://example.test/news"})
+
+    assert mock_row["is_synthetic"] is True
+    assert fallback_row["is_synthetic"] is True
+    assert real_row["is_synthetic"] is False
+
+
 def test_google_news_feeds_cover_industry_names_and_keywords() -> None:
     feeds = news_client._google_news_feeds()
     joined_context = " ".join(feed.query_context for feed in feeds)

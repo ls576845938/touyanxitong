@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
   ArrowRight,
@@ -14,8 +15,12 @@ import {
   Globe2,
   Layers3,
   Search,
-  TrendingUp
+  TrendingUp,
+  LayoutDashboard,
+  Filter,
+  MonitorPlay
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { ErrorState } from "@/components/ErrorState";
 import { IndustryChainMap } from "@/components/IndustryChainMap";
 import { IndustryGraphMap } from "@/components/IndustryGraphMap";
@@ -27,21 +32,15 @@ import { WorldIndustryHeatMap } from "@/components/WorldIndustryHeatMap";
 import { api, type ChainLayer, type ChainMappedIndustry, type ChainNode, type ChainNodeDetail, type ChainTimelinePoint } from "@/lib/api";
 import { MARKET_OPTIONS, marketLabel } from "@/lib/markets";
 
-type LayerOption = {
-  key: string;
-  label: string;
-  count?: number | null;
-};
-
 type ViewMode = "universe" | "metro" | "graph" | "focus" | "heatmap" | "geo";
 
-const VIEW_OPTIONS: { key: ViewMode; label: string; icon: typeof Layers3 }[] = [
-  { key: "universe", label: "宇宙总览", icon: Flame },
+const VIEW_OPTIONS: { key: ViewMode; label: string; icon: any }[] = [
+  { key: "universe", label: "宇宙总览", icon: LayoutDashboard },
   { key: "metro", label: "地铁主图", icon: Activity },
   { key: "graph", label: "球面关系", icon: Layers3 },
-  { key: "focus", label: "聚焦链路", icon: Activity },
-  { key: "heatmap", label: "平面总谱", icon: Boxes },
-  { key: "geo", label: "世界分布", icon: Globe2 }
+  { key: "focus", label: "聚焦链路", icon: MonitorPlay },
+  { key: "heatmap", label: "平面谱系", icon: Boxes },
+  { key: "geo", label: "地理分布", icon: Globe2 }
 ];
 
 export default function IndustryChainPage() {
@@ -74,10 +73,6 @@ export default function IndustryChainPage() {
     let cancelled = false;
     setLoading(true);
     setError("");
-    setDetail(null);
-    setGeo(null);
-    setTimeline(null);
-
     api.chainOverview({ market })
       .then((payload) => {
         if (cancelled) return;
@@ -93,10 +88,7 @@ export default function IndustryChainPage() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [market]);
 
   useEffect(() => {
@@ -104,7 +96,6 @@ export default function IndustryChainPage() {
     let cancelled = false;
     setFocusLoading(true);
     setFocusError("");
-
     Promise.all([
       api.chainNode(focusNodeKey, { market }),
       api.chainGeo({ nodeKey: focusNodeKey, market }),
@@ -122,10 +113,7 @@ export default function IndustryChainPage() {
       .finally(() => {
         if (!cancelled) setFocusLoading(false);
       });
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [focusNodeKey, market]);
 
   const layerOptions = useMemo(() => normalizeLayers(overview?.layers ?? [], overview?.nodes ?? []), [overview]);
@@ -142,380 +130,367 @@ export default function IndustryChainPage() {
     const lowered = query.trim().toLowerCase();
     return nodes
       .filter((node) => activeLayer === "all" || normalizeLayerKey(node.layer) === activeLayer)
-      .filter((node) => {
-        if (!lowered) return true;
-        return [
-          node.name,
-          node.node_key,
-          ...(node.industry_names ?? []),
-          ...(node.tags ?? [])
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(lowered);
-      })
+      .filter((node) => !lowered || [node.name, node.node_key, ...(node.industry_names ?? []), ...(node.tags ?? [])].join(" ").toLowerCase().includes(lowered))
       .sort((left, right) => nodeHeat(right) - nodeHeat(left));
   }, [activeLayer, overview, query]);
-  const quickNodes = visibleNodes.slice(0, 14);
-  const showNodePicker = viewMode !== "universe" && viewMode !== "metro";
-  const mappedIndustries = (currentDetail?.mapped_industries ?? []).slice(0, 8);
-  const leaderStocks = (currentDetail?.leader_stocks ?? []).slice(0, 8);
-  const indicators = (currentDetail?.indicators?.length ? currentDetail.indicators : selectedNode?.indicators) ?? [];
-  const downstreamChainCount = useMemo(() => {
-    return countDownstreamNodes(overview?.edges ?? [], selectedNodeKey);
-  }, [overview, selectedNodeKey]);
-  const stats = useMemo(() => {
-    return {
-      snapshot: String(overview?.summary?.snapshot_date ?? "--"),
-      upstream: currentDetail?.upstream.length ?? 0,
-      downstream: downstreamChainCount,
-      regions: currentGeo?.regions.length ?? currentDetail?.regions?.length ?? overview?.regions?.length ?? 0
-    };
-  }, [currentDetail, currentGeo, downstreamChainCount, overview]);
 
-  if (loading) return <div className="page-shell"><LoadingState label="正在加载产业链页面" /></div>;
+  const quickNodes = visibleNodes.slice(0, 16);
+  const showFilters = viewMode !== "universe" && viewMode !== "metro";
+  const stats = useMemo(() => ({
+    snapshot: String(overview?.summary?.snapshot_date ?? "--"),
+    upstream: currentDetail?.upstream.length ?? 0,
+    downstream: countDownstreamNodes(overview?.edges ?? [], selectedNodeKey),
+    regions: currentGeo?.regions.length ?? currentDetail?.regions?.length ?? overview?.regions?.length ?? 0
+  }), [currentDetail, currentGeo, overview, selectedNodeKey]);
+
+  if (loading) return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><LoadingState label="正在初始化全球产业链实时热力引擎" /></div>;
   if (error) return <div className="page-shell"><ErrorState message={error} /></div>;
 
   return (
-    <div className="page-shell space-y-5">
-      <section className="rounded-lg border border-[#f2dfd2] bg-white p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+    <main className="min-h-screen bg-slate-50 text-slate-900 selection:bg-indigo-100 p-6 space-y-6">
+      {/* Top Navigation Bar */}
+      <header className="flex flex-wrap items-center justify-between gap-6 bg-white border border-slate-200 rounded-2xl px-8 py-5 shadow-sm">
+        <div className="flex items-center gap-6">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-xl shadow-slate-200">
+            <Activity size={28} />
+          </div>
           <div>
-            <div className="label">Industry Chain</div>
-            <h1 className="mt-2 text-2xl font-semibold text-slate-950">产业链热力地图</h1>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link href="/industry" className="inline-flex h-10 items-center gap-2 rounded-md border border-[#f2dfd2] px-3 text-sm hover:border-orange-300">
-              <Layers3 size={16} />
-              产业雷达
-            </Link>
-            <Link href="/industry/review" className="inline-flex h-10 items-center gap-2 rounded-md border border-[#f2dfd2] px-3 text-sm hover:border-orange-300">
-              <CalendarRange size={16} />
-              赛道复盘
-            </Link>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">Global Market Intelligence</div>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">产业链热力地图</h1>
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap items-center gap-2">
-          {MARKET_OPTIONS.map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => setMarket(option)}
-              className={`inline-flex h-10 items-center rounded-md border px-3 text-sm transition ${
-                market === option ? "border-orange-500 bg-orange-500 text-white" : "border-[#f2dfd2] bg-white hover:border-orange-300"
-              }`}
-            >
-              {marketLabel(option)}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {VIEW_OPTIONS.map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setViewMode(key)}
-              className={`inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm transition ${
-                viewMode === key ? "border-orange-500 bg-orange-50 text-orange-700" : "border-[#f2dfd2] bg-white text-slate-600 hover:border-orange-300"
-              }`}
-            >
-              <Icon size={16} />
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {showNodePicker ? (
-        <div className="mt-5 grid gap-4 xl:grid-cols-[1fr_320px]">
-          <div className="space-y-4">
-            <div className="relative">
-              <Search size={16} className="pointer-events-none absolute left-3 top-3 text-slate-400" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索产业节点"
-                className="h-11 w-full rounded-md border border-[#f2dfd2] bg-white pl-9 pr-3 text-sm outline-none focus:border-orange-400"
-              />
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              {layerOptions.map((layer) => (
-                <button
-                  key={layer.key}
-                  type="button"
-                  onClick={() => setActiveLayer(layer.key)}
-                  className={`inline-flex h-9 items-center rounded-md border px-3 text-sm transition ${
-                    activeLayer === layer.key ? "border-orange-500 bg-orange-50 text-orange-700" : "border-[#f2dfd2] bg-white text-slate-600 hover:border-orange-300"
-                  }`}
-                >
-                  {layer.label}
-                  {typeof layer.count === "number" ? <span className="ml-2 text-xs text-slate-400">{layer.count}</span> : null}
-                </button>
-              ))}
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              {quickNodes.map((node) => {
-                const active = node.node_key === selectedNodeKey;
-                const intensity = normalizeIntensity(node);
-                return (
-                  <button
-                    key={node.node_key}
-                    type="button"
-                    onClick={() => selectNode(node.node_key, "metro")}
-                    aria-pressed={active}
-                    className={`rounded-lg border p-3 text-left transition ${
-                      active ? "border-orange-500 bg-orange-50/80 shadow-[0_0_0_2px_rgba(249,115,22,0.12)]" : "border-[#f2dfd2] bg-white hover:border-orange-300 hover:bg-[#fffaf5]"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-semibold text-slate-900">{node.name}</div>
-                        <div className="mt-1 text-xs text-slate-500">{node.layer}</div>
-                      </div>
-                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: warmColor(intensity) }} />
-                    </div>
-                    <div className="mono mt-3 text-sm font-semibold" style={{ color: warmColor(intensity) }}>
-                      {nodeHeat(node).toFixed(1)}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+            {MARKET_OPTIONS.map((option) => (
+              <button
+                key={option}
+                onClick={() => setMarket(option)}
+                className={cn(
+                  "px-4 py-2 rounded-lg text-xs font-bold transition-all",
+                  market === option ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"
+                )}
+              >
+                {marketLabel(option)}
+              </button>
+            ))}
           </div>
-
-          <div className="rounded-lg border border-[#f2dfd2] bg-[#fffaf5] p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <Flame size={16} className="text-orange-600" />
-              焦点摘要
-            </div>
-            <div className="mt-3">
-              <div className="text-lg font-semibold text-slate-950">{selectedNode?.name ?? "--"}</div>
-              <div className="mt-1 text-xs text-slate-500">{selectedNode?.layer ?? "--"} / {marketLabel(market)}</div>
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <TopMetric label="快照" value={stats.snapshot} onClick={() => setViewMode("universe")} />
-              <TopMetric label="热度" value={selectedNode ? nodeHeat(selectedNode).toFixed(1) : "--"} onClick={() => setViewMode("universe")} />
-              <TopMetric label="上游" value={stats.upstream} onClick={() => setViewMode("focus")} />
-              <TopMetric label="下游" value={stats.downstream} onClick={() => setViewMode("focus")} />
-            </div>
-          </div>
+          <div className="h-8 w-[1px] bg-slate-200 mx-2" />
+          <Link href="/industry/review" className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:border-indigo-500 hover:text-indigo-600 transition-all shadow-sm">
+            <CalendarRange size={16} />
+            赛道复盘
+          </Link>
         </div>
-        ) : null}
-      </section>
+      </header>
 
-      {showNodePicker ? (
-      <section className="grid gap-3 md:grid-cols-4">
-        <StatCard icon={CalendarRange} label="快照日期" value={stats.snapshot} onClick={() => setViewMode("universe")} />
-        <StatCard icon={Boxes} label="直接上游" value={stats.upstream} onClick={() => setViewMode("focus")} />
-        <StatCard icon={ArrowRight} label="下游链" value={stats.downstream} onClick={() => setViewMode("focus")} />
-        <StatCard icon={Globe2} label="区域触点" value={stats.regions} onClick={() => setViewMode("geo")} />
-      </section>
-      ) : null}
+      {/* Main View Mode Toggles */}
+      <nav className="flex flex-wrap gap-2 overflow-x-auto pb-1 no-scrollbar">
+        {VIEW_OPTIONS.map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setViewMode(key)}
+            className={cn(
+              "flex items-center gap-2.5 px-6 py-3.5 rounded-2xl border font-bold text-sm transition-all whitespace-nowrap active:scale-95 shadow-sm",
+              viewMode === key 
+                ? "bg-slate-900 border-slate-900 text-white shadow-xl shadow-slate-200" 
+                : "bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50"
+            )}
+          >
+            <Icon size={18} />
+            {label}
+          </button>
+        ))}
+      </nav>
 
-      {viewMode === "universe" ? (
-        <IndustryUniverseOverview
-          nodes={overview?.nodes ?? []}
-          edges={overview?.edges ?? []}
-          selectedNodeKey={selectedNodeKey}
-          onOpenChain={(nodeKey) => selectNode(nodeKey, "metro")}
-        />
-      ) : null}
-
-      {viewMode === "metro" ? (
-        <IndustryMetroSankeyMap
-          nodes={overview?.nodes ?? []}
-          edges={overview?.edges ?? []}
-          selectedNodeKey={selectedNodeKey}
-          onSelect={(nodeKey) => selectNode(nodeKey, "metro")}
-        />
-      ) : null}
-
-      {viewMode === "graph" ? (
-        <IndustryGraphMap
-          nodes={overview?.nodes ?? []}
-          edges={overview?.edges ?? []}
-          selectedNodeKey={selectedNodeKey}
-          activeLayer={activeLayer}
-          query={query}
-          onSelect={(nodeKey) => selectNode(nodeKey, "graph")}
-        />
-      ) : null}
-
-      {viewMode === "heatmap" ? (
-        <IndustryPlaneHeatMap
-          nodes={overview?.nodes ?? []}
-          edges={overview?.edges ?? []}
-          selectedNodeKey={selectedNodeKey}
-          activeLayer={activeLayer}
-          query={query}
-          onSelect={(nodeKey) => selectNode(nodeKey, "focus")}
-        />
-      ) : null}
-
-      {viewMode === "focus" ? (
-      <section className="grid items-start gap-4 xl:grid-cols-[1.5fr_0.74fr]">
-        <div className="overflow-hidden rounded-lg border border-[#f2dfd2] bg-white">
-          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#f7e9de] p-5">
-            <div>
-              <div className="flex items-center gap-2 text-lg font-semibold text-slate-950">
-                <Activity size={18} className="text-orange-600" />
-                {selectedNode?.name ?? "产业节点"}上下游
-              </div>
-              <div className="mt-1 text-xs text-slate-500">{currentDetail?.heat_explanation?.slice(0, 2).join(" / ") || selectedNode?.node_type || "聚焦当前节点上下游"}</div>
-            </div>
-            <HeatBadge intensity={selectedIntensity} />
-          </div>
-          {focusError ? <div className="p-5"><ErrorState message={focusError} /></div> : null}
-          {focusLoading && !currentDetail ? <div className="p-5"><LoadingState label="正在加载节点结构" /></div> : null}
-          {!focusLoading || currentDetail ? (
-            <IndustryChainMap
-              detail={currentDetail}
-              allNodes={overview?.nodes ?? []}
-              allEdges={overview?.edges ?? []}
-              selectedNodeKey={selectedNodeKey}
-              onSelect={(nodeKey) => selectNode(nodeKey, "focus")}
-            />
-          ) : null}
-        </div>
-
-        <aside className="space-y-4">
-          <section className="rounded-lg border border-[#f2dfd2] bg-white p-5">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="label">Node</div>
-                <div className="mt-2 text-xl font-semibold text-slate-950">{selectedNode?.name ?? "--"}</div>
-              </div>
-              <HeatBadge intensity={selectedIntensity} compact />
-            </div>
-
-            {selectedNode?.description ? <div className="mt-4 text-sm leading-6 text-slate-600">{selectedNode.description}</div> : null}
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              {(selectedNode?.tags ?? []).slice(0, 8).map((tag) => (
-                <span key={tag} className="rounded-md border border-[#f2dfd2] px-2 py-1 text-xs text-slate-600">{tag}</span>
-              ))}
-            </div>
-
-            <div className="mt-5 grid grid-cols-2 gap-2 text-sm">
-              <MiniMetric label="热度" value={selectedNode ? nodeHeat(selectedNode).toFixed(1) : "--"} />
-              <MiniMetric label="动量" value={selectedNode?.momentum?.toFixed(1) ?? "--"} />
-              <MiniMetric label="强度" value={selectedNode ? `${Math.round(normalizeIntensity(selectedNode) * 100)}%` : "--"} />
-              <MiniMetric label="股票数" value={selectedNode?.stock_count ?? "--"} />
-            </div>
-          </section>
-
-          <section className="rounded-lg border border-[#f2dfd2] bg-white p-5">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <Layers3 size={16} className="text-orange-600" />
-              映射行业
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {mappedIndustries.length ? mappedIndustries.map((item, index) => (
-                <IndustryTag key={`${normalizeIndustryName(item)}-${index}`} item={item} />
-              )) : <EmptyHint label="暂无映射行业" />}
-            </div>
-          </section>
-
-          <section className="rounded-lg border border-[#f2dfd2] bg-white p-5">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <Building2 size={16} className="text-orange-600" />
-              龙头上市企业
-            </div>
-            <div className="mt-3 space-y-2">
-              {leaderStocks.length ? leaderStocks.map((stock) => (
-                <Link
-                  key={stock.code}
-                  href={stockEvidenceHref(stock.code)}
-                  aria-label={`查看 ${stock.name} 单股证据链`}
-                  className="group block rounded-md border border-[#f2dfd2] bg-white p-3 transition hover:border-orange-300 hover:bg-[#fffaf5]"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="font-medium text-slate-900">{stock.name}</div>
-                      <div className="mt-1 text-xs text-slate-500">{stock.code} / {stock.market || "--"}</div>
-                      <div className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-orange-700">
-                        单股证据链
-                        <ArrowUpRight size={13} className="transition group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
-                      </div>
-                    </div>
-                    <div className="mono text-right text-sm font-semibold text-orange-700">
-                      {formatNumber(stock.final_score)}
-                    </div>
-                  </div>
-                </Link>
-              )) : <EmptyHint label="暂无龙头股票" />}
-            </div>
-          </section>
-
-          <section className="rounded-lg border border-[#f2dfd2] bg-white p-5">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <CircleGauge size={16} className="text-orange-600" />
-              指标
-            </div>
-            <div className="mt-3 space-y-2">
-              {indicators.length ? indicators.slice(0, 8).map((item) => (
-                <div key={item.label} className="flex items-center justify-between rounded-md border border-[#f7e9de] px-3 py-2 text-sm">
-                  <span className="text-slate-500">{item.label}</span>
-                  <span className="mono font-semibold text-slate-900">{formatIndicator(item.value, item.unit)}</span>
+      {/* Filter and Selection Section */}
+      <AnimatePresence mode="wait">
+        {showFilters && (
+          <motion.section 
+            initial={{ opacity: 0, y: -20 }} 
+            animate={{ opacity: 1, y: 0 }} 
+            exit={{ opacity: 0, y: -20 }}
+            className="grid gap-6 xl:grid-cols-[1fr_360px]"
+          >
+            <div className="bg-white border border-slate-200 rounded-3xl p-8 shadow-sm space-y-6">
+              <div className="flex items-center gap-4">
+                <div className="relative flex-1 group">
+                  <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="按名称、行业或标签搜索产业节点..."
+                    className="w-full h-14 pl-12 pr-6 rounded-2xl bg-slate-50 border border-slate-100 focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50/50 outline-none transition-all text-sm font-medium"
+                  />
                 </div>
-              )) : <EmptyHint label="暂无指标" />}
-            </div>
-          </section>
-        </aside>
-      </section>
-      ) : null}
+                <div className="flex flex-wrap gap-2">
+                  {layerOptions.map((layer) => (
+                    <button
+                      key={layer.key}
+                      onClick={() => setActiveLayer(layer.key)}
+                      className={cn(
+                        "h-10 px-5 rounded-xl text-xs font-bold transition-all border",
+                        activeLayer === layer.key 
+                          ? "bg-indigo-50 border-indigo-200 text-indigo-700" 
+                          : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
+                      )}
+                    >
+                      {layer.label}
+                      {layer.count !== undefined && <span className="ml-2 opacity-50">{layer.count}</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-      {viewMode === "geo" ? (
-      <section className="rounded-lg border border-[#f2dfd2] bg-white p-5">
-        <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="grid gap-3 grid-cols-2 md:grid-cols-4 lg:grid-cols-8">
+                {quickNodes.map((node) => {
+                  const active = node.node_key === selectedNodeKey;
+                  const intensity = normalizeIntensity(node);
+                  return (
+                    <button
+                      key={node.node_key}
+                      onClick={() => selectNode(node.node_key, "focus")}
+                      className={cn(
+                        "group relative p-4 rounded-2xl border text-left transition-all hover:shadow-lg active:scale-95",
+                        active 
+                          ? "bg-white border-orange-500 ring-2 ring-orange-100" 
+                          : "bg-slate-50 border-transparent hover:bg-white hover:border-slate-300"
+                      )}
+                    >
+                      <div className="absolute top-3 right-3 h-2 w-2 rounded-full" style={{ backgroundColor: heatColor(intensity) }} />
+                      <div className="text-xs font-black text-slate-900 truncate mb-1">{node.name}</div>
+                      <div className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter truncate">{node.layer}</div>
+                      <div className="mt-3 flex items-baseline gap-1">
+                        <span className="text-xs font-black" style={{ color: heatColor(intensity) }}>{nodeHeat(node).toFixed(1)}</span>
+                        <span className="text-[8px] font-bold text-slate-400 uppercase">HEAT</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200 rounded-3xl p-8 shadow-sm flex flex-col">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                  <Flame size={14} className="text-orange-500" />
+                  Focus Analysis
+                </h3>
+                <HeatBadge intensity={selectedIntensity} compact />
+              </div>
+              <div className="flex-1">
+                <div className="text-2xl font-black text-slate-900 leading-tight mb-2">{selectedNode?.name ?? "Select Node"}</div>
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-6">
+                  {selectedNode?.layer ?? "--"} 
+                  <span className="opacity-30">/</span> 
+                  {marketLabel(market)}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <MetricCard label="快照版本" value={stats.snapshot} />
+                  <MetricCard label="热度强度" value={selectedNode ? nodeHeat(selectedNode).toFixed(1) : "--"} highlighted />
+                  <MetricCard label="上游接入" value={stats.upstream} />
+                  <MetricCard label="下游覆盖" value={stats.downstream} />
+                </div>
+              </div>
+              <button 
+                onClick={() => setViewMode("focus")}
+                className="mt-8 w-full flex items-center justify-center gap-2 h-12 bg-slate-900 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-100"
+              >
+                Launch Deep Dive
+                <ArrowUpRight size={16} />
+              </button>
+            </div>
+          </motion.section>
+        )}
+      </AnimatePresence>
+
+      {/* Main Map Display Area */}
+      <section className="relative">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={viewMode}
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 1.02 }}
+            transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+          >
+            {viewMode === "universe" && (
+              <IndustryUniverseOverview
+                nodes={overview?.nodes ?? []}
+                edges={overview?.edges ?? []}
+                selectedNodeKey={selectedNodeKey}
+                onOpenChain={(nodeKey) => selectNode(nodeKey, "metro")}
+              />
+            )}
+            {viewMode === "metro" && (
+              <IndustryMetroSankeyMap
+                nodes={overview?.nodes ?? []}
+                edges={overview?.edges ?? []}
+                selectedNodeKey={selectedNodeKey}
+                onSelect={(nodeKey) => selectNode(nodeKey, "metro")}
+              />
+            )}
+            {viewMode === "graph" && (
+              <IndustryGraphMap
+                nodes={overview?.nodes ?? []}
+                edges={overview?.edges ?? []}
+                selectedNodeKey={selectedNodeKey}
+                activeLayer={activeLayer}
+                query={query}
+                onSelect={(nodeKey) => selectNode(nodeKey, "graph")}
+              />
+            )}
+            {viewMode === "heatmap" && (
+              <IndustryPlaneHeatMap
+                nodes={overview?.nodes ?? []}
+                edges={overview?.edges ?? []}
+                selectedNodeKey={selectedNodeKey}
+                activeLayer={activeLayer}
+                query={query}
+                onSelect={(nodeKey) => selectNode(nodeKey, "focus")}
+              />
+            )}
+            {viewMode === "geo" && (
+              <div className="bg-white border border-slate-200 rounded-3xl p-8 shadow-sm">
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <h2 className="text-xl font-black text-slate-900">全球产业地理分布</h2>
+                    <p className="text-xs font-bold text-slate-400 uppercase mt-1 tracking-widest">{selectedNode?.name} Supply Chain Nodes</p>
+                  </div>
+                  <HeatBadge intensity={selectedIntensity} />
+                </div>
+                <WorldIndustryHeatMap geo={currentGeo} selectedNode={selectedNode} />
+              </div>
+            )}
+            {viewMode === "focus" && (
+              <div className="grid items-start gap-6 xl:grid-cols-[1fr_400px]">
+                <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-sm">
+                  <div className="flex items-center justify-between px-8 py-6 border-b border-slate-100">
+                    <div>
+                      <h2 className="text-xl font-black text-slate-900 flex items-center gap-3">
+                        <Activity className="text-orange-500" />
+                        {selectedNode?.name ?? "产业节点"} 核心链路
+                      </h2>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase mt-1 tracking-[0.2em]">{currentDetail?.heat_explanation?.slice(0, 2).join(" • ") || "Contextual Linkage Analysis"}</p>
+                    </div>
+                    <HeatBadge intensity={selectedIntensity} />
+                  </div>
+                  <div className="p-2">
+                    <IndustryChainMap
+                      detail={currentDetail}
+                      allNodes={overview?.nodes ?? []}
+                      allEdges={overview?.edges ?? []}
+                      selectedNodeKey={selectedNodeKey}
+                      onSelect={(nodeKey) => selectNode(nodeKey, "focus")}
+                    />
+                  </div>
+                </div>
+
+                <aside className="space-y-6">
+                  <DetailPanel title="节点概览" icon={Building2}>
+                    <div className="text-sm font-medium text-slate-600 leading-relaxed mb-6">{selectedNode?.description || "该节点暂无详细定义描述。"}</div>
+                    <div className="flex flex-wrap gap-2 mb-6">
+                      {(selectedNode?.tags ?? []).map(tag => (
+                        <span key={tag} className="px-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-black text-slate-500 uppercase">{tag}</span>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <SmallMetric label="热度" value={selectedNode ? nodeHeat(selectedNode).toFixed(1) : "--"} color={heatColor(selectedIntensity)} />
+                      <SmallMetric label="动量" value={selectedNode?.momentum?.toFixed(1) ?? "--"} color="#6366f1" />
+                      <SmallMetric label="强度" value={selectedNode ? `${Math.round(selectedIntensity * 100)}%` : "--"} color="#10b981" />
+                      <SmallMetric label="龙头数" value={selectedNode?.stock_count ?? "--"} color="#f59e0b" />
+                    </div>
+                  </DetailPanel>
+
+                  <DetailPanel title="关联龙头" icon={TrendingUp}>
+                    <div className="space-y-2">
+                      {(currentDetail?.leader_stocks ?? []).map((stock) => (
+                        <Link key={stock.code} href={stockEvidenceHref(stock.code)} className="group flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-transparent hover:border-indigo-500 hover:bg-white transition-all shadow-sm">
+                          <div>
+                            <div className="text-xs font-black text-slate-900 group-hover:text-indigo-600 transition-colors">{stock.name}</div>
+                            <div className="text-[9px] font-bold text-slate-400 mt-0.5">{stock.code} • {stock.market}</div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs font-black text-indigo-600">{formatNumber(stock.final_score)}</div>
+                            <ArrowUpRight size={12} className="ml-auto mt-0.5 text-slate-300 group-hover:text-indigo-400 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 transition-all" />
+                          </div>
+                        </Link>
+                      ))}
+                    </div>
+                  </DetailPanel>
+                </aside>
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
+      </section>
+
+      {/* Bottom Timeline Section */}
+      <footer className="bg-white border border-slate-200 rounded-3xl p-8 shadow-sm">
+        <div className="flex items-center justify-between mb-8">
           <div>
-            <div className="flex items-center gap-2 text-lg font-semibold text-slate-950">
-              <Globe2 size={18} className="text-orange-600" />
-              世界产业分布
-            </div>
-            <div className="mt-1 text-xs text-slate-500">{selectedNode?.name ?? "--"} 区域热力与迁移路径</div>
+            <h3 className="text-lg font-black text-slate-900 flex items-center gap-3">
+              <TrendingUp className="text-indigo-600" />
+              热度迁移时间线
+            </h3>
+            <p className="text-xs font-bold text-slate-400 uppercase mt-1 tracking-widest">Historical Performance Propagation</p>
           </div>
-          <HeatBadge intensity={selectedIntensity} compact />
-        </div>
-        <WorldIndustryHeatMap geo={currentGeo} selectedNode={selectedNode} />
-      </section>
-      ) : null}
-
-      <section className="rounded-lg border border-[#f2dfd2] bg-white p-5">
-        <div className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-950">
-          <TrendingUp size={18} className="text-orange-600" />
-          热度迁移时间条
+          <div className="flex gap-1">
+            {[1,2,3,4,5].map(i => <div key={i} className="h-1 w-6 rounded-full bg-slate-100" />)}
+          </div>
         </div>
         <TimelineStrip items={currentTimeline?.timeline ?? []} />
-      </section>
+      </footer>
+    </main>
+  );
+}
+
+function MetricCard({ label, value, highlighted = false }: { label: string; value: string | number; highlighted?: boolean }) {
+  return (
+    <div className={cn("p-4 rounded-2xl border transition-all", highlighted ? "bg-slate-900 border-slate-900" : "bg-slate-50 border-slate-100")}>
+      <div className={cn("text-[9px] font-black uppercase tracking-widest mb-1", highlighted ? "text-slate-500" : "text-slate-400")}>{label}</div>
+      <div className={cn("text-lg font-black tracking-tight", highlighted ? "text-white" : "text-slate-900")}>{value}</div>
+    </div>
+  );
+}
+
+function SmallMetric({ label, value, color }: { label: string; value: string | number; color: string }) {
+  return (
+    <div className="bg-white border border-slate-100 p-3 rounded-xl shadow-sm">
+      <div className="text-[9px] font-black text-slate-400 uppercase tracking-tighter mb-0.5">{label}</div>
+      <div className="text-sm font-black" style={{ color }}>{value}</div>
+    </div>
+  );
+}
+
+function DetailPanel({ title, icon: Icon, children }: { title: string; icon: any; children: React.ReactNode }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+      <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-50">
+        <div className="p-2 rounded-lg bg-slate-50 text-slate-400"><Icon size={16} /></div>
+        <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest">{title}</h4>
+      </div>
+      {children}
     </div>
   );
 }
 
 function TimelineStrip({ items }: { items: ChainTimelinePoint[] }) {
-  const values = items.map((item) => pointHeat(item));
+  if (!items.length) return <div className="h-40 flex items-center justify-center text-slate-300 text-xs font-bold uppercase tracking-widest border border-dashed border-slate-100 rounded-2xl">Awaiting Time Series Data...</div>;
+  const values = items.map(i => pointHeat(i));
   const max = Math.max(...values, 1);
-
-  if (!items.length) return <EmptyHint label="暂无时间序列" />;
-
   return (
-    <div className="grid gap-3 lg:grid-cols-6">
-      {items.map((item, index) => {
+    <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-6 xl:grid-cols-9">
+      {items.map((item, idx) => {
         const heat = pointHeat(item);
         const intensity = Math.min(heat / max, 1);
         return (
-          <div key={`${pointDate(item)}-${index}`} className="rounded-lg border border-[#f2dfd2] bg-[#fffaf5] p-3">
-            <div className="mono text-xs font-semibold text-slate-600">{pointDate(item)}</div>
-            <div className="mt-3 h-24 rounded-md bg-white p-2">
-              <div className="flex h-full items-end gap-2">
-                <div className="w-4 rounded-full" style={{ height: `${Math.max(intensity * 100, 16)}%`, backgroundColor: warmColor(intensity) }} />
-                <div className="flex-1">
-                  <div className="mono text-base font-semibold text-slate-900">{heat.toFixed(1)}</div>
-                  <div className="mt-1 text-xs text-slate-500">{item.label || item.summary || "--"}</div>
-                </div>
+          <div key={idx} className="group relative bg-slate-50 rounded-2xl p-4 border border-transparent hover:bg-white hover:border-slate-200 transition-all hover:shadow-lg">
+            <div className="text-[10px] font-black text-slate-400 group-hover:text-indigo-600 transition-colors">{pointDate(item)}</div>
+            <div className="mt-4 flex items-end gap-3 h-16">
+              <div className="w-1.5 rounded-full transition-all duration-500" style={{ height: `${Math.max(intensity * 100, 10)}%`, backgroundColor: heatColor(intensity) }} />
+              <div className="flex-1">
+                <div className="text-lg font-black text-slate-900 tabular-nums leading-none">{heat.toFixed(1)}</div>
+                <div className="text-[8px] font-bold text-slate-400 uppercase mt-1 truncate">{item.label || "Normal"}</div>
               </div>
             </div>
           </div>
@@ -525,165 +500,61 @@ function TimelineStrip({ items }: { items: ChainTimelinePoint[] }) {
   );
 }
 
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  onClick
-}: {
-  icon: typeof CalendarRange;
-  label: string;
-  value: string | number;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-lg border border-[#f2dfd2] bg-white p-4 text-left transition hover:border-orange-300 hover:bg-[#fffaf5]"
-    >
-      <div className="flex items-center gap-2 text-sm text-slate-500">
-        <Icon size={16} className="text-orange-600" />
-        {label}
-      </div>
-      <div className="mono mt-3 text-2xl font-semibold text-slate-950">{value}</div>
-    </button>
-  );
-}
-
-function TopMetric({ label, value, onClick }: { label: string; value: string | number; onClick?: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-md border border-[#f2dfd2] bg-white px-3 py-2 text-left transition hover:border-orange-300 hover:bg-[#fffaf5]"
-    >
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className="mono mt-1 text-sm font-semibold text-slate-900">{value}</div>
-    </button>
-  );
-}
-
-function MiniMetric({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="rounded-md border border-[#f7e9de] bg-[#fffaf6] px-3 py-2">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className="mono mt-1 font-semibold text-slate-900">{value}</div>
-    </div>
-  );
-}
-
 function HeatBadge({ intensity, compact = false }: { intensity: number; compact?: boolean }) {
-  const color = warmColor(intensity);
   return (
-    <div
-      className={`inline-flex items-center gap-2 rounded-full border border-[#f2dfd2] bg-white ${compact ? "px-2.5 py-1.5" : "px-3 py-2"}`}
-    >
-      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
-      <span className="mono text-xs font-semibold text-slate-700">{Math.round(intensity * 100)}%</span>
+    <div className={cn("inline-flex items-center gap-2 bg-white border border-slate-200 rounded-full", compact ? "px-3 py-1.5" : "px-4 py-2.5 shadow-sm")}>
+      <div className="h-2 w-2 rounded-full animate-pulse" style={{ backgroundColor: heatColor(intensity) }} />
+      <span className="text-[10px] font-black text-slate-900 tracking-widest">{Math.round(intensity * 100)}% <span className="text-slate-400">热度</span></span>
     </div>
   );
 }
 
-function IndustryTag({ item }: { item: ChainMappedIndustry | string }) {
-  const name = normalizeIndustryName(item);
-  return (
-    <span className="rounded-md border border-[#f2dfd2] bg-[#fffaf5] px-2 py-1 text-xs text-slate-700">
-      {name}
-    </span>
-  );
+// Utility Helpers
+function heatColor(intensity: number) {
+  if (intensity >= 0.8) return "#ef4444"; // Red
+  if (intensity >= 0.45) return "#f97316"; // Orange
+  return "#eab308"; // Yellow
 }
 
-function EmptyHint({ label }: { label: string }) {
-  return <div className="rounded-md border border-dashed border-[#f2dfd2] px-3 py-3 text-sm text-slate-500">{label}</div>;
-}
-
-function normalizeLayers(layers: Array<ChainLayer | string>, nodes: ChainNode[]): LayerOption[] {
-  const normalized = layers.map<LayerOption>((layer) => {
-    if (typeof layer === "string") {
-      return {
-        key: normalizeLayerKey(layer),
-        label: layer,
-        count: nodes.filter((node) => normalizeLayerKey(node.layer) === normalizeLayerKey(layer)).length
-      };
-    }
-    return {
-      key: normalizeLayerKey(layer.key),
-      label: layer.label,
-      count: layer.count ?? nodes.filter((node) => normalizeLayerKey(node.layer) === normalizeLayerKey(layer.key)).length
-    };
+function normalizeLayers(layers: Array<ChainLayer | string>, nodes: ChainNode[]): { key: string; label: string; count: number }[] {
+  const normalized = layers.map((layer) => {
+    const key = typeof layer === "string" ? normalizeLayerKey(layer) : normalizeLayerKey(layer.key);
+    const label = typeof layer === "string" ? layer : layer.label;
+    return { key, label, count: nodes.filter(n => normalizeLayerKey(n.layer) === key).length };
   });
   return [{ key: "all", label: "全部", count: nodes.length }, ...normalized];
 }
 
-function normalizeLayerKey(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, "_");
+function normalizeLayerKey(v: string) { return v.trim().toLowerCase().replace(/\s+/g, "_"); }
+function pointDate(i: ChainTimelinePoint) { return i.trade_date ?? i.date ?? "--"; }
+function pointHeat(i: ChainTimelinePoint) { return Math.max(i.heat ?? 0, i.momentum ?? 0, (i.intensity ?? 0) * 100); }
+function nodeHeat(n: ChainNode) { return Math.max(n.heat ?? 0, n.momentum ?? 0, (n.intensity ?? 0) * 100); }
+function normalizeIntensity(n: ChainNode | null) {
+  if (!n) return 0;
+  const v = n.intensity ?? (nodeHeat(n) > 1 ? nodeHeat(n) / 100 : nodeHeat(n));
+  return Math.min(Math.max(v, 0), 1);
 }
+function formatNumber(v?: number | null) { return typeof v === "number" ? v.toFixed(1) : "--"; }
+function stockEvidenceHref(c: string) { return `/stocks/${encodeURIComponent(c)}?from=${encodeURIComponent("/industry/chain")}`; }
 
-function normalizeIndustryName(value: ChainMappedIndustry | string) {
-  return typeof value === "string" ? value : value.name;
-}
-
-function pointDate(item: ChainTimelinePoint) {
-  return item.trade_date ?? item.date ?? "--";
-}
-
-function pointHeat(item: ChainTimelinePoint) {
-  return Math.max(item.heat ?? 0, item.momentum ?? 0, (item.intensity ?? 0) * 100);
-}
-
-function nodeHeat(node: ChainNode) {
-  return Math.max(node.heat ?? 0, node.momentum ?? 0, (node.intensity ?? 0) * 100);
-}
-
-function countDownstreamNodes(edges: Array<{ source: string; target: string }>, selectedNodeKey: string | null) {
-  if (!selectedNodeKey) return 0;
-  const adjacency = new Map<string, string[]>();
-  for (const edge of edges) {
-    const rows = adjacency.get(edge.source) ?? [];
-    rows.push(edge.target);
-    adjacency.set(edge.source, rows);
+function countDownstreamNodes(edges: Array<{ source: string; target: string }>, root: string | null) {
+  if (!root) return 0;
+  const adj = new Map<string, string[]>();
+  edges.forEach(e => {
+    const r = adj.get(e.source) ?? [];
+    r.push(e.target);
+    adj.set(e.source, r);
+  });
+  const visited = new Set([root]);
+  const q = [root];
+  const ds = new Set();
+  while (q.length) {
+    const c = q.shift()!;
+    (adj.get(c) ?? []).forEach(t => {
+      if (!visited.has(t)) {
+        visited.add(t); ds.add(t); q.push(t);
+      }
+    });
   }
-
-  const visited = new Set<string>([selectedNodeKey]);
-  const downstream = new Set<string>();
-  const queue = [selectedNodeKey];
-  while (queue.length) {
-    const current = queue.shift();
-    if (!current) break;
-    for (const target of adjacency.get(current) ?? []) {
-      if (target === selectedNodeKey || visited.has(target)) continue;
-      visited.add(target);
-      downstream.add(target);
-      queue.push(target);
-    }
-  }
-  return downstream.size;
-}
-
-function normalizeIntensity(node: ChainNode | null) {
-  if (!node) return 0;
-  const value = node.intensity ?? (nodeHeat(node) > 1 ? nodeHeat(node) / 100 : nodeHeat(node));
-  return Math.min(Math.max(value, 0), 1);
-}
-
-function warmColor(intensity: number) {
-  if (intensity >= 0.86) return "#b91c1c";
-  if (intensity >= 0.64) return "#ea580c";
-  if (intensity >= 0.38) return "#f59e0b";
-  return "#facc15";
-}
-
-function formatNumber(value?: number | null) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "--";
-  return value.toFixed(1);
-}
-
-function formatIndicator(value: string | number | null, unit?: string) {
-  if (value === null || value === undefined || value === "") return "--";
-  return `${value}${unit ?? ""}`;
-}
-
-function stockEvidenceHref(code: string) {
-  return `/stocks/${encodeURIComponent(code)}?from=${encodeURIComponent("/industry/chain")}`;
+  return ds.size;
 }

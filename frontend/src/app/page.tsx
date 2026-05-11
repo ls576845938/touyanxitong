@@ -2,8 +2,22 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { AlertTriangle, ArrowRight, BarChart3, ClipboardCheck, Database, FileText, Layers3, PlayCircle, Repeat2, ShieldCheck } from "lucide-react";
-import { api, type BackfillManifest, type DataQuality, type DataStatus, type IndustryRadarRow, type IngestionBatch, type IngestionPlan, type IngestionTask, type MarketSummary, type ReportSummary, type ResearchUniverse, type TrendPoolRow, type WatchlistChanges } from "@/lib/api";
+import { 
+  Activity,
+  ArrowRight, 
+  ArrowUpRight,
+  BarChart3, 
+  ClipboardCheck, 
+  FileText, 
+  FlaskConical,
+  Layers3, 
+  Repeat2, 
+  ShieldCheck,
+  Target,
+  TrendingUp
+} from "lucide-react";
+import { motion } from "framer-motion";
+import { api, type DataQuality, type DataStatus, type IndustryRadarRow, type IngestionTask, type MarketSummary, type ReportSummary, type ResearchDataGate, type ResearchUniverse, type SignalBacktestLatest, type TenbaggerThesisList, type TrendPoolRow, type WatchlistChanges } from "@/lib/api";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { ScoreBadge } from "@/components/ScoreBadge";
@@ -16,12 +30,12 @@ export default function DashboardPage() {
   const [report, setReport] = useState<ReportSummary | null>(null);
   const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
   const [dataQuality, setDataQuality] = useState<DataQuality | null>(null);
-  const [ingestionPlan, setIngestionPlan] = useState<IngestionPlan | null>(null);
-  const [backfillManifest, setBackfillManifest] = useState<BackfillManifest | null>(null);
   const [ingestionTasks, setIngestionTasks] = useState<IngestionTask[]>([]);
-  const [ingestionBatches, setIngestionBatches] = useState<IngestionBatch[]>([]);
   const [researchUniverse, setResearchUniverse] = useState<ResearchUniverse | null>(null);
   const [watchlistChanges, setWatchlistChanges] = useState<WatchlistChanges | null>(null);
+  const [thesisSnapshot, setThesisSnapshot] = useState<TenbaggerThesisList | null>(null);
+  const [researchGate, setResearchGate] = useState<ResearchDataGate | null>(null);
+  const [backtestSnapshot, setBacktestSnapshot] = useState<SignalBacktestLatest | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -46,442 +60,531 @@ export default function DashboardPage() {
     void Promise.allSettled([
       api.dataStatus(),
       api.dataQuality(),
-      api.ingestionPlan(),
-      api.backfillManifest(),
       api.ingestionTasks(),
-      api.ingestionBatches(),
       api.researchUniverse()
-    ]).then(([status, quality, plan, manifest, tasks, batches, universe]) => {
+    ]).then(([status, quality, tasks, universe]) => {
       setDataStatus(status.status === "fulfilled" ? status.value : null);
       setDataQuality(quality.status === "fulfilled" ? quality.value : null);
-      setIngestionPlan(plan.status === "fulfilled" ? plan.value : null);
-      setBackfillManifest(manifest.status === "fulfilled" ? manifest.value : null);
       setIngestionTasks(tasks.status === "fulfilled" ? tasks.value : []);
-      setIngestionBatches(batches.status === "fulfilled" ? batches.value : []);
       setResearchUniverse(universe.status === "fulfilled" ? universe.value : null);
+    });
+
+    void Promise.allSettled([
+      api.tenbaggerTheses({ limit: 6 }),
+      api.researchDataGate({ limit: 6 }),
+      api.latestBacktest()
+    ]).then(([thesis, gate, backtest]) => {
+      setThesisSnapshot(thesis.status === "fulfilled" ? thesis.value : null);
+      setResearchGate(gate.status === "fulfilled" ? gate.value : null);
+      setBacktestSnapshot(backtest.status === "fulfilled" ? backtest.value : null);
     });
   }, []);
 
-  if (loading) return <div className="page-shell"><LoadingState label="正在加载 AlphaRadar 数据" /></div>;
-  if (error) return <div className="page-shell"><ErrorState message={error} /></div>;
+  if (loading) return <div className="min-h-[60vh] flex items-center justify-center"><LoadingState label="系统正在同步全球产业波动数据" /></div>;
+  if (error) return <div className="max-w-2xl mx-auto py-12"><ErrorState message={error} /></div>;
 
   const topStocks = trendPool.slice(0, 8);
   const latestRun = dataStatus?.runs?.[0] ?? null;
   const queuedTasks = ingestionTasks.filter((task) => ["queued", "pending"].includes(task.status)).length;
   const runningTasks = ingestionTasks.filter((task) => task.status === "running").length;
-  const failedTasks = ingestionTasks.filter((task) => task.status === "failed").length;
-  const completedTasks = ingestionTasks.filter((task) => ["success", "completed"].includes(task.status)).length;
-  const batchRequested = ingestionBatches.reduce((sum, batch) => sum + (Number.isFinite(batch.requested) ? batch.requested : 0), 0);
-  const batchProcessed = ingestionBatches.reduce((sum, batch) => sum + (Number.isFinite(batch.processed) ? batch.processed : 0), 0);
-  const batchProgress = batchRequested > 0 ? Math.round((batchProcessed / batchRequested) * 100) : null;
-  const manifestTotals = backfillManifest?.totals ?? {};
-  const manifestCoverage = backfillManifest?.coverage ?? [];
+  const thesisSummary = thesisSnapshot?.summary;
+  const gateSummary = researchGate?.summary;
+  const latestBacktest = backtestSnapshot?.latest ?? null;
+  const gateStatus = (gateSummary?.fail_count ?? 0) > 0 ? "FAIL" : (gateSummary?.pass_count ?? 0) > 0 ? "PASS" : "WARN";
+  const formalReadyPct = Math.round((gateSummary?.formal_ready_ratio ?? 0) * 100);
 
   return (
-    <div className="page-shell space-y-5">
-      <section className="grid gap-4 lg:grid-cols-[1.4fr_0.9fr]">
-        <div className="panel p-5">
-          <div className="label">今日雷达</div>
-          <h1 className="mt-2 text-2xl font-semibold tracking-normal">产业热度、趋势强度与证据链观察台</h1>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-            AlphaRadar 只生成观察池和研究线索，不输出买入、卖出、目标价或收益承诺。产业热度是资讯、行情、关联股票和观察池共同形成的赛道热度。
+    <div className="space-y-6">
+      {/* Hero Section */}
+      <motion.section 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="grid gap-6 lg:grid-cols-[1.6fr_0.8fr]"
+      >
+        <div className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+          <div className="flex items-center gap-3">
+             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+               <Activity size={20} />
+             </div>
+             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">MARKET PULSE / {summary?.latest_trade_date ?? "TODAY"}</p>
+          </div>
+          <h1 className="mt-4 text-3xl font-bold tracking-tight text-slate-900">产业热度、趋势强度与证据链观察台</h1>
+          <p className="mt-4 max-w-2xl text-sm leading-relaxed text-slate-500 font-medium">
+            AlphaRadar 通过多维数据挖掘生成高确定性的观察池和研究线索。产业热度综合了资讯共振、资金流向及关联个股的量价特征。
           </p>
-          <div className="mt-5 grid gap-3 md:grid-cols-4">
-            <Metric label="样本股票" value={summary?.stock_count ?? 0} />
-            <Metric label="最新交易日" value={summary?.latest_trade_date ?? "-"} />
-            <Metric label="观察候选" value={summary?.watch_count ?? 0} />
-            <Metric label="产业热度记录" value={summary?.industry_heat_records ?? 0} />
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+            <Metric label="样本股票" value={summary?.stock_count ?? 0} unit="Symbols" />
+            <Metric label="观察候选" value={summary?.watch_count ?? 0} unit="Watchlisted" highlight />
+            <Metric label="产业热度记录" value={summary?.industry_heat_records ?? 0} unit="Records" />
+            <Metric label="最新交易日" value={summary?.latest_trade_date?.split('-').slice(1).join('/') ?? "-"} unit="Trade Date" />
           </div>
         </div>
-        <div className="panel p-5">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <FileText size={18} />
-            最新简报
+        
+        <div className="rounded-3xl bg-indigo-600 p-8 shadow-xl shadow-indigo-200 text-white flex flex-col justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-indigo-200">
+              <FileText size={14} />
+              DAILY BRIEFING
+            </div>
+            <p className="mt-6 text-xl font-bold leading-tight">{report?.title || "暂无最新报告"}</p>
+            <p className="mt-4 text-sm leading-relaxed text-indigo-100 line-clamp-3">
+              {report?.market_summary || "等待系统生成今日市场简报..."}
+            </p>
           </div>
-          <p className="mt-4 text-lg font-semibold">{report?.title}</p>
-          <p className="mt-3 text-sm leading-6 text-slate-600">{report?.market_summary}</p>
-          <Link href="/report" className="mt-5 inline-flex items-center gap-2 rounded-md bg-mint px-4 py-2 text-sm text-white">
-            查看日报 <ArrowRight size={16} />
+          <Link href="/report" className="mt-8 inline-flex items-center justify-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-bold text-indigo-600 transition-transform hover:scale-[1.02] active:scale-[0.98]">
+            阅读全文 <ArrowRight size={16} />
           </Link>
         </div>
-      </section>
+      </motion.section>
 
-      <section className="grid gap-4 lg:grid-cols-5">
-        <PanelLink icon={<Layers3 size={18} />} title="产业雷达" href="/industry" text="查看热度分、7日变化、核心关键词与相关新闻线索。" />
-        <PanelLink icon={<BarChart3 size={18} />} title="趋势股票池" href="/trend" text="按最终评分、趋势分、风险扣分和观察等级筛选候选。" />
-        <PanelLink icon={<Repeat2 size={18} />} title="观察池复盘" href="/watchlist" text="追踪新进、移出、评级变化和分数跃迁，定位今日研究重点。" />
-        <PanelLink icon={<ClipboardCheck size={18} />} title="研究任务" href="/research" text="汇总待验证事项与风险核验，生成每日投研行动清单。" />
-        <PanelLink icon={<AlertTriangle size={18} />} title="证据链核验" href="/stocks/300308" text="查看单股产业逻辑、趋势逻辑、催化线索和待验证事项。" />
-      </section>
-
-      <section className="panel p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold"><Repeat2 size={18} />观察池变化</div>
-            <p className="mt-1 text-sm text-slate-600">跟踪最新观察候选相对上一交易日的新进、移出、评级变化和评分变化。首日快照会把当前候选视为新进。</p>
-          </div>
-          <Link href="/watchlist" className="text-sm text-mint">查看完整复盘</Link>
-        </div>
-        <div className="label mb-3">{watchlistChanges?.previous_date ?? "首日"} → {watchlistChanges?.latest_date ?? "-"}</div>
-        <div className="grid gap-3 md:grid-cols-4">
-          <Metric label="当前观察" value={watchlistChanges?.summary.latest_watch_count ?? 0} />
-          <Metric label="新进" value={watchlistChanges?.summary.new_count ?? 0} />
-          <Metric label="移出" value={watchlistChanges?.summary.removed_count ?? 0} />
-          <Metric label="评级变化" value={(watchlistChanges?.summary.upgraded_count ?? 0) + (watchlistChanges?.summary.downgraded_count ?? 0)} />
-        </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          <ChangeList title="新进观察" rows={watchlistChanges?.new_entries ?? []} />
-          <ChangeList title="评分上升" rows={watchlistChanges?.score_gainers ?? []} />
-        </div>
-      </section>
-
-      <section className="panel p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold">研究股票池准入</h2>
-            <p className="mt-1 text-sm text-slate-600">在评分前先过滤 ST、历史不足、市值过小、流动性不足和低价噪声，避免全市场分析被不可研究标的污染。</p>
-          </div>
-          <Link href="/trend" className="text-sm text-mint">查看趋势池</Link>
-        </div>
-        <div className="grid gap-3 md:grid-cols-4">
-          <Metric label="全市场股票" value={researchUniverse?.summary.stock_count ?? 0} />
-          <Metric label="可研究" value={researchUniverse?.summary.eligible_count ?? 0} />
-          <Metric label="排除" value={researchUniverse?.summary.excluded_count ?? 0} />
-          <Metric label="准入率" value={`${Math.round((researchUniverse?.summary.eligible_ratio ?? 0) * 100)}%`} />
-        </div>
-        <div className="mt-4 grid gap-2 md:grid-cols-3">
-          {(researchUniverse?.segments ?? []).map((segment) => (
-            <div key={`universe-${segment.market}-${segment.board}`} className="rounded-md border border-line bg-slate-50 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="font-medium">{marketLabel(segment.market)}</div>
-                <div className="label">{boardLabel(segment.board)}</div>
+      {/* Tenbagger Research Loop */}
+      <section className="grid gap-4 lg:grid-cols-[1.2fr_0.9fr_0.9fr]">
+        <Link href="/research/thesis" className="group rounded-3xl bg-slate-900 p-7 text-white shadow-xl shadow-slate-200 transition-transform hover:-translate-y-0.5">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/10 text-white">
+                <FlaskConical size={21} />
               </div>
-              <div className="mono mt-2 text-lg font-semibold">{segment.eligible_count}/{segment.stock_count}</div>
-              <div className="label mt-1">准入率 {Math.round(segment.eligible_ratio * 100)}%</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="panel p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold">全市场分区</h2>
-            <p className="mt-1 text-sm text-slate-600">按美股、A股、港股组织研究入口；A股继续拆分主板、创业板、科创板、北交所。</p>
-          </div>
-          <Link href="/trend" className="text-sm text-mint">进入全市场分析</Link>
-        </div>
-        <div className="grid gap-3 lg:grid-cols-3">
-          {(summary?.markets ?? []).map((segment) => (
-            <div key={segment.market} className="rounded-md border border-line bg-slate-50 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="font-semibold">{marketLabel(segment.market)}</div>
-                <div className="label">{segment.stock_count} 只 / 观察 {segment.watch_count}</div>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {segment.boards.map((board) => (
-                  <span key={board.board} className="rounded-md border border-line bg-white px-2 py-1 text-xs text-slate-700">
-                    {boardLabel(board.board)} {board.stock_count}
-                  </span>
-                ))}
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">TENBAGGER LOOP</div>
+                <h2 className="mt-1 text-2xl font-black tracking-tight">十倍股研究闭环</h2>
               </div>
             </div>
-          ))}
-        </div>
-      </section>
+            <ArrowUpRight size={18} className="text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+          </div>
+          <p className="mt-5 max-w-2xl text-sm leading-6 text-slate-300">
+            新增的核心能力已经接入：把趋势线索推进到可证伪假设，再经过正式数据门控和历史信号校准。
+          </p>
+          <div className="mt-6 grid grid-cols-3 gap-4">
+            <LoopStat label="假设数" value={thesisSummary?.count ?? 0} dark />
+            <LoopStat label="候选" value={thesisSummary?.candidate_count ?? 0} dark />
+            <LoopStat label="阻断" value={thesisSummary?.blocked_count ?? 0} dark danger={(thesisSummary?.blocked_count ?? 0) > 0} />
+          </div>
+        </Link>
 
-      <section className="panel p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold"><Database size={18} />数据源状态</div>
-            <p className="mt-1 text-sm text-slate-600">真实源不可用时自动回退 mock；这里显示最近 pipeline 留痕和各市场日线覆盖。</p>
-          </div>
-          <div className="label">
-            最新运行 {latestRun?.finished_at?.slice(0, 19).replace("T", " ") ?? latestRun?.started_at?.slice(0, 19).replace("T", " ") ?? "-"}
-          </div>
-        </div>
-        <div className="grid gap-3 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="grid gap-2 md:grid-cols-3">
-            {(dataStatus?.coverage ?? []).map((row) => (
-              <div key={`${row.market}-${row.board}`} className="rounded-md border border-line bg-slate-50 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{marketLabel(row.market)}</div>
-                  <div className="label">{boardLabel(row.board)}</div>
-                </div>
-                <div className="mono mt-2 text-lg font-semibold">{Math.round(row.coverage_ratio * 100)}%</div>
-                <div className="label mt-1">{row.stocks_with_bars}/{row.stock_count} 有日线，最新 {row.latest_trade_date ?? "-"}</div>
+        <Link href="/research/data-quality" className="rounded-3xl border border-slate-200 bg-white p-7 shadow-sm transition-transform hover:-translate-y-0.5 hover:shadow-lg hover:shadow-slate-100">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                <ShieldCheck size={21} />
               </div>
-            ))}
-          </div>
-          <div className="space-y-2">
-            {(dataStatus?.runs ?? []).slice(0, 4).map((run, index) => (
-              <div key={`${run.job_name}-${index}`} className="rounded-md border border-line bg-white p-3 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{run.job_name}</div>
-                  <span className={`rounded-md px-2 py-1 text-xs ${run.status === "success" ? "bg-mint text-white" : "bg-red-100 text-red-700"}`}>
-                    {run.status}
-                  </span>
-                </div>
-                <div className="label mt-1">source {run.effective_source} / {run.source_kind ?? "unknown"} / {formatPercent(run.source_confidence)}</div>
-                <div className="label mt-1">markets {run.markets.join(",")}</div>
-                <div className="label mt-1">rows {run.rows_total}，insert {run.rows_inserted}，update {run.rows_updated}</div>
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">DATA GATE</div>
+                <h2 className="mt-1 text-xl font-black text-slate-900">正式研究门控</h2>
               </div>
-            ))}
-            {(dataStatus?.source_coverage ?? []).slice(0, 4).map((row) => (
-              <div key={`source-${row.source_kind}-${row.source}`} className="rounded-md border border-line bg-white p-3 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{row.source}</div>
-                  <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">{row.source_kind}</span>
-                </div>
-                <div className="label mt-1">{row.stocks_with_bars} 只 / {row.bars_count} 根，最新 {row.latest_trade_date ?? "-"}</div>
-              </div>
-            ))}
-            {(dataStatus?.runs ?? []).length === 0 ? <div className="rounded-md border border-line bg-slate-50 p-3 text-sm text-slate-600">状态接口暂未返回运行留痕，覆盖率和批次面板会在后端写入后自动显示。</div> : null}
-          </div>
-        </div>
-      </section>
-
-      <section className="panel p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold"><PlayCircle size={18} />全市场回填进度</div>
-            <p className="mt-1 text-sm text-slate-600">展示已排队任务、运行中任务、失败任务和最近批次处理量；接口缺字段时保留可用状态，不阻塞 Dashboard。</p>
-          </div>
-          <div className="label">批次处理 {batchProgress === null ? "-" : `${batchProgress}%`}</div>
-        </div>
-        <div className="grid gap-3 md:grid-cols-5">
-          <Metric label="队列任务" value={ingestionTasks.length} />
-          <Metric label="待运行" value={queuedTasks} />
-          <Metric label="运行中" value={runningTasks} />
-          <Metric label="已完成" value={completedTasks} />
-          <Metric label="失败" value={failedTasks} />
-        </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-[0.9fr_1.1fr]">
-          <div className="rounded-md border border-line bg-slate-50 p-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="font-medium">最近批次</div>
-              <div className="label">{batchProcessed}/{batchRequested || "-"} processed</div>
             </div>
-            <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
-              <div className="h-full rounded-full bg-mint" style={{ width: `${batchProgress ?? 0}%` }} />
-            </div>
-            <div className="label mt-2">失败 {ingestionBatches.reduce((sum, batch) => sum + (Number.isFinite(batch.failed) ? batch.failed : 0), 0)} / 最近记录 {ingestionBatches.length}</div>
-            <div className="mt-4 rounded-md border border-line bg-white p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="font-medium">Manifest</div>
-                <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">{backfillManifest?.status ?? "not_started"}</span>
-              </div>
-              <div className="label mt-2">已处理 {manifestTotals.processed_symbols ?? 0} 只 / 写入 {manifestTotals.inserted ?? 0} 行</div>
-              <div className="label mt-1">更新 {backfillManifest?.updated_at?.slice(0, 19).replace("T", " ") ?? "-"}</div>
-            </div>
+            <StatusIndicator status={gateStatus} />
           </div>
-          <div className="space-y-2">
-            {manifestCoverage.slice(0, 3).map((row) => (
-              <div key={`manifest-${row.market}`} className="rounded-md border border-line bg-white p-3 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{marketLabel(row.market)}</div>
-                  <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">{Math.round(row.coverage_ratio * 100)}%</span>
-                </div>
-                <div className="label mt-1">完整 {row.covered_symbols} / 部分 {row.partial_symbols} / 空 {row.empty_symbols}</div>
-              </div>
-            ))}
-            {ingestionTasks.slice(0, 4).map((task) => (
-              <div key={task.id} className="rounded-md border border-line bg-white p-3 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{marketLabel(task.market)}<span className="label ml-2">{boardLabel(task.board)} / {task.task_type}</span></div>
-                  <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">{task.status}</span>
-                </div>
-                <div className="label mt-1">requested {task.requested} / processed {task.processed} / failed {task.failed}</div>
-              </div>
-            ))}
-            {ingestionTasks.length === 0 ? <div className="rounded-md border border-line bg-slate-50 p-3 text-sm text-slate-600">暂无队列任务；可先使用下方推荐命令或后端队列接口创建小批次。</div> : null}
+          <div className="mt-6 grid grid-cols-2 gap-4">
+            <LoopStat label="可正式研究" value={`${formalReadyPct}%`} />
+            <LoopStat label="PASS / WARN / FAIL" value={`${gateSummary?.pass_count ?? 0}/${gateSummary?.warn_count ?? 0}/${gateSummary?.fail_count ?? 0}`} danger={(gateSummary?.fail_count ?? 0) > 0} />
           </div>
-        </div>
-      </section>
+          <p className="mt-4 text-xs leading-5 text-slate-500">mock、fallback、低信源置信和财务缺口会被拦截，避免把线索误当结论。</p>
+        </Link>
 
-      <section className="panel p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={18} />全市场数据质量门</div>
-            <p className="mt-1 text-sm text-slate-600">检查覆盖率、历史长度、OHLC异常、流动性缺失、数据源混用。质量不过关时，趋势和评分只作流程验证。</p>
-          </div>
-          <StatusPill status={dataQuality?.status ?? "WARN"} />
-        </div>
-        <div className="grid gap-3 md:grid-cols-4">
-          <Metric label="检查股票" value={dataQuality?.summary.stock_count ?? 0} />
-          <Metric label="FAIL" value={dataQuality?.summary.fail_count ?? 0} />
-          <Metric label="WARN" value={dataQuality?.summary.warn_count ?? 0} />
-          <Metric label="最低历史" value={`${dataQuality?.summary.min_required_bars ?? 60} 根`} />
-        </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="grid gap-2 md:grid-cols-3">
-            {(dataQuality?.segments ?? []).map((segment) => (
-              <div key={`quality-${segment.market}-${segment.board}`} className="rounded-md border border-line bg-slate-50 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{marketLabel(segment.market)}</div>
-                  <StatusPill status={segment.status} compact />
-                </div>
-                <div className="label mt-1">{boardLabel(segment.board)} / 最新 {segment.latest_trade_date ?? "-"}</div>
-                <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                  <Ratio label="覆盖" value={segment.coverage_ratio} />
-                  <Ratio label="真实源" value={segment.real_coverage_ratio ?? 0} />
-                  <Ratio label="60日" value={segment.required_history_ratio} />
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="space-y-2">
-            {(dataQuality?.issues ?? []).slice(0, 5).map((issue) => (
-              <div key={`${issue.code}-${issue.issue_type}`} className="rounded-md border border-line bg-white p-3 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{issue.name}<span className="label ml-2">{issue.code}</span></div>
-                  <StatusPill status={issue.severity} compact />
-                </div>
-                <div className="label mt-1">{marketLabel(issue.market)} / {boardLabel(issue.board)} / {issue.issue_type}</div>
-                <p className="mt-2 text-xs leading-5 text-slate-600">{issue.message}</p>
-              </div>
-            ))}
-            {(dataQuality?.issues ?? []).length === 0 ? <div className="rounded-md border border-line bg-slate-50 p-3 text-sm text-slate-600">当前未发现核心数据质量问题。</div> : null}
-          </div>
-        </div>
-      </section>
-
-      <section className="panel p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold"><PlayCircle size={18} />真实数据分批接入计划</div>
-            <p className="mt-1 text-sm text-slate-600">用于从 mock 过渡到真实源。先按单市场小批次跑，质量门通过后再扩大，不直接全市场硬拉。</p>
-          </div>
-          <div className="label">mode {ingestionPlan?.mode ?? "-"}</div>
-        </div>
-        <div className="grid gap-3 lg:grid-cols-[0.9fr_1.1fr]">
-          <div className="grid gap-2 md:grid-cols-3">
-            {(ingestionPlan?.markets ?? []).map((item) => (
-              <div key={`ingest-${item.market}`} className="rounded-md border border-line bg-slate-50 p-3">
-                <div className="font-medium">{marketLabel(item.market)}</div>
-                <div className="mono mt-2 text-lg font-semibold">{item.next_batch_size}</div>
-                <div className="label mt-1">下批数量 / 当前覆盖 {Math.round(item.coverage_ratio * 100)}%</div>
-              </div>
-            ))}
-          </div>
-          <div className="space-y-2">
-            {(ingestionPlan?.recommended_commands ?? []).slice(0, 3).map((command) => (
-              <div key={command} className="overflow-x-auto rounded-md border border-line bg-slate-950 px-3 py-2 text-xs text-slate-100">
-                <code>{command}</code>
-              </div>
-            ))}
-            <div className="flex flex-wrap gap-2 pt-1">
-              {(ingestionPlan?.safety_rules ?? []).slice(0, 3).map((rule) => (
-                <span key={rule} className="rounded-md border border-line bg-white px-2 py-1 text-xs text-slate-600">{rule}</span>
-              ))}
+        <Link href="/research/backtest" className="rounded-3xl border border-slate-200 bg-white p-7 shadow-sm transition-transform hover:-translate-y-0.5 hover:shadow-lg hover:shadow-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+              <BarChart3 size={21} />
             </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
-        <div className="panel p-5">
-          <div className="mb-4 flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold">今日最强赛道</h2>
-              <p className="mt-1 text-sm text-slate-600">综合热度用于排序赛道研究线索，不代表交易建议。</p>
+              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">SIGNAL CALIBRATION</div>
+              <h2 className="mt-1 text-xl font-black text-slate-900">信号回测校准</h2>
             </div>
-            <Link href="/industry" className="text-sm text-mint">全部</Link>
           </div>
-          <div className="space-y-3">
-            {industries.slice(0, 6).map((row) => (
-              <div key={row.industry_id} className="border-b border-line pb-3 last:border-0 last:pb-0">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="font-medium">{row.name}</div>
-                    <div className="mt-1">
-                      <span className={`rounded-md px-2 py-1 text-xs font-semibold ${evidenceStatusClass(row)}`}>
+          <div className="mt-6 grid grid-cols-3 gap-4">
+            <LoopStat label="样本" value={latestBacktest?.sample_count ?? 0} />
+            <LoopStat label="周期" value={`${latestBacktest?.horizon_days ?? 0}D`} />
+            <LoopStat label="2x" value={pct(latestBacktest?.hit_rate_2x ?? 0)} />
+          </div>
+          <p className="mt-4 text-xs leading-5 text-slate-500">{latestBacktest?.explanation || "暂无回测样本时，可进入校准页运行短周期或等待未来行情补齐。"}</p>
+        </Link>
+      </section>
+
+      {/* Quick Nav */}
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
+        <PanelLink icon={<Layers3 size={20} />} title="产业雷达" href="/industry" text="热度评分与7日变化" />
+        <PanelLink icon={<BarChart3 size={20} />} title="趋势股票池" href="/trend" text="量价评分与最终评级" />
+        <PanelLink icon={<Repeat2 size={20} />} title="观察池复盘" href="/watchlist" text="追踪新进与分数跃迁" />
+        <PanelLink icon={<FlaskConical size={20} />} title="十倍股假设" href="/research/thesis" text="空间、成长、质量、估值拆解" />
+        <PanelLink icon={<ClipboardCheck size={20} />} title="研究任务" href="/research" text="每日待验证事项清单" />
+        <PanelLink icon={<Target size={20} />} title="全市场分区" href="/universe" text="证券分布与覆盖概览" />
+      </section>
+
+      {/* Main Grid Content */}
+      <div className="grid gap-6 lg:grid-cols-[1fr_0.8fr]">
+        
+        {/* Left Column */}
+        <div className="space-y-6">
+          {/* Watchlist Changes */}
+          <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+                   <Repeat2 size={14} /> 
+                   WATCHLIST TRACKING
+                </div>
+                <h2 className="text-xl font-bold text-slate-900">观察池核心变动</h2>
+              </div>
+              <Link href="/watchlist" className="text-[12px] font-bold text-indigo-600 hover:underline">查看复盘详情</Link>
+            </div>
+            
+            <div className="mt-6 flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+              <div className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-500">
+                {watchlistChanges?.previous_date?.split('-').slice(1).join('/') || "PREV"}
+              </div>
+              <ArrowRight size={14} className="text-slate-300" />
+              <div className="px-3 py-1 bg-indigo-50 border border-indigo-100 rounded-lg text-[11px] font-bold text-indigo-600">
+                {watchlistChanges?.latest_date?.split('-').slice(1).join('/') || "LATEST"}
+              </div>
+            </div>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-4">
+              <MetricMini label="当前观察" value={watchlistChanges?.summary.latest_watch_count ?? 0} />
+              <MetricMini label="新进标的" value={watchlistChanges?.summary.new_count ?? 0} variant="success" />
+              <MetricMini label="移出标的" value={watchlistChanges?.summary.removed_count ?? 0} variant="danger" />
+              <MetricMini label="评级调整" value={(watchlistChanges?.summary.upgraded_count ?? 0) + (watchlistChanges?.summary.downgraded_count ?? 0)} />
+            </div>
+
+            <div className="mt-8 grid gap-6 md:grid-cols-2">
+              <div className="space-y-4">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">NEW ENTRIES / 新进观察</p>
+                <div className="space-y-2">
+                  {watchlistChanges?.new_entries.slice(0, 4).map(row => (
+                    <StockRowSmall key={row.code} row={row} />
+                  ))}
+                  {(!watchlistChanges || watchlistChanges.new_entries.length === 0) && <EmptyState text="今日无新进标的" />}
+                </div>
+              </div>
+              <div className="space-y-4">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">SCORE GAINERS / 评分上升</p>
+                <div className="space-y-2">
+                  {watchlistChanges?.score_gainers.slice(0, 4).map(row => (
+                    <StockRowSmall key={row.code} row={row} showDelta />
+                  ))}
+                  {(!watchlistChanges || watchlistChanges.score_gainers.length === 0) && <EmptyState text="今日无明显评分上升" />}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Universe & Eligibility */}
+          <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+             <div className="flex items-start justify-between mb-8">
+              <div>
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+                   <Target size={14} /> 
+                   RESEARCH UNIVERSE
+                </div>
+                <h2 className="text-xl font-bold text-slate-900">研究股票池准入</h2>
+                <p className="mt-2 text-sm text-slate-500">系统已自动过滤 ST、低流动性、极低市值及次新噪声，确保研究基数的有效性。</p>
+              </div>
+            </div>
+            
+            <div className="grid gap-4 md:grid-cols-4">
+              <MetricCard label="全市场总数" value={researchUniverse?.summary.stock_count ?? "-"} />
+              <MetricCard label="可研究标的" value={researchUniverse?.summary.eligible_count ?? "-"} highlight />
+              <MetricCard label="排除标的" value={researchUniverse?.summary.excluded_count ?? "-"} />
+              <MetricCard label="准入效率" value={researchUniverse ? `${Math.round(researchUniverse.summary.eligible_ratio * 100)}%` : "-"} />
+            </div>
+
+            <div className="mt-6 grid gap-3 md:grid-cols-3">
+               {researchUniverse?.segments.map(segment => (
+                 <div key={`${segment.market}-${segment.board}`} className="rounded-2xl border border-slate-100 bg-slate-50/50 p-4 transition-colors hover:border-indigo-100 hover:bg-white">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-900">{marketLabel(segment.market)}</span>
+                      <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">{boardLabel(segment.board)}</span>
+                    </div>
+                    <div className="mt-3 flex items-baseline gap-2">
+                      <span className="text-xl font-bold text-slate-900 tracking-tight">{segment.eligible_count}</span>
+                      <span className="text-[10px] font-bold text-slate-400">/ {segment.stock_count}</span>
+                    </div>
+                    <div className="mt-3 h-1 w-full bg-slate-200 rounded-full overflow-hidden">
+                       <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${segment.eligible_ratio * 100}%` }} />
+                    </div>
+                 </div>
+               ))}
+               {!researchUniverse && (
+                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 p-4 text-sm font-medium text-slate-400 md:col-span-3">
+                   股票池准入明细正在等待数据状态接口返回
+                 </div>
+               )}
+            </div>
+          </section>
+        </div>
+
+        {/* Right Column */}
+        <div className="space-y-6">
+          {/* Top Industries */}
+          <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+            <div className="flex items-center justify-between mb-6">
+               <h2 className="text-xl font-bold text-slate-900">今日活跃赛道</h2>
+               <Link href="/industry" className="text-[12px] font-bold text-indigo-600 hover:underline">全部</Link>
+            </div>
+            <div className="space-y-5">
+              {industries.slice(0, 6).map((row) => (
+                <div key={row.industry_id} className="group flex items-center justify-between gap-4 p-2 -m-2 rounded-2xl hover:bg-slate-50 transition-colors">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-slate-900 truncate">{row.name}</div>
+                    <div className="mt-1 flex items-center gap-2">
+                       <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest ${evidenceStatusClass(row)}`}>
                         {evidenceStatusLabel(row)}
-                      </span>
+                       </span>
+                       <span className="text-[10px] text-slate-400 font-medium truncate">{row.top_keywords.slice(0, 2).join(' / ')}</span>
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="label">综合热度</div>
-                    <div className={`mono text-sm font-semibold ${row.heat_score === 0 ? "text-slate-500" : "text-mint"}`}>{formatNumber(row.heat_score)}</div>
+                    <div className="text-xs font-black text-indigo-600 tabular-nums">{row.heat_score.toFixed(1)}</div>
+                    <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">HEAT SCORE</div>
                   </div>
                 </div>
-                <div className="label mt-2">{industryEvidenceLine(row)}</div>
-                <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                  <CompactMetric label="资讯热度" value={formatNumber(newsHeat(row))} />
-                  <CompactMetric label="关联股票" value={formatCount(row.related_stock_count)} />
-                  <CompactMetric label="观察池" value={formatCount(row.watch_stock_count)} />
+              ))}
+            </div>
+          </section>
+
+          {/* Data Quality & Status */}
+          <section className="rounded-3xl bg-slate-900 p-8 text-white shadow-xl shadow-slate-200/50">
+             <div className="flex items-center justify-between mb-6">
+               <div>
+                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">DATA INTEGRITY</p>
+                 <h2 className="text-xl font-bold mt-1">引擎与数据状态</h2>
+               </div>
+               <StatusIndicator status={dataQuality?.status ?? "WARN"} />
+             </div>
+
+             <div className="space-y-4">
+                {latestRun && (
+                  <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-300">最新批次: {latestRun.job_name}</span>
+                      <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">{latestRun.status}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-4 text-[11px] font-medium text-slate-400">
+                      <div>写入行数: <span className="text-white ml-1">{latestRun.rows_inserted}</span></div>
+                      <div>信源置信: <span className="text-white ml-1">{Math.round((latestRun.source_confidence ?? 0) * 100)}%</span></div>
+                    </div>
+                  </div>
+                )}
+                
+                <div className="grid grid-cols-2 gap-3">
+                  {dataStatus?.coverage.slice(0, 4).map(row => (
+                    <div key={`${row.market}-${row.board}`} className="rounded-xl bg-white/5 p-3">
+                      <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{marketLabel(row.market)}</div>
+                      <div className="mt-1 text-sm font-bold text-white">{Math.round(row.coverage_ratio * 100)}% <span className="text-[10px] text-slate-500 ml-1">Coverage</span></div>
+                    </div>
+                  ))}
                 </div>
-              </div>
-            ))}
-          </div>
+             </div>
+             
+             <div className="mt-8 pt-8 border-t border-white/10 flex items-center justify-between">
+                <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">BACKFILL QUEUE</div>
+                <div className="flex items-center gap-4 text-xs font-bold text-slate-300">
+                  <span className="flex items-center gap-1.5"><div className="h-1.5 w-1.5 rounded-full bg-indigo-500" /> {runningTasks}</span>
+                  <span className="flex items-center gap-1.5"><div className="h-1.5 w-1.5 rounded-full bg-slate-600" /> {queuedTasks}</span>
+                </div>
+             </div>
+          </section>
         </div>
-        <div className="panel overflow-hidden">
-          <div className="border-b border-line p-5">
-            <h2 className="text-lg font-semibold">趋势增强股票</h2>
+      </div>
+
+      {/* Full Width Section: Trend Stocks */}
+      <section className="rounded-3xl bg-white border border-slate-200 shadow-sm overflow-hidden">
+        <div className="p-8 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+               <TrendingUp size={14} /> 
+               MOMENTUM RADAR
+            </div>
+            <h2 className="text-2xl font-bold text-slate-900">趋势增强观察标的</h2>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] text-left text-sm">
-              <thead className="bg-slate-50 text-slate-500">
-                <tr>
-                  <th className="px-4 py-3">股票</th>
-                  <th className="px-4 py-3">市场</th>
-                  <th className="px-4 py-3">产业</th>
-                  <th className="px-4 py-3">评分</th>
-                  <th className="px-4 py-3">可信度</th>
-                  <th className="px-4 py-3">趋势</th>
-                  <th className="px-4 py-3">风险扣分</th>
-                  <th className="px-4 py-3">证据链</th>
+          <Link href="/trend" className="inline-flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-2 text-sm font-bold text-slate-900 hover:bg-slate-100 transition-colors">
+            进入完整分析 <ArrowUpRight size={16} />
+          </Link>
+        </div>
+        
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1000px] text-left border-collapse">
+            <thead className="bg-slate-50/50">
+              <tr>
+                <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">股票 / 代码</th>
+                <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">市场分区</th>
+                <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">所属产业</th>
+                <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">综合评分</th>
+                <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">量价趋势</th>
+                <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">证据链核验</th>
+                <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {topStocks.map((row) => (
+                <tr key={row.code} className="group hover:bg-slate-50 transition-colors">
+                  <td className="px-8 py-5">
+                    <div className="flex flex-col">
+                      <span className="text-[14px] font-bold text-slate-900">{row.name}</span>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">{row.code}</span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-5">
+                    <div className="flex flex-col">
+                      <span className="text-[13px] font-bold text-slate-700">{marketLabel(row.market)}</span>
+                      <span className="text-[11px] font-medium text-slate-400 mt-1">{boardLabel(row.board)}</span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-5">
+                    <span className="text-[13px] font-bold text-slate-700">{row.industry}</span>
+                  </td>
+                  <td className="px-8 py-5">
+                    <ScoreBadge score={row.final_score} rating={row.rating} />
+                  </td>
+                  <td className="px-8 py-5">
+                    <div className="flex items-center gap-3">
+                       <div className="flex-1 h-1.5 w-16 bg-slate-100 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${row.trend_score > 60 ? 'bg-orange-500' : 'bg-slate-300'}`} style={{ width: `${Math.min(100, row.trend_score)}%` }} />
+                       </div>
+                       <span className="text-[13px] font-black text-slate-900 tabular-nums">{row.trend_score.toFixed(1)}</span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-5">
+                    <div className="flex flex-wrap gap-1.5">
+                       <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100/50">
+                         {row.confidence?.level || "NORMAL"}
+                       </span>
+                       <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-500">
+                         CONF: {Math.round((row.confidence?.combined_confidence || 0) * 100)}%
+                       </span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-5 text-right">
+                    <Link 
+                      href={`/stocks/${encodeURIComponent(row.code)}?from=/`} 
+                      className="inline-flex h-8 items-center justify-center rounded-lg bg-indigo-600 px-4 text-[11px] font-bold text-white shadow-lg shadow-indigo-100 transition-transform hover:scale-105 active:scale-95"
+                    >
+                      查看证据链
+                    </Link>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {topStocks.map((row) => (
-                  <tr key={row.code} className="border-t border-line">
-                    <td className="px-4 py-3 font-medium">{row.name}<span className="label ml-2">{row.code}</span></td>
-                    <td className="px-4 py-3">{marketLabel(row.market)}<div className="label">{boardLabel(row.board)} / {row.exchange}</div></td>
-                    <td className="px-4 py-3">{row.industry}</td>
-                    <td className="px-4 py-3"><ScoreBadge score={row.final_score} rating={row.rating} /></td>
-                    <td className="px-4 py-3">
-                      <div className="text-xs font-semibold">{row.confidence?.level ?? "unknown"} / {formatPercent(row.confidence?.combined_confidence)}</div>
-                      <div className="label mt-1">源 {formatPercent(row.confidence?.source_confidence)} / 资讯 {formatPercent(row.confidence?.news_confidence)}</div>
-                    </td>
-                    <td className="mono px-4 py-3">{row.trend_score.toFixed(1)}</td>
-                    <td className="mono px-4 py-3">{row.risk_penalty.toFixed(1)}</td>
-                    <td className="px-4 py-3"><Link href={`/stocks/${encodeURIComponent(row.code)}?from=/`} className="text-mint">查看</Link></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         </div>
       </section>
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string | number }) {
+// Sub-components for better organization
+
+function Metric({ label, value, unit, highlight = false }: { label: string; value: string | number; unit: string; highlight?: boolean }) {
   return (
-    <div className="rounded-md border border-line bg-slate-50 p-4">
-      <div className="label">{label}</div>
-      <div className="mono mt-2 text-xl font-semibold">{value}</div>
+    <div className={`rounded-2xl border border-slate-100 p-5 ${highlight ? 'bg-indigo-50/30' : 'bg-slate-50/50'}`}>
+      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</div>
+      <div className="mt-3 flex items-baseline gap-1.5">
+        <span className={`text-2xl font-bold tracking-tight ${highlight ? 'text-indigo-600' : 'text-slate-900'}`}>{value}</span>
+        <span className="text-[10px] font-bold text-slate-400">{unit}</span>
+      </div>
     </div>
   );
 }
 
-function CompactMetric({ label, value }: { label: string; value: string }) {
+function MetricMini({ label, value, variant = "default" }: { label: string; value: number | string, variant?: "default" | "success" | "danger" }) {
+  const colors = {
+    default: "text-slate-900 bg-white",
+    success: "text-red-600 bg-red-50/50", // In finance, red is often used for increase/success in China
+    danger: "text-emerald-600 bg-emerald-50/50"
+  };
+  
   return (
-    <div className="rounded-md bg-slate-50 px-2 py-2">
-      <div className="label">{label}</div>
-      <div className="mono mt-1 font-semibold">{value}</div>
+    <div className={`rounded-xl border border-slate-100 p-3 flex flex-col items-center justify-center text-center`}>
+      <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">{label}</div>
+      <div className={`mt-2 text-lg font-bold tabular-nums ${colors[variant].split(' ')[0]}`}>{value}</div>
     </div>
   );
 }
 
-function globalHeat(row: IndustryRadarRow) {
-  return isFiniteNumber(row.global_heat_score) ? row.global_heat_score : row.heat_score;
+function MetricCard({ label, value, highlight = false }: { label: string; value: string | number; highlight?: boolean }) {
+  return (
+    <div className={`p-4 rounded-2xl border ${highlight ? 'border-indigo-100 bg-indigo-50/30 text-indigo-900' : 'border-slate-100 bg-slate-50/30 text-slate-900'}`}>
+      <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">{label}</div>
+      <div className="text-lg font-bold tracking-tight">{value}</div>
+    </div>
+  );
 }
 
-function newsHeat(row: IndustryRadarRow) {
-  return isFiniteNumber(row.news_heat_score) ? row.news_heat_score : globalHeat(row);
+function LoopStat({ label, value, dark = false, danger = false }: { label: string; value: string | number; dark?: boolean; danger?: boolean }) {
+  const valueClass = dark
+    ? danger ? "text-rose-300" : "text-white"
+    : danger ? "text-rose-600" : "text-slate-900";
+  return (
+    <div>
+      <div className={`text-[9px] font-black uppercase tracking-widest ${dark ? "text-slate-500" : "text-slate-400"}`}>{label}</div>
+      <div className={`mt-1 text-lg font-black tabular-nums ${valueClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function PanelLink({ icon, title, text, href }: { icon: React.ReactNode; title: string; text: string; href: string }) {
+  return (
+    <Link href={href} className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 transition-all duration-300 hover:border-indigo-300 hover:shadow-xl hover:shadow-indigo-50 hover:-translate-y-1">
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-50 text-slate-400 group-hover:bg-indigo-600 group-hover:text-white transition-colors duration-300">
+          {icon}
+        </div>
+        <h3 className="font-bold text-slate-900">{title}</h3>
+      </div>
+      <p className="mt-4 text-[12px] font-medium leading-relaxed text-slate-500 group-hover:text-slate-600 transition-colors">
+        {text}
+      </p>
+      <div className="mt-4 flex items-center gap-1.5 text-[11px] font-bold text-indigo-600 opacity-0 group-hover:opacity-100 transition-all -translate-x-2 group-hover:translate-x-0">
+        立即进入 <ArrowRight size={12} />
+      </div>
+    </Link>
+  );
+}
+
+function StockRowSmall({ row, showDelta = false }: { row: any, showDelta?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-4 p-3 rounded-xl bg-white border border-slate-100 hover:border-indigo-100 transition-colors group">
+      <div className="flex flex-col min-w-0">
+        <div className="font-bold text-[13px] text-slate-900 truncate group-hover:text-indigo-600 transition-colors">{row.name}</div>
+        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{row.code}</div>
+      </div>
+      <div className="text-right shrink-0">
+        <div className="text-[12px] font-black text-slate-900 tabular-nums">{row.final_score?.toFixed(1) || "-"}</div>
+        {showDelta && row.score_delta !== null && (
+          <div className={`text-[10px] font-bold mt-0.5 ${row.score_delta >= 0 ? 'text-red-500' : 'text-emerald-500'}`}>
+            {row.score_delta > 0 ? '+' : ''}{row.score_delta.toFixed(1)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatusIndicator({ status }: { status: string }) {
+  const config = {
+    PASS: "bg-emerald-500 shadow-emerald-500/50",
+    WARN: "bg-amber-500 shadow-amber-500/50",
+    FAIL: "bg-rose-500 shadow-rose-500/50"
+  };
+  const color = config[status as keyof typeof config] || config.PASS;
+  return (
+    <div className="flex items-center gap-2">
+      <div className={`h-2 w-2 rounded-full animate-pulse shadow-lg ${color}`} />
+      <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">{status}</span>
+    </div>
+  );
+}
+
+function pct(value: number) {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="py-4 text-center rounded-xl border border-dashed border-slate-200">
+      <p className="text-[11px] font-medium text-slate-400">{text}</p>
+    </div>
+  );
 }
 
 function evidenceStatusLabel(row: IndustryRadarRow) {
@@ -494,10 +597,10 @@ function evidenceStatusLabel(row: IndustryRadarRow) {
 
 function evidenceStatusClass(row: IndustryRadarRow) {
   const status = normalizeEvidenceStatus(row);
-  if (status === "news_active") return "bg-mint text-white";
-  if (status === "structure_active") return "bg-slate-900 text-white";
-  if (status === "mapped_only") return "bg-amber text-white";
-  return "bg-slate-100 text-slate-600";
+  if (status === "news_active") return "bg-red-50 text-red-600 border border-red-100";
+  if (status === "structure_active") return "bg-orange-50 text-orange-600 border border-orange-100";
+  if (status === "mapped_only") return "bg-slate-50 text-slate-500 border border-slate-100";
+  return "bg-slate-50 text-slate-400 border border-slate-100";
 }
 
 function normalizeEvidenceStatus(row: IndustryRadarRow) {
@@ -511,90 +614,10 @@ function normalizeEvidenceStatus(row: IndustryRadarRow) {
   return "structure_active";
 }
 
-function industryEvidenceLine(row: IndustryRadarRow) {
-  if (row.top_keywords.length > 0) return row.top_keywords.join(" / ");
-  if (row.heat_score === 0) return row.zero_heat_reason || fallbackEvidenceLine(row);
-  return fallbackEvidenceLine(row);
-}
-
-function fallbackEvidenceLine(row: IndustryRadarRow) {
-  const parts = [
-    `${evidenceStatusLabel(row)}`,
-    `关联 ${formatCount(row.related_stock_count)}`,
-    `观察池 ${formatCount(row.watch_stock_count)}`
-  ];
-  if (isFiniteNumber(row.trend_breadth)) parts.push(`趋势宽度 ${formatRatio(row.trend_breadth)}`);
-  if (isFiniteNumber(row.breakout_breadth)) parts.push(`突破宽度 ${formatRatio(row.breakout_breadth)}`);
-  return parts.join(" / ");
-}
-
-function formatNumber(value: number | null | undefined) {
-  return isFiniteNumber(value) ? value.toFixed(1) : "-";
-}
-
-function formatCount(value: number | null | undefined) {
-  return isFiniteNumber(value) ? String(value) : "-";
-}
-
-function formatRatio(value: number | null | undefined) {
-  return isFiniteNumber(value) ? `${Math.round(value * 100)}%` : "-";
-}
-
-function formatPercent(value: number | null | undefined) {
-  return isFiniteNumber(value) ? `${Math.round(value * 100)}%` : "-";
+function newsHeat(row: IndustryRadarRow) {
+  return isFiniteNumber(row.news_heat_score) ? row.news_heat_score : (isFiniteNumber(row.global_heat_score) ? row.global_heat_score : row.heat_score);
 }
 
 function isFiniteNumber(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
-}
-
-function Ratio({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-md bg-white p-2">
-      <div className="label">{label}</div>
-      <div className="mono mt-1 font-semibold">{Math.round(value * 100)}%</div>
-    </div>
-  );
-}
-
-function StatusPill({ status, compact = false }: { status: "PASS" | "WARN" | "FAIL"; compact?: boolean }) {
-  const className =
-    status === "PASS"
-      ? "bg-mint text-white"
-      : status === "WARN"
-        ? "bg-amber text-white"
-        : "bg-red-100 text-red-700";
-  return <span className={`inline-flex rounded-md px-2 py-1 text-xs font-semibold ${className}`}>{compact ? status : `DATA ${status}`}</span>;
-}
-
-function ChangeList({ title, rows }: { title: string; rows: { code: string; name: string; market: string; board: string; rating: string | null; final_score: number | null; score_delta: number | null }[] }) {
-  return (
-    <div className="rounded-md border border-line bg-slate-50 p-3">
-      <div className="mb-2 font-medium">{title}</div>
-      <div className="space-y-2">
-        {rows.slice(0, 5).map((row) => (
-          <div key={`${title}-${row.code}`} className="flex items-center justify-between gap-3 rounded-md bg-white px-3 py-2 text-sm">
-            <div>
-              <div className="font-medium">{row.name}<span className="label ml-2">{row.code}</span></div>
-              <div className="label">{marketLabel(row.market)} / {boardLabel(row.board)} / {row.rating ?? "-"}</div>
-            </div>
-            <div className="mono text-right">
-              <div>{row.final_score?.toFixed(1) ?? "-"}</div>
-              <div className="label">{row.score_delta === null ? "new" : `${row.score_delta > 0 ? "+" : ""}${row.score_delta.toFixed(1)}`}</div>
-            </div>
-          </div>
-        ))}
-        {rows.length === 0 ? <div className="rounded-md bg-white px-3 py-2 text-sm text-slate-600">暂无变化。</div> : null}
-      </div>
-    </div>
-  );
-}
-
-function PanelLink({ icon, title, text, href }: { icon: React.ReactNode; title: string; text: string; href: string }) {
-  return (
-    <Link href={href} className="panel block p-5 hover:border-mint">
-      <div className="flex items-center gap-2 font-semibold">{icon}{title}</div>
-      <p className="mt-3 text-sm leading-6 text-slate-600">{text}</p>
-    </Link>
-  );
 }

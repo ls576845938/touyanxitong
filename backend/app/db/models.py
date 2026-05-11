@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -252,12 +252,17 @@ class NewsArticle(Base):
     source: Mapped[str] = mapped_column(String(64), default="mock")
     source_kind: Mapped[str] = mapped_column(String(24), default="mock", index=True)
     source_confidence: Mapped[float] = mapped_column(Float, default=0.3)
+    source_channel: Mapped[str] = mapped_column(String(64), default="")
+    source_label: Mapped[str] = mapped_column(String(64), default="")
+    source_rank: Mapped[int] = mapped_column(Integer, default=0)
     source_url: Mapped[str] = mapped_column(Text, default="")
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     matched_keywords: Mapped[str] = mapped_column(Text, default="[]")
     related_industries: Mapped[str] = mapped_column(Text, default="[]")
     related_stocks: Mapped[str] = mapped_column(Text, default="[]")
+    match_reason: Mapped[str] = mapped_column(Text, default='{"primary":"none","keyword":[],"industry":[],"alias":[],"unmatched":["none"]}')
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
 class TrendSignal(Base):
@@ -454,3 +459,275 @@ class WatchlistItem(Base):
     status: Mapped[str] = mapped_column(String(16), default="观察")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class TenbaggerThesis(Base):
+    __tablename__ = "tenbagger_thesis"
+    __table_args__ = (UniqueConstraint("stock_code", "trade_date", name="uq_tenbagger_thesis_code_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_code: Mapped[str] = mapped_column(String(16), ForeignKey("stock.code"), index=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    thesis_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    opportunity_score: Mapped[float] = mapped_column(Float, default=0.0)
+    growth_score: Mapped[float] = mapped_column(Float, default=0.0)
+    quality_score: Mapped[float] = mapped_column(Float, default=0.0)
+    valuation_score: Mapped[float] = mapped_column(Float, default=0.0)
+    timing_score: Mapped[float] = mapped_column(Float, default=0.0)
+    evidence_score: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    readiness_score: Mapped[float] = mapped_column(Float, default=0.0)
+    stage: Mapped[str] = mapped_column(String(32), default="discovery", index=True)
+    data_gate_status: Mapped[str] = mapped_column(String(16), default="FAIL", index=True)
+    investment_thesis: Mapped[str] = mapped_column(Text, default="")
+    base_case: Mapped[str] = mapped_column(Text, default="")
+    bull_case: Mapped[str] = mapped_column(Text, default="")
+    bear_case: Mapped[str] = mapped_column(Text, default="")
+    key_milestones: Mapped[str] = mapped_column(Text, default="[]")
+    disconfirming_evidence: Mapped[str] = mapped_column(Text, default="[]")
+    missing_evidence: Mapped[str] = mapped_column(Text, default="[]")
+    source_refs: Mapped[str] = mapped_column(Text, default="[]")
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    stock: Mapped[Stock] = relationship("Stock")
+
+
+class SignalBacktestRun(Base):
+    __tablename__ = "signal_backtest_run"
+    __table_args__ = (UniqueConstraint("run_key", name="uq_signal_backtest_run_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    horizon_days: Mapped[int] = mapped_column(Integer, default=120, index=True)
+    min_score: Mapped[float] = mapped_column(Float, default=0.0)
+    market: Mapped[str] = mapped_column(String(16), default="ALL", index=True)
+    board: Mapped[str] = mapped_column(String(24), default="all", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="success", index=True)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    average_forward_return: Mapped[float] = mapped_column(Float, default=0.0)
+    median_forward_return: Mapped[float] = mapped_column(Float, default=0.0)
+    average_max_return: Mapped[float] = mapped_column(Float, default=0.0)
+    hit_rate_2x: Mapped[float] = mapped_column(Float, default=0.0)
+    hit_rate_5x: Mapped[float] = mapped_column(Float, default=0.0)
+    hit_rate_10x: Mapped[float] = mapped_column(Float, default=0.0)
+    bucket_summary: Mapped[str] = mapped_column(Text, default="[]")
+    rating_summary: Mapped[str] = mapped_column(Text, default="[]")
+    confidence_summary: Mapped[str] = mapped_column(Text, default="[]")
+    failures: Mapped[str] = mapped_column(Text, default="[]")
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SecurityMaster(Base):
+    __tablename__ = "security_master"
+    __table_args__ = (UniqueConstraint("symbol", "market", name="uq_security_master_symbol_market"), {"extend_existing": True})
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    exchange: Mapped[str] = mapped_column(String(16), default="", index=True)
+    market: Mapped[str] = mapped_column(String(16), default="A", index=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    company_name: Mapped[str] = mapped_column(String(128), default="")
+    industry_level_1: Mapped[str] = mapped_column(String(64), default="", index=True)
+    industry_level_2: Mapped[str] = mapped_column(String(64), default="")
+    industry_level_3: Mapped[str] = mapped_column(String(64), default="")
+    concept_tags: Mapped[str] = mapped_column(Text, default="[]")
+    main_products: Mapped[str] = mapped_column(Text, default="[]")
+    business_summary: Mapped[str] = mapped_column(Text, default="")
+    revenue_drivers: Mapped[str] = mapped_column(Text, default="[]")
+    cost_drivers: Mapped[str] = mapped_column(Text, default="[]")
+    profit_drivers: Mapped[str] = mapped_column(Text, default="[]")
+    macro_sensitivities: Mapped[str] = mapped_column(Text, default="[]")
+    upstream_node_ids: Mapped[str] = mapped_column(Text, default="[]")
+    downstream_node_ids: Mapped[str] = mapped_column(Text, default="[]")
+    related_security_ids: Mapped[str] = mapped_column(Text, default="[]")
+    data_source: Mapped[str] = mapped_column(String(64), default="stock_universe", index=True)
+    source_confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class IndustryChainNode(Base):
+    __tablename__ = "industry_chain_node"
+    __table_args__ = (UniqueConstraint("chain_name", "name", name="uq_industry_chain_node_chain_name"), {"extend_existing": True})
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    level: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    parent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("industry_chain_node.id"), nullable=True, index=True)
+    chain_name: Mapped[str] = mapped_column(String(96), index=True)
+    node_type: Mapped[str] = mapped_column(String(32), default="", index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    key_metrics: Mapped[str] = mapped_column(Text, default="[]")
+    macro_drivers: Mapped[str] = mapped_column(Text, default="[]")
+    visible_indicators: Mapped[str] = mapped_column(Text, default="[]")
+    related_terms: Mapped[str] = mapped_column(Text, default="[]")
+    related_security_ids: Mapped[str] = mapped_column(Text, default="[]")
+    upstream_node_ids: Mapped[str] = mapped_column(Text, default="[]")
+    downstream_node_ids: Mapped[str] = mapped_column(Text, default="[]")
+    region_tags: Mapped[str] = mapped_column(Text, default="[]")
+    heat_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    trend_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class EvidenceEvent(Base):
+    __tablename__ = "evidence_event"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    title: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    source_name: Mapped[str] = mapped_column(String(128), default="", index=True)
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    source_type: Mapped[str] = mapped_column(String(32), default="新闻", index=True)
+    raw_text_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    affected_objects: Mapped[str] = mapped_column(Text, default="[]")
+    affected_node_ids: Mapped[str] = mapped_column(Text, default="[]")
+    affected_security_ids: Mapped[str] = mapped_column(Text, default="[]")
+    impact_direction: Mapped[str] = mapped_column(String(16), default="uncertain", index=True)
+    impact_strength: Mapped[float] = mapped_column(Float, default=0.0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    duration_type: Mapped[str] = mapped_column(String(16), default="unknown", index=True)
+    logic_chain: Mapped[str] = mapped_column(Text, default="")
+    risk_notes: Mapped[str] = mapped_column(Text, default="")
+    evidence_tags: Mapped[str] = mapped_column(Text, default="[]")
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    data_quality_status: Mapped[str] = mapped_column(String(16), default="WARN", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RetailStockPool(Base):
+    __tablename__ = "retail_stock_pool"
+    __table_args__ = (UniqueConstraint("security_id", name="uq_retail_stock_pool_security"), {"extend_existing": True})
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    security_id: Mapped[int] = mapped_column(Integer, ForeignKey("security_master.id"), index=True)
+    pool_level: Mapped[str] = mapped_column(String(16), default="C", index=True)
+    pool_reason: Mapped[str] = mapped_column(Text, default="")
+    thesis_summary: Mapped[str] = mapped_column(Text, default="")
+    key_evidence_event_ids: Mapped[str] = mapped_column(Text, default="[]")
+    related_node_ids: Mapped[str] = mapped_column(Text, default="[]")
+    trend_score: Mapped[float] = mapped_column(Float, default=0.0)
+    industry_heat_score: Mapped[float] = mapped_column(Float, default=0.0)
+    evidence_score: Mapped[float] = mapped_column(Float, default=0.0)
+    valuation_score: Mapped[float] = mapped_column(Float, default=50.0)
+    quality_score: Mapped[float] = mapped_column(Float, default=50.0)
+    risk_score: Mapped[float] = mapped_column(Float, default=50.0)
+    tenbagger_score: Mapped[float] = mapped_column(Float, default=0.0)
+    conviction_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    user_note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="watching", index=True)
+    invalidation_conditions: Mapped[str] = mapped_column(Text, default="[]")
+    next_tracking_tasks: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class RetailPortfolio(Base):
+    __tablename__ = "retail_portfolio"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="默认研究组合", index=True)
+    base_currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    benchmark: Mapped[str] = mapped_column(String(64), default="沪深300")
+    user_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    cash: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RetailPosition(Base):
+    __tablename__ = "retail_position"
+    __table_args__ = (UniqueConstraint("portfolio_id", "security_id", name="uq_retail_position_portfolio_security"), {"extend_existing": True})
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(Integer, ForeignKey("retail_portfolio.id"), index=True)
+    security_id: Mapped[int] = mapped_column(Integer, ForeignKey("security_master.id"), index=True)
+    quantity: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    market_value: Mapped[float] = mapped_column(Float, default=0.0)
+    weight: Mapped[float] = mapped_column(Float, default=0.0)
+    unrealized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    industry_exposure: Mapped[str] = mapped_column(String(96), default="")
+    theme_exposure: Mapped[str] = mapped_column(Text, default="[]")
+    chain_node_exposure: Mapped[str] = mapped_column(Text, default="[]")
+    factor_tags: Mapped[str] = mapped_column(Text, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class TradeJournal(Base):
+    __tablename__ = "trade_journal"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(Integer, ForeignKey("retail_portfolio.id"), index=True)
+    security_id: Mapped[int] = mapped_column(Integer, ForeignKey("security_master.id"), index=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    action: Mapped[str] = mapped_column(String(24), default="watch", index=True)
+    price: Mapped[float] = mapped_column(Float, default=0.0)
+    quantity: Mapped[float] = mapped_column(Float, default=0.0)
+    position_weight_after_trade: Mapped[float] = mapped_column(Float, default=0.0)
+    trade_reason: Mapped[str] = mapped_column(Text, default="")
+    linked_evidence_event_ids: Mapped[str] = mapped_column(Text, default="[]")
+    linked_stock_pool_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("retail_stock_pool.id"), nullable=True, index=True)
+    expected_scenario: Mapped[str] = mapped_column(Text, default="")
+    invalidation_condition: Mapped[str] = mapped_column(Text, default="")
+    risk_assessment: Mapped[str] = mapped_column(Text, default="")
+    user_emotion: Mapped[str] = mapped_column(String(24), default="calm", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TradeReview(Base):
+    __tablename__ = "trade_review"
+    __table_args__ = (UniqueConstraint("trade_journal_id", name="uq_trade_review_journal"), {"extend_existing": True})
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trade_journal_id: Mapped[int] = mapped_column(Integer, ForeignKey("trade_journal.id"), index=True)
+    review_date: Mapped[date] = mapped_column(Date, index=True)
+    holding_period_days: Mapped[int] = mapped_column(Integer, default=0)
+    pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    pnl_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    benchmark_return: Mapped[float] = mapped_column(Float, default=0.0)
+    excess_return: Mapped[float] = mapped_column(Float, default=0.0)
+    result_type: Mapped[str] = mapped_column(String(16), default="unfinished", index=True)
+    attribution_logic: Mapped[str] = mapped_column(String(32), default="luck", index=True)
+    what_happened: Mapped[str] = mapped_column(Text, default="")
+    what_expected: Mapped[str] = mapped_column(Text, default="")
+    error_category: Mapped[str] = mapped_column(String(32), default="no_error", index=True)
+    should_update_model_rules: Mapped[bool] = mapped_column(Boolean, default=False)
+    rule_update_suggestion: Mapped[str] = mapped_column(Text, default="")
+    next_action: Mapped[str] = mapped_column(String(32), default="continue_watch", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+def _normalized_confidence(value: int | float | None) -> float:
+    try:
+        numeric = float(value or 0.0)
+    except Exception:
+        numeric = 0.0
+    return max(0.0, min(100.0, numeric))
+
+
+@event.listens_for(EvidenceEvent, "before_insert")
+@event.listens_for(EvidenceEvent, "before_update")
+def _enforce_evidence_event_constraints(_mapper, _connection, target: EvidenceEvent) -> None:
+    target.confidence = _normalized_confidence(target.confidence)
+    source_name = str(target.source_name or "").strip()
+    source_url = str(target.source_url or "").strip()
+    if not source_name or not source_url:
+        target.confidence = min(target.confidence, 50.0)
+    target.data_quality_status = str(target.data_quality_status or "WARN").upper()
+    if target.is_mock and target.data_quality_status != "FAIL":
+        target.data_quality_status = "FAIL"
+
+
+@event.listens_for(RetailStockPool, "before_insert")
+@event.listens_for(RetailStockPool, "before_update")
+def _normalize_stock_pool_level(_mapper, _connection, target: RetailStockPool) -> None:
+    level = str(target.pool_level or "C").upper()
+    if float(target.quality_score or 0.0) <= 30.0 and level in {"S", "A"}:
+        level = "C"
+    target.pool_level = level

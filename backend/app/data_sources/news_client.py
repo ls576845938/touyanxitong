@@ -136,11 +136,18 @@ def normalize_news_article(item: dict[str, Any], default_source: str = "news") -
     source = str(item.get("source") or default_source)
     source_kind = str(item.get("source_kind") or _infer_source_kind(source))
     source_confidence = float(item.get("source_confidence") or _default_source_confidence(source_kind))
+    source_url = str(item.get("source_url") or "")
+    is_synthetic = bool(item.get("is_synthetic", False)) or _looks_synthetic_source(source, source_url)
     return {
         **item,
         "source": source[:64],
         "source_kind": source_kind[:24],
         "source_confidence": max(0.0, min(1.0, source_confidence)),
+        "source_channel": str(item.get("source_channel") or source_kind)[:64],
+        "source_label": str(item.get("source_label") or source)[:64],
+        "source_rank": max(0, int(item.get("source_rank") or 0)),
+        "match_reason": str(item.get("match_reason") or '{"primary":"none","keyword":[],"industry":[],"alias":[],"unmatched":["none"]}'),
+        "is_synthetic": is_synthetic,
     }
 
 
@@ -151,6 +158,18 @@ def _infer_source_kind(source: str) -> str:
     if "rss" in normalized:
         return "rss"
     return "news"
+
+
+def _looks_synthetic_source(source: str, source_url: str) -> bool:
+    normalized_source = source.lower()
+    normalized_url = source_url.lower()
+    return (
+        normalized_source.startswith("mock")
+        or "fallback" in normalized_source
+        or normalized_url.startswith("mock:")
+        or normalized_url.startswith("fallback:")
+        or "mock://" in normalized_url
+    )
 
 
 def _default_source_confidence(source_kind: str) -> float:

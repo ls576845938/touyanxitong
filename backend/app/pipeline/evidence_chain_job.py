@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, time
 
 from loguru import logger
 from sqlalchemy import delete, select
@@ -30,7 +30,7 @@ def run_evidence_chain_job(session: Session, trade_date: date | None = None) -> 
         logger.info("evidence chains generated: 0")
         return {"evidence_chains": 0}
     stocks = session.scalars(select(Stock).where(Stock.is_active.is_(True), Stock.code.in_(evidence_codes))).all()
-    articles = session.scalars(select(NewsArticle)).all()
+    articles = session.scalars(select(NewsArticle).where(NewsArticle.published_at <= _end_of_day(target_date))).all()
     articles_by_stock: dict[str, list[NewsArticle]] = defaultdict(list)
     for article in articles:
         for code in json_list(article.related_stocks):
@@ -77,3 +77,7 @@ def run_evidence_chain_job(session: Session, trade_date: date | None = None) -> 
     session.commit()
     logger.info("evidence chains generated: {}", count)
     return {"evidence_chains": count}
+
+
+def _end_of_day(value: date) -> datetime:
+    return datetime.combine(value, time.max)

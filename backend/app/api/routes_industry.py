@@ -663,15 +663,32 @@ def _related_articles(session: Session, industry_name: str, keywords: set[str], 
                 "source": article.source,
                 "source_kind": getattr(article, "source_kind", "mock"),
                 "source_confidence": round(float(getattr(article, "source_confidence", 0.3) or 0.0), 2),
+                "source_channel": str(getattr(article, "source_channel", "") or ""),
+                "source_label": str(getattr(article, "source_label", "") or article.source),
+                "source_rank": int(getattr(article, "source_rank", 0) or 0),
                 "source_url": article.source_url,
                 "published_at": article.published_at.isoformat(),
                 "matched_keywords": list(article_keywords),
                 "related_stocks": _loads_json_list(article.related_stocks),
+                "match_reason": str(getattr(article, "match_reason", "") or ""),
+                "is_synthetic": bool(getattr(article, "is_synthetic", False)) or _looks_synthetic_article(article),
             }
         )
         if len(rows) >= limit:
             break
     return rows
+
+
+def _looks_synthetic_article(article: NewsArticle) -> bool:
+    source = str(getattr(article, "source", "") or "").lower()
+    source_url = str(getattr(article, "source_url", "") or "").lower()
+    return (
+        source.startswith("mock")
+        or "fallback" in source
+        or source_url.startswith("mock:")
+        or source_url.startswith("fallback:")
+        or "mock://" in source_url
+    )
 
 
 def _evidence_source_mix(session: Session, industry_name: str, keywords: set[str], limit: int = 200) -> dict[str, object]:

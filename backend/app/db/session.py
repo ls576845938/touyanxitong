@@ -17,7 +17,7 @@ from app.db.models import Base
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SQLITE_PATH = BACKEND_DIR / "data" / "alpha_radar.db"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 14
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,11 @@ def init_db(target_engine: Engine | None = None, target_database_url: str | None
     _ensure_sqlite_parent(active_url)
     Base.metadata.create_all(bind=active_engine)
     run_schema_migrations(active_engine)
+    from app.engines.retail_research_engine import ensure_retail_demo_data
+
+    with Session(active_engine) as session:
+        ensure_retail_demo_data(session)
+        session.commit()
 
 
 def run_schema_migrations(target_engine: Engine | None = None) -> None:
@@ -195,6 +200,20 @@ def _migration_industry_chain_graph_schema(_: Engine) -> None:
     """Version marker for chain graph tables created from SQLAlchemy metadata."""
 
 
+def _migration_tenbagger_research_loop_schema(_: Engine) -> None:
+    """Version marker for thesis and backtest tables created from SQLAlchemy metadata."""
+
+
+def _migration_api_performance_indexes(target_engine: Engine) -> None:
+    """Add composite indexes for interactive dashboard/API reads."""
+    _ensure_api_performance_indexes(target_engine)
+
+
+def _migration_retail_research_loop_schema(target_engine: Engine) -> None:
+    """Version marker plus indexes for retail research loop tables."""
+    _ensure_retail_research_indexes(target_engine)
+
+
 def _ensure_lightweight_migrations(target_engine: Engine) -> None:
     """Apply tiny additive migrations for local MVP databases.
 
@@ -275,6 +294,70 @@ def _ensure_news_article_source_columns(target_engine: Engine) -> None:
         with target_engine.begin() as connection:
             for statement in alters:
                 connection.execute(text(statement))
+
+
+def _ensure_news_article_hot_terms_trace_columns(target_engine: Engine) -> None:
+    inspector = inspect(target_engine)
+    if not inspector.has_table("news_article"):
+        return
+    existing = {column["name"] for column in inspector.get_columns("news_article")}
+    alters: list[str] = []
+    boolean_default = "false" if target_engine.dialect.name == "postgresql" else "0"
+    match_reason_default = '\'{"primary":"none","keyword":[],"industry":[],"alias":[],"unmatched":["none"]}\''
+    if "source_channel" not in existing:
+        alters.append("ALTER TABLE news_article ADD COLUMN source_channel VARCHAR(64) DEFAULT ''")
+    if "source_label" not in existing:
+        alters.append("ALTER TABLE news_article ADD COLUMN source_label VARCHAR(64) DEFAULT ''")
+    if "source_rank" not in existing:
+        alters.append("ALTER TABLE news_article ADD COLUMN source_rank INTEGER DEFAULT 0")
+    if "match_reason" not in existing:
+        alters.append(f"ALTER TABLE news_article ADD COLUMN match_reason TEXT DEFAULT {match_reason_default}")
+    if "is_synthetic" not in existing:
+        alters.append(f"ALTER TABLE news_article ADD COLUMN is_synthetic BOOLEAN DEFAULT {boolean_default}")
+    if alters:
+        with target_engine.begin() as connection:
+            for statement in alters:
+                connection.execute(text(statement))
+            if _table_has_columns(
+                target_engine,
+                "news_article",
+                {"source_channel", "source_label", "source_rank", "match_reason", "is_synthetic", "source", "source_kind"},
+            ):
+                connection.execute(
+                    text(
+                        f"""
+                        UPDATE news_article
+                        SET source_channel = COALESCE(NULLIF(source_channel, ''), ''),
+                            source_label = COALESCE(NULLIF(source_label, ''), source),
+                            source_rank = COALESCE(source_rank, 0),
+                            match_reason = COALESCE(NULLIF(match_reason, ''), {match_reason_default}),
+                            is_synthetic = COALESCE(is_synthetic, {boolean_default})
+                        """
+                    )
+                )
+
+
+def _migration_mark_mock_news_synthetic(target_engine: Engine) -> None:
+    inspector = inspect(target_engine)
+    if not inspector.has_table("news_article"):
+        return
+    if not _table_has_columns(target_engine, "news_article", {"source", "source_url", "is_synthetic"}):
+        return
+    boolean_true = "true" if target_engine.dialect.name == "postgresql" else "1"
+    with target_engine.begin() as connection:
+        connection.execute(
+            text(
+                f"""
+                UPDATE news_article
+                SET is_synthetic = {boolean_true}
+                WHERE LOWER(COALESCE(source, '')) LIKE 'mock%'
+                   OR LOWER(COALESCE(source, '')) LIKE '%fallback%'
+                   OR LOWER(COALESCE(source_url, '')) LIKE 'mock:%'
+                   OR LOWER(COALESCE(source_url, '')) LIKE 'fallback:%'
+                   OR LOWER(COALESCE(source_url, '')) LIKE '%mock://%'
+                """
+            )
+        )
 
 
 def ingestion_task_runtime_column_definitions(target_engine: Engine) -> dict[str, str]:
@@ -536,6 +619,84 @@ def _ensure_query_indexes(target_engine: Engine) -> None:
                 connection.execute(text(statement))
 
 
+def _ensure_api_performance_indexes(target_engine: Engine) -> None:
+    statements = [
+        (
+            "daily_bar",
+            {"stock_code", "source", "trade_date"},
+            "CREATE INDEX IF NOT EXISTS ix_daily_bar_stock_source_date ON daily_bar (stock_code, source, trade_date)",
+        ),
+        (
+            "daily_bar",
+            {"source_kind", "source", "stock_code", "trade_date"},
+            "CREATE INDEX IF NOT EXISTS ix_daily_bar_source_kind_source_stock_date ON daily_bar (source_kind, source, stock_code, trade_date)",
+        ),
+        (
+            "daily_bar",
+            {"source_kind", "stock_code"},
+            "CREATE INDEX IF NOT EXISTS ix_daily_bar_stock_source_kind ON daily_bar (stock_code, source_kind)",
+        ),
+        (
+            "industry_heat",
+            {"trade_date", "heat_score"},
+            "CREATE INDEX IF NOT EXISTS ix_industry_heat_date_score ON industry_heat (trade_date, heat_score)",
+        ),
+        (
+            "data_source_run",
+            {"finished_at", "id"},
+            "CREATE INDEX IF NOT EXISTS ix_data_source_run_finished_id ON data_source_run (finished_at, id)",
+        ),
+    ]
+    with target_engine.begin() as connection:
+        for table, columns, statement in statements:
+            if _table_has_columns(target_engine, table, columns):
+                connection.execute(text(statement))
+
+
+def _ensure_retail_research_indexes(target_engine: Engine) -> None:
+    statements = [
+        (
+            "security_master",
+            {"symbol", "market"},
+            "CREATE INDEX IF NOT EXISTS ix_security_master_symbol_market ON security_master (symbol, market)",
+        ),
+        (
+            "industry_chain_node",
+            {"chain_name", "heat_score"},
+            "CREATE INDEX IF NOT EXISTS ix_industry_chain_node_chain_heat ON industry_chain_node (chain_name, heat_score)",
+        ),
+        (
+            "evidence_event",
+            {"event_time", "confidence", "data_quality_status"},
+            "CREATE INDEX IF NOT EXISTS ix_evidence_event_time_conf_quality ON evidence_event (event_time, confidence, data_quality_status)",
+        ),
+        (
+            "retail_stock_pool",
+            {"pool_level", "conviction_score", "status"},
+            "CREATE INDEX IF NOT EXISTS ix_retail_stock_pool_level_score_status ON retail_stock_pool (pool_level, conviction_score, status)",
+        ),
+        (
+            "retail_position",
+            {"portfolio_id", "weight"},
+            "CREATE INDEX IF NOT EXISTS ix_retail_position_portfolio_weight ON retail_position (portfolio_id, weight)",
+        ),
+        (
+            "trade_journal",
+            {"portfolio_id", "trade_date"},
+            "CREATE INDEX IF NOT EXISTS ix_trade_journal_portfolio_date ON trade_journal (portfolio_id, trade_date)",
+        ),
+        (
+            "trade_review",
+            {"trade_journal_id", "review_date"},
+            "CREATE INDEX IF NOT EXISTS ix_trade_review_journal_review_date ON trade_review (trade_journal_id, review_date)",
+        ),
+    ]
+    with target_engine.begin() as connection:
+        for table, columns, statement in statements:
+            if _table_has_columns(target_engine, table, columns):
+                connection.execute(text(statement))
+
+
 def _table_has_columns(target_engine: Engine, table_name: str, columns: set[str]) -> bool:
     inspector = inspect(target_engine)
     if not inspector.has_table(table_name):
@@ -548,6 +709,7 @@ def _ensure_operational_status_and_indexes(target_engine: Engine) -> None:
     _ensure_stock_asset_classification(target_engine)
     _ensure_ingestion_status_classification(target_engine)
     _ensure_query_indexes(target_engine)
+    _ensure_api_performance_indexes(target_engine)
 
 
 SCHEMA_MIGRATIONS = [
@@ -560,6 +722,11 @@ SCHEMA_MIGRATIONS = [
     SchemaMigration(7, "news_article_source_columns", _ensure_news_article_source_columns),
     SchemaMigration(8, "market_source_quality_columns", _ensure_market_source_quality_columns),
     SchemaMigration(9, "industry_chain_graph_schema", _migration_industry_chain_graph_schema),
+    SchemaMigration(10, "tenbagger_research_loop_schema", _migration_tenbagger_research_loop_schema),
+    SchemaMigration(11, "api_performance_indexes", _migration_api_performance_indexes),
+    SchemaMigration(12, "retail_research_loop_schema", _migration_retail_research_loop_schema),
+    SchemaMigration(13, "news_article_hot_terms_trace_columns", _ensure_news_article_hot_terms_trace_columns),
+    SchemaMigration(14, "mark_mock_news_synthetic", _migration_mark_mock_news_synthetic),
 ]
 
 

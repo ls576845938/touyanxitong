@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -11,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.config import settings
 from app.db.models import DailyBar, DailyReport, DataIngestionBatch, DataIngestionTask, DataSourceRun, IndustryHeat, Stock, StockScore, TrendSignal
 from app.db.session import get_session
+from app.engines.universe_engine import DEFAULT_RULES, TRUSTED_DATA_SOURCES
 from app.market_meta import A_BOARD_ORDER, MARKET_ORDER, board_label, market_label
 from app.pipeline.backfill_manifest import DEFAULT_BACKFILL_MANIFEST_PATH, build_backfill_manifest, load_backfill_manifest
 from app.pipeline.data_quality_summary import data_quality_payload
@@ -27,6 +31,19 @@ from app.pipeline.ingestion_task_service import (
 from app.pipeline.research_universe import research_universe_payload
 
 router = APIRouter(prefix="/api/market", tags=["market"])
+
+_CACHE_TTL_SECONDS = 120.0
+_payload_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _cached_payload(key: str, builder: Callable[[], Any], *, ttl: float = _CACHE_TTL_SECONDS) -> Any:
+    now = time.monotonic()
+    cached = _payload_cache.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+    value = builder()
+    _payload_cache[key] = (now + ttl, value)
+    return value
 
 
 class IngestionTaskCreate(BaseModel):
@@ -82,16 +99,34 @@ def market_segments(session: Session = Depends(get_session)) -> list[dict[str, o
 
 
 @router.get("/data-status")
-def data_status(session: Session = Depends(get_session)) -> dict[str, object]:
+def data_status(
+    include_source_coverage: bool = Query(default=False),
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    return _cached_payload(
+        f"data-status:{int(include_source_coverage)}",
+        lambda: _data_status_payload(session, include_source_coverage=include_source_coverage),
+    )
+
+
+def _data_status_payload(session: Session, *, include_source_coverage: bool = False) -> dict[str, object]:
+    bar_latest_by_stock = (
+        select(
+            DailyBar.stock_code.label("stock_code"),
+            func.max(DailyBar.trade_date).label("latest_trade_date"),
+        )
+        .group_by(DailyBar.stock_code)
+        .subquery()
+    )
     coverage_rows = session.execute(
         select(
             Stock.market,
             Stock.board,
-            func.count(func.distinct(Stock.id)),
-            func.count(func.distinct(DailyBar.stock_code)),
-            func.max(DailyBar.trade_date),
+            func.count(Stock.id),
+            func.count(bar_latest_by_stock.c.stock_code),
+            func.max(bar_latest_by_stock.c.latest_trade_date),
         )
-        .outerjoin(DailyBar, DailyBar.stock_code == Stock.code)
+        .outerjoin(bar_latest_by_stock, bar_latest_by_stock.c.stock_code == Stock.code)
         .where(Stock.is_active.is_(True))
         .group_by(Stock.market, Stock.board)
     ).all()
@@ -111,18 +146,20 @@ def data_status(session: Session = Depends(get_session)) -> dict[str, object]:
                 "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
             }
         )
-    source_rows = session.execute(
-        select(
-            DailyBar.source_kind,
-            DailyBar.source,
-            func.count(DailyBar.id),
-            func.count(func.distinct(DailyBar.stock_code)),
-            func.min(DailyBar.trade_date),
-            func.max(DailyBar.trade_date),
-        )
-        .group_by(DailyBar.source_kind, DailyBar.source)
-        .order_by(DailyBar.source_kind, DailyBar.source)
-    ).all()
+    source_rows = []
+    if include_source_coverage:
+        source_rows = session.execute(
+            select(
+                DailyBar.source_kind,
+                DailyBar.source,
+                func.count(DailyBar.id),
+                func.count(func.distinct(DailyBar.stock_code)),
+                func.min(DailyBar.trade_date),
+                func.max(DailyBar.trade_date),
+            )
+            .group_by(DailyBar.source_kind, DailyBar.source)
+            .order_by(DailyBar.source_kind, DailyBar.source)
+        ).all()
     runs = session.scalars(select(DataSourceRun).order_by(DataSourceRun.finished_at.desc(), DataSourceRun.id.desc()).limit(20)).all()
     return {
         "coverage": sorted(coverage, key=lambda item: (_market_sort_key(str(item["market"])), _board_sort_key(str(item["board"])))),
@@ -375,6 +412,10 @@ def ingestion_priority(
 
 @router.get("/data-quality")
 def data_quality(session: Session = Depends(get_session)) -> dict[str, object]:
+    return _cached_payload("data-quality", lambda: _data_quality_payload(session), ttl=120.0)
+
+
+def _data_quality_payload(session: Session) -> dict[str, object]:
     stocks = session.scalars(
         select(Stock)
         .where(
@@ -461,7 +502,10 @@ def research_universe(
     row_limit: int = Query(default=200, ge=0, le=5000),
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
-    payload = _research_universe_payload(session)
+    if include_rows:
+        payload = _research_universe_payload(session)
+    else:
+        payload = _cached_payload("research-universe:summary", lambda: _research_universe_fast_summary(session), ttl=120.0)
     for segment in payload["segments"]:
         segment["market_label"] = market_label(segment["market"])
         segment["board_label"] = board_label(segment["board"])
@@ -532,6 +576,108 @@ def _board_sort_key(board: str) -> int:
 
 def _research_universe_payload(session: Session) -> dict[str, object]:
     return research_universe_payload(session)
+
+
+def _research_universe_fast_summary(session: Session) -> dict[str, object]:
+    stocks = session.scalars(
+        select(Stock).where(Stock.is_active.is_(True)).order_by(Stock.market, Stock.board, Stock.code)
+    ).all()
+    rows: list[dict[str, object]] = []
+    for stock in stocks:
+        reasons = _fast_universe_exclusion_reasons(stock)
+        rows.append(
+            {
+                "code": stock.code,
+                "name": stock.name,
+                "market": stock.market,
+                "board": stock.board,
+                "eligible": not reasons,
+                "exclusion_reasons": reasons,
+                "market_cap": stock.market_cap,
+                "float_market_cap": stock.float_market_cap,
+                "bars_count": 0,
+                "latest_trade_date": None,
+                "latest_close": 0.0,
+                "avg_amount_20d": 0.0,
+                "avg_volume_20d": 0.0,
+                "selected_bar_source": "summary_not_loaded",
+                "source": stock.source,
+                "data_vendor": stock.data_vendor,
+                "data_source_trust": 0.0,
+                "source_profile": {"sources": [], "mixed_sources": False},
+            }
+        )
+    return {
+        "summary": _fast_universe_summary(rows),
+        "segments": _fast_universe_segments(rows),
+        "exclusion_summary": _fast_universe_exclusion_summary(rows),
+        "rules": DEFAULT_RULES,
+        "trusted_data_sources": TRUSTED_DATA_SOURCES,
+        "rows": [],
+        "summary_mode": "fast",
+    }
+
+
+def _fast_universe_exclusion_reasons(stock: Stock) -> list[str]:
+    rules = DEFAULT_RULES.get(stock.market, DEFAULT_RULES["A"])
+    reasons: list[str] = []
+    if not stock.is_active:
+        reasons.append("inactive")
+    if stock.listing_status != "listed":
+        reasons.append("not_listed")
+    if stock.asset_type != "equity":
+        reasons.append("not_equity")
+    if stock.is_etf:
+        reasons.append("etf_excluded")
+    if stock.is_st:
+        reasons.append("st_or_special_treatment")
+    if float(stock.market_cap or 0.0) < float(rules["min_market_cap"]):
+        reasons.append("market_cap_too_small")
+    if float(stock.float_market_cap or 0.0) < float(rules["min_float_market_cap"]):
+        reasons.append("float_market_cap_too_small")
+    return reasons
+
+
+def _fast_universe_summary(rows: list[dict[str, object]]) -> dict[str, object]:
+    total = len(rows)
+    eligible = sum(1 for row in rows if row["eligible"])
+    return {
+        "stock_count": total,
+        "eligible_count": eligible,
+        "excluded_count": total - eligible,
+        "eligible_ratio": round(eligible / total, 4) if total else 0,
+    }
+
+
+def _fast_universe_segments(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row["market"]), str(row["board"]))
+        segment = grouped.setdefault(
+            key,
+            {"market": key[0], "board": key[1], "stock_count": 0, "eligible_count": 0, "excluded_count": 0, "exclusion_reasons": {}},
+        )
+        segment["stock_count"] += 1
+        if row["eligible"]:
+            segment["eligible_count"] += 1
+        else:
+            segment["excluded_count"] += 1
+            for reason in row["exclusion_reasons"]:
+                segment["exclusion_reasons"][reason] = int(segment["exclusion_reasons"].get(reason, 0)) + 1
+    result = []
+    for segment in grouped.values():
+        total = int(segment["stock_count"])
+        segment["eligible_ratio"] = round(int(segment["eligible_count"]) / total, 4) if total else 0
+        result.append(segment)
+    return sorted(result, key=lambda item: (_market_sort_key(str(item["market"])), _board_sort_key(str(item["board"]))))
+
+
+def _fast_universe_exclusion_summary(rows: list[dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        for reason in row["exclusion_reasons"]:
+            counts[str(reason)] = counts.get(str(reason), 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
 def _bars_by_stock(session: Session, stock_codes: list[str]) -> dict[str, list[DailyBar]]:

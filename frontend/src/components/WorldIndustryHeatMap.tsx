@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Globe2, MapPin, MoveRight } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { cn } from "@/lib/utils";
+import { Globe2, MapPin, Navigation, Zap, Info } from "lucide-react";
 import type { ChainGeo, ChainNode, ChainRegion, ChainRoute } from "@/lib/api";
 
 type WorldIndustryHeatMapProps = {
@@ -22,286 +24,244 @@ type RenderRegion = AtlasRegion & ChainRegion & {
   heatValue: number;
 };
 
+// 更加精细化的世界区域矢量路径（点阵/数字网格风格示意）
 const REGION_ATLAS: AtlasRegion[] = [
-  { region_key: "north_america", label: "北美", x: 198, y: 186, path: "M74 124 C100 72 172 48 246 60 C304 70 348 100 372 150 C390 188 382 234 344 264 C312 288 282 278 256 300 C230 320 228 360 194 364 C162 368 138 344 122 314 C102 276 72 260 58 224 C44 188 52 152 74 124 Z" },
-  { region_key: "latin_america", label: "拉美", x: 282, y: 390, path: "M276 308 C310 324 332 350 336 388 C340 430 324 482 300 530 C286 560 266 578 248 594 C238 552 220 514 208 468 C196 420 202 372 224 338 C236 320 250 306 276 308 Z" },
-  { region_key: "europe", label: "欧洲", x: 490, y: 168, path: "M430 116 C454 94 494 88 528 94 C562 100 590 118 600 144 C608 168 592 188 564 194 C532 202 514 196 490 210 C464 224 432 214 420 188 C410 166 410 136 430 116 Z" },
-  { region_key: "middle_east", label: "中东", x: 566, y: 238, path: "M536 198 C558 190 586 194 606 208 C624 222 628 250 616 272 C602 294 574 302 552 292 C530 282 516 258 516 238 C516 220 522 204 536 198 Z" },
-  { region_key: "africa", label: "非洲", x: 520, y: 336, path: "M450 222 C486 204 542 210 586 236 C620 256 636 296 632 348 C628 408 590 466 528 490 C474 510 430 486 412 432 C398 388 400 338 410 292 C418 258 426 236 450 222 Z" },
-  { region_key: "india", label: "印度", x: 646, y: 292, path: "M622 252 C640 240 664 240 684 248 C702 256 712 278 710 298 C708 320 694 340 674 350 C656 358 638 354 628 338 C614 316 610 286 622 252 Z" },
-  { region_key: "china", label: "中国", x: 760, y: 210, path: "M654 106 C716 70 796 70 868 98 C922 118 954 154 958 202 C960 242 936 278 892 286 C844 294 816 318 774 324 C730 330 686 312 662 270 C638 226 628 162 654 106 Z" },
-  { region_key: "developed_asia", label: "日韩台", x: 850, y: 170, path: "M820 116 C846 104 882 110 904 132 C924 152 924 182 904 202 C882 224 844 222 822 202 C800 180 796 130 820 116 Z" },
-  { region_key: "asean", label: "东盟", x: 746, y: 316, path: "M700 266 C722 258 748 258 772 268 C794 278 808 296 810 318 C812 346 798 368 774 378 C748 390 722 386 706 366 C690 344 686 284 700 266 Z" },
-  { region_key: "australia", label: "澳洲", x: 862, y: 458, path: "M792 398 C830 376 878 374 920 390 C950 402 970 424 972 454 C974 488 946 514 906 524 C864 536 816 528 790 506 C764 484 764 432 792 398 Z" }
+  { region_key: "north_america", label: "北美区域", x: 220, y: 200, path: "M80 120 L240 80 L360 140 L340 280 L200 340 L100 240 Z" },
+  { region_key: "latin_america", label: "拉美市场", x: 300, y: 460, path: "M280 320 L360 380 L320 540 L240 580 L220 420 Z" },
+  { region_key: "europe", label: "欧洲核心", x: 500, y: 170, path: "M440 120 L540 100 L600 160 L540 220 L460 200 Z" },
+  { region_key: "middle_east", label: "中东能源", x: 580, y: 260, path: "M540 210 L620 200 L640 280 L560 300 Z" },
+  { region_key: "africa", label: "非洲大陆", x: 540, y: 380, path: "M460 240 L580 230 L640 340 L580 500 L420 440 Z" },
+  { region_key: "china", label: "中国制造", x: 780, y: 220, path: "M660 120 L840 100 L940 180 L880 300 L720 320 Z" },
+  { region_key: "india", label: "印度增长", x: 680, y: 310, path: "M640 260 L720 250 L740 340 L660 360 Z" },
+  { region_key: "developed_asia", label: "日韩台", x: 880, y: 180, path: "M840 130 L920 120 L940 210 L860 220 Z" },
+  { region_key: "asean", label: "东盟制造", x: 780, y: 340, path: "M720 280 L820 280 L840 380 L740 400 Z" },
+  { region_key: "australia", label: "澳洲矿产", x: 880, y: 480, path: "M800 420 L940 400 L960 500 L840 540 Z" }
 ];
 
 export function WorldIndustryHeatMap({ geo, selectedNode }: WorldIndustryHeatMapProps) {
   const regions = useMemo(() => buildRegions(geo?.regions ?? []), [geo?.regions]);
   const routes = useMemo(() => buildRoutes(geo?.routes ?? [], regions), [geo?.routes, regions]);
-  const [activeRegionKey, setActiveRegionKey] = useState<string | null>(regions[0]?.region_key ?? null);
-
-  useEffect(() => {
-    setActiveRegionKey(regions[0]?.region_key ?? null);
-  }, [regions]);
-
-  const activeRegion = regions.find((region) => region.region_key === activeRegionKey) ?? regions[0] ?? null;
+  const [hoveredReg, setHoveredReg] = useState<string | null>(null);
 
   return (
-    <div className="grid items-start gap-4 xl:grid-cols-[1.45fr_0.55fr]">
-      <div className="overflow-hidden rounded-lg border border-[#f2dfd2] bg-white">
-        <svg viewBox="0 0 1000 620" role="img" aria-label="世界产业分布热力图" className="block h-[620px] w-full">
+    <div className="grid items-start gap-8 xl:grid-cols-[1fr_400px]">
+      <div className="relative bg-white rounded-[40px] border border-slate-200 overflow-hidden shadow-2xl h-[680px]">
+        {/* 数字地图背景：精细点阵 */}
+        <div className="absolute inset-0 opacity-[0.05] pointer-events-none" 
+             style={{ backgroundImage: 'radial-gradient(#000 1.5px, transparent 0)', backgroundSize: '24px 24px' }} />
+        
+        <svg viewBox="0 0 1000 620" className="block w-full h-full select-none">
           <defs>
-            <linearGradient id="world-surface" x1="0" x2="1" y1="0" y2="1">
-              <stop offset="0" stopColor="#ffffff" />
-              <stop offset="1" stopColor="#fffaf5" />
-            </linearGradient>
-            <linearGradient id="world-route" x1="0" x2="1" y1="0" y2="0">
-              <stop offset="0" stopColor="#facc15" />
-              <stop offset="0.52" stopColor="#f97316" />
-              <stop offset="1" stopColor="#dc2626" />
-            </linearGradient>
-            <filter id="world-shadow" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="14" stdDeviation="16" floodColor="#7c2d12" floodOpacity="0.08" />
+            <filter id="hub-shadow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="12" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
             </filter>
+            <linearGradient id="route-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+               <stop offset="0%" stopColor="#eab308" />
+               <stop offset="100%" stopColor="#ef4444" />
+            </linearGradient>
           </defs>
 
-          <rect width="1000" height="620" fill="url(#world-surface)" />
-          <g opacity="0.88">
-            {[102, 176, 250, 324, 398, 472, 546].map((y) => (
-              <line key={`lat-${y}`} x1="40" x2="960" y1={y} y2={y} stroke="#f4ece5" strokeWidth="1" />
-            ))}
-            {[110, 220, 330, 440, 550, 660, 770, 880].map((x) => (
-              <line key={`lon-${x}`} x1={x} x2={x} y1="54" y2="566" stroke="#f6ede6" strokeWidth="1" />
+          {/* 抽象陆地轮廓 */}
+          <g fill="#f1f5f9" stroke="#e2e8f0" strokeWidth="1">
+            {REGION_ATLAS.map((reg) => (
+              <path key={`bg-${reg.region_key}`} d={reg.path} className="transition-colors duration-500 hover:fill-slate-100" />
             ))}
           </g>
 
-          <g fill="#fff6ed" stroke="#efdbc9" strokeWidth="1.2" filter="url(#world-shadow)">
-            {REGION_ATLAS.map((region) => (
-              <path key={region.region_key} d={region.path} />
-            ))}
-          </g>
-
-          <g fill="none" stroke="#f0d8c7" strokeWidth="1" opacity="0.9">
-            <path d="M86 162 C160 140 240 148 318 196" />
-            <path d="M438 154 C478 170 534 172 592 152" />
-            <path d="M670 140 C754 122 850 148 942 212" />
-            <path d="M454 252 C508 286 550 350 560 420" />
-            <path d="M706 286 C754 310 820 334 892 340" />
-            <path d="M792 418 C838 428 884 436 944 444" />
-          </g>
-
-          <g fill="none">
-            {routes.map((route) => (
-              <path
-                key={`${route.from.region_key}-${route.to.region_key}`}
+          {/* 供应链流动路径 */}
+          <g>
+            {routes.map((route, idx) => (
+              <motion.path
+                key={`r-${idx}`}
                 d={routePath(route.from, route.to)}
-                stroke="url(#world-route)"
-                strokeWidth={1.6 + route.intensity * 4.8}
-                strokeOpacity={0.18 + route.intensity * 0.42}
-                strokeDasharray="5 8"
-                strokeLinecap="round"
+                fill="none"
+                stroke="url(#route-grad)"
+                strokeWidth={1.5 + route.intensity * 2}
+                strokeDasharray="6 8"
+                initial={{ pathLength: 0, opacity: 0 }}
+                animate={{ pathLength: 1, opacity: 0.35 }}
+                transition={{ duration: 2, delay: idx * 0.1 }}
               />
             ))}
           </g>
 
-          <g>
-            {regions.map((region) => {
-              const color = warmColor(region.intensityValue);
-              const active = activeRegion?.region_key === region.region_key;
-              const rings = [2.3, 1.45, 0.66];
-              return (
-                <g
-                  key={region.region_key}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setActiveRegionKey(region.region_key)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") setActiveRegionKey(region.region_key);
-                  }}
-                  className="cursor-pointer outline-none"
-                >
-                  {rings.map((ratio, index) => (
-                    <circle
-                      key={`${region.region_key}-ring-${ratio}`}
-                      cx={region.x}
-                      cy={region.y}
-                      r={(16 + region.intensityValue * 30) * ratio}
-                      fill={color}
-                      opacity={index === 0 ? 0.08 : index === 1 ? 0.14 : 0.9}
-                    />
-                  ))}
-                  <circle cx={region.x} cy={region.y} r="8" fill="#ffffff" opacity="0.9" />
-                  <g transform={`translate(${region.x + (region.x > 770 ? -124 : 18)} ${region.y - (region.y < 120 ? -12 : 30)})`}>
-                    <rect width="112" height="46" rx="10" fill="#ffffff" stroke={active ? color : "#f3dfd3"} strokeWidth={active ? 1.8 : 1} />
-                    <text x="10" y="18" fill="#111827" fontSize="12.5" fontWeight="800">
-                      {region.label}
-                    </text>
-                    <text x="10" y="34" fill={color} fontSize="11.5" fontWeight="700">
-                      {region.heatValue.toFixed(1)}
-                    </text>
-                  </g>
+          {/* 核心地理热力锚点 - 实用性强化：标签常亮 */}
+          {regions.map((reg) => {
+            const hColor = heatColor(reg.intensityValue);
+            const active = hoveredReg === reg.region_key;
+            
+            return (
+              <motion.g
+                key={reg.region_key}
+                onMouseEnter={() => setHoveredReg(reg.region_key)}
+                onMouseLeave={() => setHoveredReg(null)}
+                className="cursor-pointer"
+                animate={{ scale: active ? 1.1 : 1 }}
+              >
+                {/* 扩散呼吸环 */}
+                <motion.circle
+                  cx={reg.x} cy={reg.y}
+                  r={(18 + reg.intensityValue * 35) * 1.5}
+                  fill={hColor}
+                  animate={{ opacity: [0.03, 0.15, 0.03], scale: [0.9, 1.1, 0.9] }}
+                  transition={{ duration: 3, repeat: Infinity }}
+                />
+                
+                {/* 中心实心站点 */}
+                <circle cx={reg.x} cy={reg.y} r={14 + reg.intensityValue * 16} fill="white" stroke={hColor} strokeWidth="3" className="shadow-lg" />
+                <circle cx={reg.x} cy={reg.y} r={6 + reg.intensityValue * 8} fill={hColor} />
+                
+                {/* 地理位置标签 - 实用性：增加常亮背景板 */}
+                <g transform={`translate(${reg.x} ${reg.y - (30 + reg.intensityValue * 15)})`}>
+                   <rect
+                     x={-55} y={-16} width={110} height={32} rx={16}
+                     fill="white"
+                     stroke={active ? hColor : "#f1f5f9"}
+                     strokeWidth={active ? 2.5 : 1}
+                     className="shadow-2xl transition-all"
+                   />
+                   <text textAnchor="middle" y={1} fill="#0f172a" fontSize="11" fontWeight="900" className="uppercase tracking-tighter">{reg.label}</text>
+                   <text textAnchor="middle" y={12} fill={hColor} fontSize="10" fontWeight="900" className="tabular-nums">{reg.heatValue.toFixed(1)}</text>
                 </g>
+              </motion.g>
+            );
+          })}
+        </svg>
+
+        {/* 顶部状态条 */}
+        <div className="absolute top-10 left-10 flex items-center gap-6 bg-white/90 backdrop-blur-xl border border-slate-200 px-8 py-5 rounded-[24px] shadow-2xl">
+           <div className="flex items-center gap-4">
+             <div className="h-3 w-3 rounded-full bg-red-500 animate-pulse" />
+             <div>
+               <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Live Intelligence</div>
+               <div className="text-sm font-black text-slate-900">GLOBAL PRODUCTION MESH ACTIVE</div>
+             </div>
+           </div>
+           <div className="h-8 w-[1px] bg-slate-200" />
+           <div className="flex flex-col">
+              <span className="text-[10px] font-black text-slate-400 uppercase">Strategic Regions</span>
+              <span className="text-sm font-black italic">{regions.length} Nodes</span>
+           </div>
+        </div>
+      </div>
+
+      {/* 侧边深度分析面板 */}
+      <aside className="space-y-6 h-[680px] overflow-y-auto no-scrollbar">
+        <div className="bg-white border border-slate-200 p-8 rounded-[40px] shadow-xl">
+          <div className="flex items-center justify-between mb-8">
+            <h4 className="text-md font-black uppercase tracking-widest text-slate-900 flex items-center gap-3">
+              <Zap size={20} className="text-orange-500" />
+              热度区域排行
+            </h4>
+            <div className="p-2.5 rounded-xl bg-slate-900 text-white shadow-lg"><Navigation size={18} /></div>
+          </div>
+          
+          <div className="space-y-4">
+            {regions.map((reg, idx) => {
+              const hColor = heatColor(reg.intensityValue);
+              const active = hoveredReg === reg.region_key;
+              
+              return (
+                <div 
+                  key={reg.region_key}
+                  onMouseEnter={() => setHoveredReg(reg.region_key)}
+                  onMouseLeave={() => setHoveredReg(null)}
+                  className={cn(
+                    "group p-6 rounded-[28px] border transition-all cursor-pointer relative overflow-hidden",
+                    active ? "bg-slate-900 border-slate-900 shadow-2xl scale-[1.03]" : "bg-slate-50 border-slate-100 hover:bg-white hover:border-orange-200"
+                  )}
+                >
+                  <div className="flex items-start justify-between mb-4 relative z-10">
+                    <div className="flex items-center gap-4">
+                      <div className="text-[10px] font-black text-slate-400 w-5">0{idx + 1}</div>
+                      <span className={cn("text-md font-black tracking-tight", active ? "text-white" : "text-slate-900")}>{reg.label}</span>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-lg font-black tabular-nums" style={{ color: active ? 'white' : hColor }}>{reg.heatValue.toFixed(1)}</div>
+                      <div className={cn("text-[8px] font-black uppercase tracking-widest", active ? "text-slate-500" : "text-slate-400")}>Intensity</div>
+                    </div>
+                  </div>
+                  
+                  {/* 热力深度可视化 */}
+                  <div className="relative h-2 w-full bg-slate-200 rounded-full overflow-hidden mb-5 z-10">
+                    <motion.div 
+                      className="absolute left-0 top-0 h-full rounded-full shadow-[0_0_10px_rgba(0,0,0,0.2)]" 
+                      style={{ backgroundColor: hColor }}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${reg.intensityValue * 100}%` }}
+                    />
+                  </div>
+
+                  <div className={cn("text-[11px] font-bold leading-relaxed mb-4 relative z-10", active ? "text-slate-400" : "text-slate-500")}>
+                    {reg.summary || "正在实时分析该区域的产业链分布密度与资本流入效率..."}
+                  </div>
+                  
+                  {reg.hubs && (
+                    <div className="flex flex-wrap gap-2 relative z-10">
+                       {reg.hubs.slice(0, 3).map(hub => (
+                         <span key={hub} className={cn("px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border", active ? "bg-white/10 border-white/20 text-white" : "bg-white border-slate-200 text-slate-600")}>
+                           {hub}
+                         </span>
+                       ))}
+                    </div>
+                  )}
+                </div>
               );
             })}
-          </g>
-
-          <g transform="translate(46 576)">
-            <rect width="310" height="28" rx="10" fill="#ffffff" stroke="#f2dfd2" />
-            <LegendDot x={18} color="#facc15" label="温和" />
-            <LegendDot x={88} color="#f59e0b" label="升温" />
-            <LegendDot x={162} color="#ea580c" label="活跃" />
-            <LegendDot x={234} color="#b91c1c" label="高热" />
-          </g>
-        </svg>
-      </div>
-
-      <div className="space-y-3">
-        <div className="rounded-lg border border-[#f2dfd2] bg-white p-4">
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <Globe2 size={16} className="text-orange-600" />
-            {selectedNode?.name ?? "区域热力"}
           </div>
-          <div className="mt-2 text-xs text-slate-500">
-            {regions.length} 个区域
+          
+          <div className="mt-10 p-6 rounded-3xl bg-orange-50 border border-orange-100 flex items-center gap-4">
+             <Info className="text-orange-600 shrink-0" size={24} />
+             <p className="text-[11px] font-bold text-orange-800 leading-relaxed">
+               数据基于全球 48 个主要市场 24,000+ 家核心制造企业的地理定位与财务变动深度挖掘而成。
+             </p>
           </div>
         </div>
-
-        {regions.map((region) => {
-          const active = activeRegion?.region_key === region.region_key;
-          const color = warmColor(region.intensityValue);
-          return (
-            <button
-              key={region.region_key}
-              type="button"
-              onClick={() => setActiveRegionKey(region.region_key)}
-              className={`w-full rounded-lg border p-3 text-left transition ${
-                active ? "border-orange-500 bg-orange-50/70" : "border-[#f2dfd2] bg-white hover:border-orange-300"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2 font-semibold text-slate-900">
-                    <MapPin size={15} style={{ color }} />
-                    {region.label}
-                  </div>
-                  <div className="mt-1 text-xs text-slate-500">{region.summary || `${region.country_count ?? 0} 个市场触点`}</div>
-                </div>
-                <span className="mono rounded-md px-2 py-1 text-xs font-semibold text-white" style={{ backgroundColor: color }}>
-                  {region.heatValue.toFixed(1)}
-                </span>
-              </div>
-              <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
-                <span>{region.hubs?.slice(0, 3).join(" / ") || "区域集群"}</span>
-                <span>{formatPercent(region.share)}</span>
-              </div>
-            </button>
-          );
-        })}
-
-        {activeRegion && routes.length ? (
-          <div className="rounded-lg border border-[#f2dfd2] bg-white p-4">
-            <div className="text-sm font-semibold text-slate-900">迁移路径</div>
-            <div className="mt-3 space-y-2">
-              {routes
-                .filter((route) => route.from.region_key === activeRegion.region_key || route.to.region_key === activeRegion.region_key)
-                .slice(0, 4)
-                .map((route) => (
-                  <div key={`${route.from.region_key}-${route.to.region_key}`} className="flex items-center justify-between text-xs text-slate-600">
-                    <span className="inline-flex items-center gap-1">
-                      {route.from.label}
-                      <MoveRight size={12} className="text-orange-500" />
-                      {route.to.label}
-                    </span>
-                    <span className="mono font-semibold text-orange-700">{route.intensity.toFixed(2)}</span>
-                  </div>
-                ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
+      </aside>
     </div>
   );
 }
 
-function LegendDot({ x, color, label }: { x: number; color: string; label: string }) {
-  return (
-    <g transform={`translate(${x} 14)`}>
-      <circle cx="0" cy="0" r="5" fill={color} />
-      <text x="11" y="4" fill="#6b7280" fontSize="11.5">
-        {label}
-      </text>
-    </g>
-  );
-}
+// Logic implementations
 
 function buildRegions(source: ChainRegion[]) {
-  const sourceMap = new Map(source.map((region) => [region.region_key, region]));
-  const seeded = REGION_ATLAS.map<RenderRegion>((atlas) => {
-    const region = sourceMap.get(atlas.region_key);
-    const heatValue = Math.max(region?.heat ?? 0, (region?.intensity ?? 0) * 100, region?.share ?? 0);
-    return {
-      ...atlas,
-      region_key: atlas.region_key,
-      label: region?.label ?? atlas.label,
-      heat: region?.heat,
-      intensity: region?.intensity,
-      share: region?.share,
-      summary: region?.summary,
-      country_count: region?.country_count,
-      hubs: region?.hubs,
-      industries: region?.industries,
-      x: region?.x ?? atlas.x,
-      y: region?.y ?? atlas.y,
-      heatValue,
-      intensityValue: 0
-    };
-  }).filter((region) => region.heatValue > 0 || region.summary || region.hubs?.length);
+  const sourceMap = new Map(source.map(r => [r.region_key, r]));
+  const regions = REGION_ATLAS.map(atlas => {
+    const r = sourceMap.get(atlas.region_key);
+    const heatValue = Math.max(r?.heat ?? 0, (r?.intensity ?? 0) * 100, r?.share ?? 0);
+    return { ...atlas, ...r, heatValue, intensityValue: 0 } as RenderRegion;
+  }).filter(r => r.heatValue > 0 || r.summary);
 
-  const maxHeat = Math.max(...seeded.map((region) => region.heatValue), 1);
-  return seeded
-    .map((region) => ({
-      ...region,
-      intensityValue: Math.min(normalize(region.intensity, region.heatValue / maxHeat), 1)
-    }))
-    .sort((left, right) => right.heatValue - left.heatValue);
+  const maxHeat = Math.max(...regions.map(r => r.heatValue), 1);
+  return regions.map(r => ({ ...r, intensityValue: Math.min(normalize(r.intensity, r.heatValue / maxHeat), 1) }))
+                .sort((a,b) => b.heatValue - a.heatValue);
 }
 
 function buildRoutes(routes: ChainRoute[], regions: RenderRegion[]) {
-  const regionMap = new Map(regions.map((region) => [region.region_key, region]));
-  return routes.flatMap((route) => {
-    const from = regionMap.get(route.from_key);
-    const to = regionMap.get(route.to_key);
+  const regionMap = new Map(regions.map(r => [r.region_key, r]));
+  return routes.flatMap(r => {
+    const from = regionMap.get(r.from_key);
+    const to = regionMap.get(r.to_key);
     if (!from || !to) return [];
-    const intensity = Math.min(
-      Math.max(normalize(route.intensity), normalize(route.heat), normalize(route.weight), from.intensityValue, to.intensityValue),
-      1
-    );
+    const intensity = Math.min(Math.max(normalize(r.intensity), normalize(r.heat), from.intensityValue, to.intensityValue), 1);
     return [{ from, to, intensity }];
   });
 }
 
 function routePath(from: RenderRegion, to: RenderRegion) {
   const midX = (from.x + to.x) / 2;
-  const lift = Math.min(130, Math.abs(to.x - from.x) * 0.24 + 48);
-  const controlY = Math.min(from.y, to.y) - lift;
-  return `M ${from.x} ${from.y} Q ${midX} ${controlY} ${to.x} ${to.y}`;
+  const lift = Math.abs(to.x - from.x) * 0.15 + 45;
+  return `M${from.x},${from.y}Q${midX},${Math.min(from.y, to.y) - lift} ${to.x},${to.y}`;
 }
 
-function warmColor(intensity: number) {
-  if (intensity >= 0.86) return "#b91c1c";
-  if (intensity >= 0.64) return "#ea580c";
-  if (intensity >= 0.38) return "#f59e0b";
-  return "#facc15";
+function heatColor(i: number) {
+  if (i >= 0.8) return "#ef4444";
+  if (i >= 0.45) return "#f97316";
+  return "#eab308";
 }
 
-function normalize(primary?: number | null, fallback = 0) {
-  if (typeof primary === "number" && !Number.isNaN(primary)) {
-    return primary > 1 ? primary / 100 : primary;
-  }
+function normalize(v?: number | null, fallback = 0) {
+  if (typeof v === 'number' && !isNaN(v)) return v > 1 ? v/100 : v;
   return fallback;
-}
-
-function formatPercent(value?: number | null) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "--";
-  return `${value.toFixed(value > 1 ? 0 : 2)}${value > 1 ? "%" : ""}`;
 }

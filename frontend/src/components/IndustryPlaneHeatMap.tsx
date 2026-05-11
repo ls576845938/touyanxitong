@@ -1,7 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
-import { ArrowRight, Flame, Network } from "lucide-react";
+import { useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { cn } from "@/lib/utils";
+import { ArrowRight, Flame, Network, LayoutGrid, Info } from "lucide-react";
 import type { ChainEdge, ChainNode } from "@/lib/api";
 
 type IndustryPlaneHeatMapProps = {
@@ -55,493 +57,235 @@ type PlaneModel = {
   nodes: RenderNode[];
   edges: RenderEdge[];
   selectedName: string;
-  visibleNodeCount: number;
-  visibleEdgeCount: number;
-  matchedNodeCount: number;
   maxHeat: number;
 };
 
-const PADDING_X = 56;
-const PADDING_TOP = 92;
-const PADDING_BOTTOM = 56;
-const LAYER_GAP = 28;
-const LAYER_WIDTH = 248;
-const CARD_WIDTH = 212;
-const CARD_HEIGHT = 84;
-const CARD_GAP = 18;
-const CARD_INSET_X = 18;
+const PADDING_X = 60;
+const PADDING_TOP = 100;
+const PADDING_BOTTOM = 60;
+const LAYER_GAP = 32;
+const LAYER_WIDTH = 260;
+const CARD_WIDTH = 220;
+const CARD_HEIGHT = 72;
+const CARD_GAP = 14;
 
-export function IndustryPlaneHeatMap({
-  nodes,
-  edges,
-  selectedNodeKey,
-  activeLayer,
-  query,
-  onSelect
-}: IndustryPlaneHeatMapProps) {
+export function IndustryPlaneHeatMap({ nodes, edges, selectedNodeKey, activeLayer, query, onSelect }: IndustryPlaneHeatMapProps) {
+  const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const model = useMemo(
     () => buildPlaneModel(nodes, edges, selectedNodeKey, activeLayer, query),
     [activeLayer, edges, nodes, query, selectedNodeKey]
   );
 
   return (
-    <div className="overflow-hidden rounded-lg border border-[#f2dfd2] bg-white">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#f7e9de] px-5 py-4">
-        <div>
-          <div className="text-sm font-semibold text-slate-950">全产业链平面热力总图</div>
-          <div className="mt-1 text-xs text-slate-500">
-            {model.selectedName ? `${model.selectedName} 已高亮 / ` : ""}
-            {model.visibleNodeCount} 个节点 / {model.visibleEdgeCount} 条关系 / {model.layers.length} 个层级
+    <div className="relative group bg-white overflow-hidden rounded-3xl border border-slate-200 shadow-2xl transition-all hover:border-slate-300">
+      {/* Header Info */}
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 bg-slate-50/50 backdrop-blur-md px-8 py-5">
+        <div className="flex items-center gap-4">
+          <div className="h-10 w-10 flex items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg">
+            <LayoutGrid size={20} />
+          </div>
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">平面产业频谱总图</h3>
+            <p className="text-[10px] font-bold text-slate-400 mt-0.5 uppercase tracking-tighter italic">Macro-Industrial Heat Matrix</p>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2 text-xs">
-          <MetricPill icon={Network} label="可见节点" value={String(model.visibleNodeCount)} />
-          <MetricPill icon={ArrowRight} label="可见连线" value={String(model.visibleEdgeCount)} />
-          <MetricPill icon={Flame} label="命中查询" value={String(model.matchedNodeCount)} />
+        <div className="flex gap-4">
+          <MetricPill label="可见节点" value={model.nodes.length} color="#6366f1" />
+          <MetricPill label="关联密度" value={model.edges.length} color="#10b981" />
         </div>
       </div>
 
-      <div className="overflow-x-auto overflow-y-hidden bg-[#fffdfa]">
-        <svg
-          viewBox={`0 0 ${model.width} ${model.height}`}
-          role="img"
-          aria-label="按产业层级平面展开的热力总图"
-          className="block min-w-full"
-          style={{ height: Math.min(model.height, 920) }}
-        >
+      <div className="overflow-x-auto no-scrollbar bg-white">
+        <svg viewBox={`0 0 ${model.width} ${model.height}`} className="block min-w-full" style={{ height: Math.min(model.height, 900) }}>
           <defs>
-            <linearGradient id="plane-surface" x1="0" x2="1" y1="0" y2="1">
-              <stop offset="0" stopColor="#ffffff" />
-              <stop offset="0.58" stopColor="#fffaf5" />
-              <stop offset="1" stopColor="#fff5eb" />
-            </linearGradient>
-            <linearGradient id="plane-edge" x1="0" x2="1" y1="0" y2="0">
-              <stop offset="0" stopColor="#facc15" />
-              <stop offset="0.58" stopColor="#f97316" />
-              <stop offset="1" stopColor="#dc2626" />
-            </linearGradient>
-            <filter id="plane-card-shadow" x="-20%" y="-20%" width="150%" height="170%">
-              <feDropShadow dx="0" dy="12" stdDeviation="14" floodColor="#7c2d12" floodOpacity="0.08" />
+            <filter id="spectrum-shadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feOffset dx="0" dy="2" result="offsetBlur" />
+              <feComposite in="SourceGraphic" in2="offsetBlur" operator="over" />
             </filter>
           </defs>
 
-          <rect width={model.width} height={model.height} fill="url(#plane-surface)" />
-
+          {/* Layer Backgrounds */}
           {model.layers.map((layer) => (
             <g key={layer.key} transform={`translate(${layer.x} 0)`}>
-              <rect
-                x="0"
-                y="28"
-                width={layer.width}
-                height={model.height - 56}
-                rx="18"
-                fill={layer.active ? "#fff7ed" : "#ffffff"}
-                stroke={layer.active ? "#fdba74" : "#f3e1d4"}
-                strokeWidth={layer.active ? 1.4 : 1}
-              />
-              <text x={layer.width / 2} y="58" textAnchor="middle" fill="#111827" fontSize="15" fontWeight="800">
-                {layer.label}
-              </text>
-              <text x={layer.width / 2} y="78" textAnchor="middle" fill="#9a3412" fontSize="11.5" fontWeight="650">
-                {layer.visibleCount}/{layer.count} 节点
-              </text>
+              <rect x={0} y={40} width={layer.width} height={model.height - 80} rx={24} fill="#f8fafc" opacity={layer.active ? 1 : 0.4} />
+              <text x={layer.width / 2} y={75} textAnchor="middle" fill="#94a3b8" fontSize="10" fontWeight="900" className="uppercase tracking-[0.2em]">{layer.label}</text>
             </g>
           ))}
 
-          <g fill="none">
-            {model.edges.map((item) => {
+          {/* Connections */}
+          <g>
+            {model.edges.map((item, idx) => {
               const sourceX = item.source.x + item.source.width;
               const sourceY = item.source.y + item.source.height / 2;
               const targetX = item.target.x;
               const targetY = item.target.y + item.target.height / 2;
-              const curve = Math.max(48, (targetX - sourceX) * 0.42);
+              const isActive = item.active || hoveredNode === item.source.node.node_key || hoveredNode === item.target.node.node_key;
               return (
-                <path
-                  key={`${item.edge.source}-${item.edge.target}-${item.edge.relation_type ?? ""}-${item.edge.flow ?? ""}`}
-                  d={`M ${sourceX} ${sourceY} C ${sourceX + curve} ${sourceY}, ${targetX - curve} ${targetY}, ${targetX} ${targetY}`}
-                  stroke={item.active ? warmColor(item.intensity) : "url(#plane-edge)"}
-                  strokeWidth={item.active ? 3 + item.intensity * 2.8 : 1.1 + item.intensity * 2.6}
-                  strokeOpacity={item.active ? 0.78 : 0.16 + item.intensity * 0.28}
-                  strokeLinecap="round"
+                <motion.path
+                  key={idx}
+                  d={`M ${sourceX} ${sourceY} C ${sourceX + 40} ${sourceY}, ${targetX - 40} ${targetY}, ${targetX} ${targetY}`}
+                  fill="none"
+                  stroke={isActive ? "#f97316" : "#e2e8f0"}
+                  strokeWidth={isActive ? 2 : 0.8}
+                  strokeOpacity={isActive ? 0.8 : 0.3}
+                  initial={{ pathLength: 0 }}
+                  animate={{ pathLength: 1 }}
                 />
               );
             })}
           </g>
 
-          <g>
-            {model.nodes.map((item) => {
-              const active = item.node.node_key === selectedNodeKey;
-              const color = warmColor(item.intensity);
-              const haloOpacity = active ? 0.16 : item.connected ? 0.12 : 0.08;
-              return (
-                <g
-                  key={item.node.node_key}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onSelect(item.node.node_key)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelect(item.node.node_key);
-                    }
-                  }}
-                  className="cursor-pointer outline-none"
-                >
-                  <rect
-                    x={item.x - 10}
-                    y={item.y - 10}
-                    width={item.width + 20}
-                    height={item.height + 20}
-                    rx="24"
-                    fill={color}
-                    opacity={haloOpacity}
-                  />
-                  <rect
-                    x={item.x}
-                    y={item.y}
-                    width={item.width}
-                    height={item.height}
-                    rx="18"
-                    fill="#ffffff"
-                    stroke={active ? "#ea580c" : item.connected ? "#fb923c" : item.matched ? "#fdba74" : "#f2dfd2"}
-                    strokeWidth={active ? 2.4 : item.connected ? 1.7 : 1}
-                    filter="url(#plane-card-shadow)"
-                  />
-                  <rect x={item.x} y={item.y} width="10" height={item.height} rx="5" fill={color} />
-                  <text x={item.x + 24} y={item.y + 26} fill="#111827" fontSize="14" fontWeight="800">
-                    {clipLabel(item.node.name, 14)}
-                  </text>
-                  <text x={item.x + 24} y={item.y + 46} fill="#9a3412" fontSize="11.5" fontWeight="650">
-                    {clipLabel(item.node.node_type || item.layer, 16)}
-                  </text>
-                  <rect x={item.x + 24} y={item.y + 58} width="104" height="8" rx="4" fill="#ffedd5" />
-                  <rect x={item.x + 24} y={item.y + 58} width={104 * Math.max(item.intensity, 0.08)} height="8" rx="4" fill={color} />
-                  <text x={item.x + item.width - 16} y={item.y + 26} textAnchor="end" fill={color} fontSize="12" fontWeight="800">
-                    {item.heat.toFixed(1)}
-                  </text>
-                  <text x={item.x + item.width - 16} y={item.y + 46} textAnchor="end" fill="#64748b" fontSize="11">
-                    {formatAnchor(item.node)}
-                  </text>
-                  <title>{`${item.node.name}｜${item.layer}｜热度 ${item.heat.toFixed(1)}`}</title>
-                </g>
-              );
-            })}
-          </g>
+          {/* Nodes */}
+          {model.nodes.map((item) => {
+            const hColor = heatColor(item.intensity);
+            const isTarget = item.node.node_key === selectedNodeKey;
+            const isHovered = item.node.node_key === hoveredNode;
+            
+            return (
+              <motion.g
+                key={item.node.node_key}
+                transform={`translate(${item.x} ${item.y})`}
+                onClick={() => onSelect(item.node.node_key)}
+                onMouseEnter={() => setHoveredNode(item.node.node_key)}
+                onMouseLeave={() => setHoveredNode(null)}
+                className="cursor-pointer"
+                whileHover={{ y: -2 }}
+              >
+                {/* Node Card */}
+                <rect
+                  width={item.width}
+                  height={item.height}
+                  rx={16}
+                  fill="white"
+                  stroke={isTarget ? "#0f172a" : isHovered ? "#cbd5e1" : "#f1f5f9"}
+                  strokeWidth={isTarget ? 2.5 : 1}
+                  className="shadow-sm transition-colors duration-300"
+                />
+                
+                {/* Heat Stripe */}
+                <rect width={6} height={item.height} rx={3} fill={hColor} />
+                
+                {/* Labels */}
+                <text x={18} y={24} fill="#1e293b" fontSize="11" fontWeight="800" className="uppercase tracking-tight">
+                  {clipLabel(item.node.name, 12)}
+                </text>
+                <text x={18} y={42} fill="#94a3b8" fontSize="9" fontWeight="700" className="uppercase tracking-tighter italic">
+                  {item.node.node_type || "Entity"}
+                </text>
+                
+                {/* Heat Value */}
+                <text x={item.width - 12} y={24} textAnchor="end" fill={hColor} fontSize="10" fontWeight="900" className="tabular-nums">
+                  {item.heat.toFixed(1)}
+                </text>
 
-          <g transform={`translate(${PADDING_X} ${model.height - 26})`}>
-            <text fill="#94a3b8" fontSize="11.5">
-              白底黄橙红热力：黄=温和，橙=升温，深橙=活跃，红=高热
-            </text>
-          </g>
+                {/* Progress Bar */}
+                <rect x={18} y={52} width={item.width - 36} height={4} rx={2} fill="#f1f5f9" />
+                <motion.rect 
+                  x={18} y={52} 
+                  width={(item.width - 36) * item.intensity} 
+                  height={4} rx={2} 
+                  fill={hColor}
+                  initial={{ width: 0 }}
+                  animate={{ width: (item.width - 36) * item.intensity }}
+                />
+              </motion.g>
+            );
+          })}
         </svg>
+      </div>
+
+      {/* Footer Legend */}
+      <div className="absolute bottom-8 right-8 bg-slate-900/95 backdrop-blur-xl text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6">
+        <div className="flex items-center gap-3">
+          <Info size={14} className="text-slate-500" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Heat Level</span>
+        </div>
+        <div className="flex gap-4">
+          <LegendItem label="爆红" color="#ef4444" />
+          <LegendItem label="活跃" color="#f97316" />
+          <LegendItem label="温和" color="#eab308" />
+        </div>
       </div>
     </div>
   );
 }
 
-function MetricPill({
-  icon: Icon,
-  label,
-  value
-}: {
-  icon: typeof Flame;
-  label: string;
-  value: string;
-}) {
+function MetricPill({ label, value, color }: { label: string, value: number|string, color: string }) {
   return (
-    <div className="inline-flex items-center gap-2 rounded-md border border-[#f2dfd2] bg-white px-3 py-2 text-slate-600">
-      <Icon size={14} className="text-orange-600" />
-      <span>{label}</span>
-      <span className="font-semibold text-slate-950">{value}</span>
+    <div className="flex items-center gap-3 px-4 py-2 bg-white rounded-xl border border-slate-100 shadow-sm">
+      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
+      <span className="text-xs font-black" style={{ color }}>{value}</span>
     </div>
   );
 }
 
-function buildPlaneModel(
-  nodes: ChainNode[],
-  edges: ChainEdge[],
-  selectedNodeKey: string | null,
-  activeLayer: string,
-  query: string
-): PlaneModel {
+function LegendItem({ label, color }: { label: string, color: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+      <span className="text-[10px] font-bold text-slate-300">{label}</span>
+    </div>
+  );
+}
+
+// Logic implementations
+
+function buildPlaneModel(nodes: ChainNode[], edges: ChainEdge[], selectedNodeKey: string | null, activeLayer: string, query: string): PlaneModel {
   const lowered = query.trim().toLowerCase();
-  const maxHeat = Math.max(...nodes.map(nodeHeat), 1);
-  const layers = orderLayers(nodes, edges);
-  const layerIndexByKey = new Map(layers.map((layer, index) => [layer, index]));
-  const selectionContext = buildSelectionContext(edges, selectedNodeKey);
-
-  const adjacency = new Map<string, string[]>();
-  const reverseAdjacency = new Map<string, string[]>();
-  for (const edge of edges) {
-    const forward = adjacency.get(edge.source) ?? [];
-    forward.push(edge.target);
-    adjacency.set(edge.source, forward);
-    const reverse = reverseAdjacency.get(edge.target) ?? [];
-    reverse.push(edge.source);
-    reverseAdjacency.set(edge.target, reverse);
-  }
-
-  const degreeByNode = new Map<string, number>();
-  for (const node of nodes) {
-    degreeByNode.set(node.node_key, (adjacency.get(node.node_key)?.length ?? 0) + (reverseAdjacency.get(node.node_key)?.length ?? 0));
-  }
-
-  const initialGroups = new Map<string, ChainNode[]>();
-  for (const node of nodes) {
-    const layer = node.layer || "未分类";
-    const rows = initialGroups.get(layer) ?? [];
-    rows.push(node);
-    initialGroups.set(layer, rows);
-  }
-
-  const orderedGroups = refineNodeOrder(layers, initialGroups, adjacency, reverseAdjacency, degreeByNode);
-  const renderNodes: RenderNode[] = [];
-  const layerBands: LayerBand[] = [];
-  let maxLayerHeight = 0;
-
-  for (const [layerIndex, layer] of layers.entries()) {
-    const group = orderedGroups.get(layer) ?? [];
-    const active = activeLayer === "all" || normalizeLayerKey(layer) === activeLayer;
-    const visibleGroup = group.filter((node) => {
-      const matched = matchesNode(node, lowered);
-      const layerVisible = activeLayer === "all" || normalizeLayerKey(node.layer) === activeLayer;
-      const connected = selectionContext.has(node.node_key);
-      return (!lowered || matched) && layerVisible || connected;
-    });
-    const count = group.length;
-    const visibleCount = visibleGroup.length;
-    const x = PADDING_X + layerIndex * (LAYER_WIDTH + LAYER_GAP);
-    const height = Math.max(0, visibleCount) * (CARD_HEIGHT + CARD_GAP);
-    maxLayerHeight = Math.max(maxLayerHeight, height);
-    layerBands.push({
-      key: normalizeLayerKey(layer),
-      label: layer,
-      x,
+  const maxHeat = Math.max(...nodes.map(n => nodeHeat(n)), 1);
+  const layers = Array.from(new Set(nodes.map(n => n.layer || "未分类")));
+  
+  const layerBands: LayerBand[] = layers.map((l, idx) => {
+    const lNodes = nodes.filter(n => n.layer === l);
+    const visibleNodes = lNodes.filter(n => !lowered || n.name.toLowerCase().includes(lowered));
+    return {
+      key: normalizeLayerKey(l),
+      label: l,
+      x: PADDING_X + idx * (LAYER_WIDTH + LAYER_GAP),
       width: LAYER_WIDTH,
-      count,
-      visibleCount,
-      active
-    });
-
-    let order = 0;
-    for (const node of group) {
-      const matched = matchesNode(node, lowered);
-      const layerVisible = activeLayer === "all" || normalizeLayerKey(node.layer) === activeLayer;
-      const connected = selectionContext.has(node.node_key);
-      const visible = ((!lowered || matched) && layerVisible) || connected;
-      if (!visible) continue;
-      const y = PADDING_TOP + order * (CARD_HEIGHT + CARD_GAP);
-      renderNodes.push({
-        node,
-        layer,
-        layerIndex,
-        order,
-        x: x + CARD_INSET_X,
-        y,
-        width: CARD_WIDTH,
-        height: CARD_HEIGHT,
-        heat: nodeHeat(node),
-        intensity: normalizeIntensity(node, maxHeat),
-        visible,
-        matched,
-        connected,
-        degree: degreeByNode.get(node.node_key) ?? 0
-      });
-      order += 1;
-    }
-  }
-
-  const nodeMap = new Map(renderNodes.map((node) => [node.node.node_key, node]));
-  const renderEdges = edges.flatMap<RenderEdge>((edge) => {
-    const source = nodeMap.get(edge.source);
-    const target = nodeMap.get(edge.target);
-    if (!source || !target) return [];
-    const intensity = Math.min(
-      Math.max(source.intensity, target.intensity, normalize(edge.intensity), normalize(edge.weight), normalize(edge.heat)),
-      1
-    );
-    return [{
-      edge,
-      source,
-      target,
-      intensity,
-      active: isEdgeActive(edge, selectedNodeKey)
-    }];
+      count: lNodes.length,
+      visibleCount: visibleNodes.length,
+      active: activeLayer === "all" || normalizeLayerKey(l) === activeLayer
+    };
   });
 
-  const width = Math.max(1180, PADDING_X * 2 + layers.length * LAYER_WIDTH + Math.max(layers.length - 1, 0) * LAYER_GAP);
-  const height = Math.max(560, PADDING_TOP + maxLayerHeight + PADDING_BOTTOM);
-
-  return {
-    width,
-    height,
-    layers: layerBands,
-    nodes: renderNodes,
-    edges: renderEdges,
-    selectedName: nodes.find((node) => node.node_key === selectedNodeKey)?.name ?? "",
-    visibleNodeCount: renderNodes.length,
-    visibleEdgeCount: renderEdges.length,
-    matchedNodeCount: renderNodes.filter((node) => node.matched).length,
-    maxHeat
-  };
-}
-
-function orderLayers(nodes: ChainNode[], edges: ChainEdge[]) {
-  const layers = Array.from(new Set(nodes.map((node) => node.layer || "未分类")));
-  const nodeLayer = new Map(nodes.map((node) => [node.node_key, node.layer || "未分类"]));
-  const nextLayers = new Map<string, Set<string>>();
-  const indegree = new Map<string, number>(layers.map((layer) => [layer, 0]));
-
-  for (const edge of edges) {
-    const sourceLayer = nodeLayer.get(edge.source);
-    const targetLayer = nodeLayer.get(edge.target);
-    if (!sourceLayer || !targetLayer || sourceLayer === targetLayer) continue;
-    const bucket = nextLayers.get(sourceLayer) ?? new Set<string>();
-    if (!bucket.has(targetLayer)) {
-      bucket.add(targetLayer);
-      nextLayers.set(sourceLayer, bucket);
-      indegree.set(targetLayer, (indegree.get(targetLayer) ?? 0) + 1);
-    }
-  }
-
-  const queue = layers.filter((layer) => (indegree.get(layer) ?? 0) === 0).sort((left, right) => left.localeCompare(right));
-  const ordered: string[] = [];
-  while (queue.length) {
-    const layer = queue.shift();
-    if (!layer) break;
-    ordered.push(layer);
-    for (const next of nextLayers.get(layer) ?? []) {
-      indegree.set(next, (indegree.get(next) ?? 0) - 1);
-      if ((indegree.get(next) ?? 0) === 0) {
-        queue.push(next);
-        queue.sort((left, right) => left.localeCompare(right));
-      }
-    }
-  }
-
-  for (const layer of layers.sort((left, right) => left.localeCompare(right))) {
-    if (!ordered.includes(layer)) ordered.push(layer);
-  }
-  return ordered;
-}
-
-function refineNodeOrder(
-  layers: string[],
-  initialGroups: Map<string, ChainNode[]>,
-  adjacency: Map<string, string[]>,
-  reverseAdjacency: Map<string, string[]>,
-  degreeByNode: Map<string, number>
-) {
-  const orderedGroups = new Map<string, ChainNode[]>();
-  for (const layer of layers) {
-    const group = [...(initialGroups.get(layer) ?? [])].sort((left, right) => {
-      return degreeSort(left, right, degreeByNode);
+  const renderNodes: RenderNode[] = [];
+  layerBands.forEach((band, lIdx) => {
+    const lNodes = nodes.filter(n => n.layer === band.label)
+      .filter(n => !lowered || n.name.toLowerCase().includes(lowered) || n.node_key === selectedNodeKey)
+      .sort((a,b) => nodeHeat(b) - nodeHeat(a));
+    
+    lNodes.forEach((n, order) => {
+      renderNodes.push({
+        node: n, layer: band.label, layerIndex: lIdx, order,
+        x: band.x + 20, y: PADDING_TOP + order * (CARD_HEIGHT + CARD_GAP),
+        width: CARD_WIDTH, height: CARD_HEIGHT,
+        heat: nodeHeat(n), intensity: nodeHeat(n) / maxHeat,
+        visible: true, matched: true, connected: false, degree: 0
+      });
     });
-    orderedGroups.set(layer, group);
-  }
+  });
 
-  for (let round = 0; round < 3; round += 1) {
-    const position = new Map<string, number>();
-    for (const layer of layers) {
-      (orderedGroups.get(layer) ?? []).forEach((node, index) => {
-        position.set(node.node_key, index);
-      });
-    }
+  const nodeMap = new Map(renderNodes.map(rn => [rn.node.node_key, rn]));
+  const renderEdges = edges.filter(e => nodeMap.has(e.source) && nodeMap.has(e.target)).map(e => ({
+    edge: e, source: nodeMap.get(e.source)!, target: nodeMap.get(e.target)!,
+    intensity: Math.max(normalize(e.intensity), normalize((e.heat ?? 0)/100)),
+    active: e.source === selectedNodeKey || e.target === selectedNodeKey
+  }));
 
-    for (const layer of layers) {
-      const group = [...(orderedGroups.get(layer) ?? [])];
-      group.sort((left, right) => {
-        const leftScore = barycenter(left.node_key, adjacency, reverseAdjacency, position);
-        const rightScore = barycenter(right.node_key, adjacency, reverseAdjacency, position);
-        if (leftScore !== rightScore) return leftScore - rightScore;
-        return degreeSort(left, right, degreeByNode);
-      });
-      orderedGroups.set(layer, group);
-    }
-  }
+  const height = Math.max(800, PADDING_TOP + Math.max(...layerBands.map(b => b.visibleCount)) * (CARD_HEIGHT + CARD_GAP) + PADDING_BOTTOM);
+  const width = PADDING_X * 2 + layers.length * (LAYER_WIDTH + LAYER_GAP);
 
-  return orderedGroups;
+  return { width, height, layers: layerBands, nodes: renderNodes, edges: renderEdges, selectedName: "", maxHeat };
 }
 
-function buildSelectionContext(edges: ChainEdge[], selectedNodeKey: string | null) {
-  const context = new Set<string>();
-  if (!selectedNodeKey) return context;
-  context.add(selectedNodeKey);
-  for (const edge of edges) {
-    if (edge.source === selectedNodeKey) context.add(edge.target);
-    if (edge.target === selectedNodeKey) context.add(edge.source);
-  }
-  return context;
+function normalizeLayerKey(v: string) { return v.trim().toLowerCase().replace(/\s+/g, "_"); }
+function nodeHeat(n: ChainNode) { return Math.max(n.heat ?? 0, n.momentum ?? 0, (n.intensity ?? 0) * 100); }
+function normalize(v: number | null | undefined) { return (typeof v === 'number' && !isNaN(v)) ? (v > 1 ? v/100 : v) : 0; }
+function heatColor(i: number) {
+  if (i >= 0.8) return "#ef4444";
+  if (i >= 0.45) return "#f97316";
+  return "#eab308";
 }
-
-function barycenter(
-  nodeKey: string,
-  adjacency: Map<string, string[]>,
-  reverseAdjacency: Map<string, string[]>,
-  position: Map<string, number>
-) {
-  const neighbors = [...(adjacency.get(nodeKey) ?? []), ...(reverseAdjacency.get(nodeKey) ?? [])];
-  if (!neighbors.length) return Number.MAX_SAFE_INTEGER / 2;
-  const scores = neighbors
-    .map((key) => position.get(key))
-    .filter((value): value is number => typeof value === "number");
-  if (!scores.length) return Number.MAX_SAFE_INTEGER / 2;
-  return scores.reduce((sum, value) => sum + value, 0) / scores.length;
-}
-
-function degreeSort(left: ChainNode, right: ChainNode, degreeByNode: Map<string, number>) {
-  const degreeDelta = (degreeByNode.get(right.node_key) ?? 0) - (degreeByNode.get(left.node_key) ?? 0);
-  if (degreeDelta !== 0) return degreeDelta;
-  const heatDelta = nodeHeat(right) - nodeHeat(left);
-  if (heatDelta !== 0) return heatDelta;
-  return left.name.localeCompare(right.name);
-}
-
-function isEdgeActive(edge: ChainEdge, selectedNodeKey: string | null) {
-  if (!selectedNodeKey) return false;
-  return edge.source === selectedNodeKey || edge.target === selectedNodeKey;
-}
-
-function matchesNode(node: ChainNode, query: string) {
-  if (!query) return true;
-  return [node.name, node.node_key, node.layer, node.node_type, ...(node.industry_names ?? []), ...(node.tags ?? [])]
-    .join(" ")
-    .toLowerCase()
-    .includes(query);
-}
-
-function nodeHeat(node: ChainNode) {
-  return Math.max(node.heat ?? 0, node.momentum ?? 0, (node.intensity ?? 0) * 100);
-}
-
-function normalizeIntensity(node: ChainNode, maxHeat: number) {
-  const fromIntensity = normalize(node.intensity);
-  if (fromIntensity > 0) return Math.min(Math.max(fromIntensity, 0), 1);
-  return Math.min(Math.max(nodeHeat(node) / Math.max(maxHeat, 1), 0), 1);
-}
-
-function normalize(value: number | null | undefined) {
-  if (typeof value !== "number" || Number.isNaN(value)) return 0;
-  return value > 1 ? value / 100 : value;
-}
-
-function normalizeLayerKey(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, "_");
-}
-
-function warmColor(intensity: number) {
-  if (intensity >= 0.86) return "#b91c1c";
-  if (intensity >= 0.64) return "#ea580c";
-  if (intensity >= 0.38) return "#f59e0b";
-  return "#facc15";
-}
-
-function clipLabel(value: string, maxLength: number) {
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
-}
-
-function formatAnchor(node: ChainNode) {
-  if (node.anchor_companies?.length) return clipLabel(node.anchor_companies.slice(0, 2).join(" / "), 18);
-  if (typeof node.stock_count === "number") return `${node.stock_count} 股`;
-  return clipLabel(node.layer || "", 12);
-}
+function clipLabel(v: string, m: number) { return v.length > m ? `${v.slice(0, m)}..` : v; }

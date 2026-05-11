@@ -1,7 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
-import { GitBranch, RadioTower } from "lucide-react";
+import { useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { cn } from "@/lib/utils";
+import { GitBranch, RadioTower, Info, Zap, Activity } from "lucide-react";
 import type { ChainEdge, ChainNode } from "@/lib/api";
 
 type IndustryMetroSankeyMapProps = {
@@ -51,12 +53,12 @@ type Segment = {
   direct: boolean;
 };
 
-const WIDTH = 1320;
-const HEIGHT = 760;
-const LEFT = 92;
-const TOP = 112;
-const STAGE_GAP = 178;
-const LINE_GAP = 102;
+const WIDTH = 1400;
+const HEIGHT = 800;
+const LEFT = 100;
+const TOP = 120;
+const STAGE_GAP = 180;
+const LINE_GAP = 100;
 
 const STAGES = [
   { key: "resource", label: "资源/能源", layers: ["自然资源", "公共品与能源"] },
@@ -74,7 +76,7 @@ const CHAINS: ChainBlueprint[] = [
     name: "AI 算力链",
     shortName: "AI算力",
     color: "#f97316",
-    muted: "#fed7aa",
+    muted: "#ffedd5",
     nodeKeys: ["power_grid", "copper", "semiconductor_materials", "power_semiconductor", "hbm_memory", "gpu_advanced_package", "ai_servers", "software_cloud", "ai_compute"]
   },
   {
@@ -82,7 +84,7 @@ const CHAINS: ChainBlueprint[] = [
     name: "电力电网链",
     shortName: "电力",
     color: "#0ea5e9",
-    muted: "#bae6fd",
+    muted: "#e0f2fe",
     nodeKeys: ["coal", "natural_gas", "solar_power", "wind_power", "power_grid", "energy_storage_system", "distributed_energy", "industrial_automation"]
   },
   {
@@ -90,15 +92,15 @@ const CHAINS: ChainBlueprint[] = [
     name: "半导体链",
     shortName: "半导体",
     color: "#ef4444",
-    muted: "#fecaca",
+    muted: "#fee2e2",
     nodeKeys: ["specialty_chemicals", "semiconductor_materials", "semiconductor_equipment", "integrated_circuits", "hbm_memory", "enterprise_ssd", "optical_modules", "ai_servers"]
   },
   {
     key: "new_energy_vehicle",
     name: "新能源车链",
     shortName: "新能源车",
-    color: "#22c55e",
-    muted: "#bbf7d0",
+    color: "#10b981",
+    muted: "#d1fae5",
     nodeKeys: ["lithium_ore", "nickel_ore", "battery_materials", "battery_cells", "power_semiconductor", "charging_swap", "new_energy_vehicle", "used_car_circulation", "battery_recycling"]
   },
   {
@@ -106,341 +108,233 @@ const CHAINS: ChainBlueprint[] = [
     name: "机器人链",
     shortName: "机器人",
     color: "#8b5cf6",
-    muted: "#ddd6fe",
+    muted: "#f3e8ff",
     nodeKeys: ["rare_earth_ore", "steel", "industrial_bearings", "sensors", "machine_vision", "robotics_system", "industrial_robot", "software_cloud"]
-  },
-  {
-    key: "consumer_electronics",
-    name: "消费电子链",
-    shortName: "消费电子",
-    color: "#14b8a6",
-    muted: "#99f6e4",
-    nodeKeys: ["petrochemicals", "display_glass", "pcb_fpc", "mlcc", "high_speed_connectors", "smart_devices", "ecommerce_retail", "electronics_recycling"]
   }
 ];
 
 export function IndustryMetroSankeyMap({ nodes, edges, selectedNodeKey, onSelect }: IndustryMetroSankeyMapProps) {
+  const [hoveredLine, setHoveredLine] = useState<string | null>(null);
   const model = useMemo(() => buildMetro(nodes, edges, selectedNodeKey), [edges, nodes, selectedNodeKey]);
-  const activeChain = model.lines.find((line) => line.selected) ?? model.lines[0] ?? null;
+  const activeChainKey = hoveredLine ?? model.lines.find(l => l.selected)?.key ?? model.lines[0]?.key;
 
   return (
-    <section className="overflow-hidden rounded-lg border border-[#f2dfd2] bg-white">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#f7e9de] px-5 py-4">
-        <div>
-          <div className="flex items-center gap-2 text-lg font-semibold text-slate-950">
-            <GitBranch size={18} className="text-orange-600" />
-            产业链地铁 / 桑基主图
+    <div className="relative group bg-slate-50 overflow-hidden rounded-3xl border border-slate-200 shadow-xl transition-all hover:border-slate-300">
+      {/* Header Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 bg-white/80 backdrop-blur-md px-8 py-5">
+        <div className="flex items-center gap-4">
+          <div className="h-10 w-10 flex items-center justify-center rounded-xl bg-slate-900 text-white shadow-lg shadow-slate-200">
+            <GitBranch size={20} />
           </div>
-          <div className="mt-1 text-xs text-slate-500">资源/能源 → 基础材料 → 核心零部件 → 设备系统 → 终端产品 → 渠道服务 → 回收再生产</div>
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">产业链地铁主图</h3>
+            <p className="text-[10px] font-bold text-slate-400 mt-0.5 uppercase tracking-tighter italic">End-to-End Value Propagation Mesh</p>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {model.lines.map((line) => (
             <button
               key={line.key}
-              type="button"
+              onMouseEnter={() => setHoveredLine(line.key)}
+              onMouseLeave={() => setHoveredLine(null)}
               onClick={() => {
-                const hottest = [...line.nodes].sort((left, right) => nodeHeat(right) - nodeHeat(left))[0];
+                const hottest = [...line.nodes].sort((a, b) => nodeHeat(b) - nodeHeat(a))[0];
                 if (hottest) onSelect(hottest.node_key);
               }}
-              className={`inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs font-semibold transition ${
-                line.selected ? "border-orange-500 bg-orange-50 text-orange-700" : "border-[#f2dfd2] bg-white text-slate-600 hover:border-orange-300"
-              }`}
+              className={cn(
+                "px-4 py-2 rounded-xl text-xs font-bold transition-all border flex items-center gap-2",
+                activeChainKey === line.key 
+                  ? "bg-slate-900 border-slate-900 text-white shadow-lg shadow-slate-200" 
+                  : "bg-white border-slate-100 text-slate-500 hover:border-slate-200"
+              )}
             >
-              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: line.color }} />
+              <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: line.color }} />
               {line.shortName}
             </button>
           ))}
         </div>
       </div>
 
-      <div className="overflow-x-auto bg-[#fffdfa]">
-        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="block min-w-[1320px]" style={{ height: HEIGHT }} role="img" aria-label="产业链地铁桑基图">
+      {/* Main SVG Area */}
+      <div className="overflow-x-auto no-scrollbar scroll-smooth">
+        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="block min-w-[1400px] h-[720px]">
           <defs>
-            <filter id="metro-sankey-shadow" x="-40%" y="-40%" width="180%" height="190%">
-              <feDropShadow dx="0" dy="9" stdDeviation="8" floodColor="#7c2d12" floodOpacity="0.11" />
+            <filter id="metro-glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="4" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
             </filter>
-            <filter id="metro-sankey-glow" x="-70%" y="-70%" width="240%" height="240%">
-              <feGaussianBlur stdDeviation="8" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-            <style>{`
-              @keyframes metroFlow {
-                from { stroke-dashoffset: 0; }
-                to { stroke-dashoffset: -56; }
-              }
-              .metro-flow {
-                animation: metroFlow 2.2s linear infinite;
-              }
-            `}</style>
           </defs>
-          <rect width={WIDTH} height={HEIGHT} fill="#fffdfa" />
-          {STAGES.map((stage, index) => {
-            const x = stageX(index);
-            return (
-              <g key={stage.key}>
-                <rect x={x - 64} y="52" width="128" height={HEIGHT - 98} rx="18" fill={index % 2 ? "#fff7ed" : "#ffffff"} stroke="#f5dfcf" />
-                <text x={x} y="82" textAnchor="middle" fill="#111827" fontSize="13" fontWeight="850">{stage.label}</text>
-              </g>
-            );
-          })}
 
-          <g fill="none">
-            {model.segments.map((segment) => {
-              const active = segment.chain.key === activeChain?.key || segment.source.selected || segment.target.selected;
+          {/* Vertical Tracks */}
+          {STAGES.map((stage, idx) => (
+            <g key={stage.key}>
+              <rect 
+                x={stageX(idx) - 70} 
+                y={60} 
+                width={140} 
+                height={HEIGHT - 100} 
+                rx={24} 
+                fill="white" 
+                opacity={idx % 2 ? 0.4 : 0.8}
+                className="shadow-inner"
+              />
+              <text x={stageX(idx)} y={85} textAnchor="middle" fill="#94a3b8" fontSize="10" fontWeight="900" className="uppercase tracking-[0.2em]">{stage.label}</text>
+            </g>
+          ))}
+
+          {/* Links / Segments */}
+          <g>
+            {model.segments.map((seg) => {
+              const isActive = seg.chain.key === activeChainKey;
               return (
-                <g key={segment.key} opacity={active ? 1 : 0.22}>
+                <motion.g key={seg.key} initial={{ opacity: 0 }} animate={{ opacity: isActive ? 1 : 0.15 }}>
                   <path
-                    d={segmentPath(segment.source, segment.target)}
-                    stroke={segment.chain.muted}
-                    strokeWidth={segment.width + 7}
-                    strokeOpacity={active ? 0.32 : 0.12}
+                    d={segmentPath(seg.source, seg.target)}
+                    fill="none"
+                    stroke={seg.chain.color}
+                    strokeWidth={seg.width}
                     strokeLinecap="round"
+                    className="transition-all duration-500"
                   />
-                  <path
-                    d={segmentPath(segment.source, segment.target)}
-                    stroke={segment.chain.color}
-                    strokeWidth={segment.width}
-                    strokeOpacity={segment.direct ? (active ? 0.72 : 0.34) : (active ? 0.44 : 0.2)}
-                    strokeLinecap="round"
-                  />
-                  {active ? (
-                    <path
-                      d={segmentPath(segment.source, segment.target)}
-                      className="metro-flow"
-                      stroke={warmColor(segment.intensity)}
-                      strokeWidth={Math.max(2.2, segment.width * 0.35)}
-                      strokeOpacity="0.92"
-                      strokeDasharray="8 48"
-                      strokeLinecap="round"
-                    />
-                  ) : null}
-                </g>
+                  {isActive && (
+                    <circle r={2.5} fill="white">
+                      <animateMotion dur="2.5s" repeatCount="indefinite" path={segmentPath(seg.source, seg.target)} />
+                    </circle>
+                  )}
+                </motion.g>
               );
             })}
           </g>
 
-          {model.lines.map((line) => {
-            const y = lineY(model.lines.indexOf(line));
+          {/* Stations / Nodes */}
+          {model.stations.map((st) => {
+            const isActive = st.chain.key === activeChainKey || st.selected;
+            const hColor = heatColor(st.intensity);
             return (
-              <g key={`label-${line.key}`} opacity={line.key === activeChain?.key ? 1 : 0.48}>
-                <text x="28" y={y + 4} fill={line.color} fontSize="12.5" fontWeight="850">{line.shortName}</text>
-              </g>
-            );
-          })}
-
-          {model.stations.map((station) => {
-            const active = station.chain.key === activeChain?.key || station.selected;
-            const border = momentumBorder(station.node);
-            const labelVisible = active || station.intensity > 0.58 || station.selected;
-            const label = stationLabel(station);
-            return (
-              <g
-                key={station.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => onSelect(station.node.node_key)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onSelect(station.node.node_key);
-                  }
-                }}
-                className="cursor-pointer outline-none"
-                opacity={active ? 1 : 0.48}
+              <motion.g
+                key={st.id}
+                onClick={() => onSelect(st.node.node_key)}
+                className="cursor-pointer"
+                animate={{ opacity: isActive ? 1 : 0.2, scale: isActive ? 1 : 0.95 }}
+                whileHover={{ scale: 1.1 }}
               >
-                <circle cx={station.x} cy={station.y} r={station.r + 11} fill={station.chain.muted} opacity={station.selected ? 0.7 : 0.32} filter={station.selected ? "url(#metro-sankey-glow)" : undefined} />
-                <circle cx={station.x} cy={station.y} r={station.r} fill={warmColor(station.intensity)} stroke={station.selected ? "#111827" : border.color} strokeWidth={station.selected ? 3.2 : border.width} filter="url(#metro-sankey-shadow)" />
-                <circle cx={station.x - station.r * 0.24} cy={station.y - station.r * 0.26} r={Math.max(2.5, station.r * 0.17)} fill="#ffffff" opacity="0.7" />
-                {labelVisible ? (
-                  <g transform={`translate(${label.x} ${label.y})`}>
-                    <rect width={label.width} height="34" rx="9" fill="#ffffff" fillOpacity="0.97" stroke="#f2dfd2" />
-                    <text x={label.width / 2} y="14" textAnchor="middle" fill="#111827" fontSize="11.5" fontWeight="800">{clipLabel(station.node.name, 9)}</text>
-                    <text x={label.width / 2} y="27" textAnchor="middle" fill="#9a3412" fontSize="9.5" fontWeight="750">{station.heat.toFixed(1)}</text>
+                {/* Outer Glow */}
+                <circle cx={st.x} cy={st.y} r={st.r * 1.8} fill={st.chain.color} opacity={st.selected ? 0.2 : 0.05} />
+                {/* Station Body */}
+                <circle cx={st.x} cy={st.y} r={st.r} fill="white" stroke={st.selected ? "#0f172a" : st.chain.color} strokeWidth={st.selected ? 3 : 1.5} />
+                {/* Heat Indicator */}
+                <circle cx={st.x} cy={st.y} r={st.r * 0.4} fill={hColor} />
+                
+                {/* Label */}
+                {(isActive || st.intensity > 0.7) && (
+                  <g transform={`translate(${st.x} ${st.y + st.r + 12})`}>
+                    <rect x={-45} y={-10} width={90} height={20} rx={10} fill="white" stroke="#e2e8f0" className="shadow-sm" />
+                    <text textAnchor="middle" fill="#1e293b" fontSize="9" fontWeight="900" className="uppercase tracking-tighter">{clipLabel(st.node.name, 10)}</text>
                   </g>
-                ) : null}
-                <title>{`${station.chain.name}｜${station.node.name}｜热度 ${station.heat.toFixed(1)}｜${border.label}`}</title>
-              </g>
+                )}
+              </motion.g>
             );
           })}
-
-          <Legend activeChain={activeChain} />
         </svg>
       </div>
-      {activeChain ? (
-        <div className="border-t border-[#f7e9de] bg-white p-4 md:hidden">
-          <div className="text-sm font-semibold text-slate-950">{activeChain.name}节点</div>
-          <div className="mt-3 grid gap-2">
-            {activeChain.nodes.map((node) => (
-              <button
-                key={node.node_key}
-                type="button"
-                onClick={() => onSelect(node.node_key)}
-                className="flex items-center justify-between rounded-md border border-[#f2dfd2] px-3 py-2 text-left"
-              >
-                <span className="text-sm font-semibold text-slate-900">{node.name}</span>
-                <span className="mono text-xs font-semibold text-orange-700">{nodeHeat(node).toFixed(1)}</span>
-              </button>
-            ))}
+
+      {/* Floating Insights */}
+      <div className="absolute bottom-10 left-10 flex gap-4 pointer-events-none">
+        <div className="bg-white/90 backdrop-blur-xl border border-slate-200 p-6 rounded-3xl shadow-2xl pointer-events-auto min-w-[240px]">
+          <div className="flex items-center gap-3 mb-4">
+            <RadioTower size={16} className="text-orange-500" />
+            <span className="text-xs font-black uppercase tracking-widest text-slate-900">Current Flow</span>
+          </div>
+          <div className="text-lg font-black text-slate-900 mb-1">{model.lines.find(l => l.key === activeChainKey)?.name}</div>
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-6">Real-time Node Saturation</div>
+          
+          <div className="space-y-3">
+            <LegendRow label="高热爆红" color="#ef4444" />
+            <LegendRow label="活跃扩张" color="#f97316" />
+            <LegendRow label="稳健运行" color="#eab308" />
           </div>
         </div>
-      ) : null}
-    </section>
+      </div>
+    </div>
   );
 }
 
+function LegendRow({ label, color }: { label: string, color: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <div className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+        <span className="text-[10px] font-bold text-slate-600">{label}</span>
+      </div>
+      <div className="h-1 w-12 rounded-full bg-slate-100">
+        <div className="h-full rounded-full" style={{ width: '70%', backgroundColor: color }} />
+      </div>
+    </div>
+  );
+}
+
+// Logic implementations
+
 function buildMetro(nodes: ChainNode[], edges: ChainEdge[], selectedNodeKey: string | null) {
-  const nodeMap = new Map(nodes.map((node) => [node.node_key, node]));
-  const rawLines = CHAINS.map((chain) => {
-    const lineNodes = chain.nodeKeys.map((key) => nodeMap.get(key)).filter((node): node is ChainNode => Boolean(node));
-    const heat = lineNodes.reduce((sum, node) => sum + nodeHeat(node), 0) / Math.max(lineNodes.length, 1);
-    return {
-      ...chain,
-      nodes: lineNodes,
-      heat,
-      intensity: 0,
-      selected: Boolean(selectedNodeKey && lineNodes.some((node) => node.node_key === selectedNodeKey))
-    };
-  }).filter((line) => line.nodes.length);
+  const nodeMap = new Map(nodes.map(n => [n.node_key, n]));
+  const lines = CHAINS.map(c => {
+    const lNodes = c.nodeKeys.map(k => nodeMap.get(k)!).filter(Boolean);
+    const heat = lNodes.reduce((s, n) => s + nodeHeat(n), 0) / Math.max(lNodes.length, 1);
+    return { ...c, nodes: lNodes, heat, intensity: 0, selected: !!selectedNodeKey && lNodes.some(n => n.node_key === selectedNodeKey) };
+  }).filter(l => l.nodes.length);
 
-  const maxHeat = Math.max(...rawLines.map((line) => line.heat), 1);
-  const lines: ChainLine[] = rawLines
-    .map((line) => ({ ...line, intensity: Math.min(line.heat / maxHeat, 1) }))
-    .sort((left, right) => Number(right.selected) - Number(left.selected) || right.heat - left.heat);
-
-  if (!lines.some((line) => line.selected) && lines[0]) lines[0].selected = true;
-
+  const maxHeat = Math.max(...lines.map(l => l.heat), 1);
+  lines.forEach(l => l.intensity = l.heat / maxHeat);
+  
   const stations: Station[] = [];
-  const sameStageCounter = new Map<string, number>();
-  lines.forEach((line, lineIndex) => {
-    line.nodes.forEach((node, order) => {
-      const stage = stageIndex(node);
-      const counterKey = `${line.key}:${stage}`;
-      const offset = sameStageCounter.get(counterKey) ?? 0;
-      sameStageCounter.set(counterKey, offset + 1);
-      const heat = nodeHeat(node);
-      const intensity = nodeIntensity(node);
+  const sameStageMap = new Map<string, number>();
+
+  lines.forEach((l, lIdx) => {
+    l.nodes.forEach((n, order) => {
+      const stage = stageIndex(n);
+      const count = sameStageMap.get(`${l.key}:${stage}`) ?? 0;
+      sameStageMap.set(`${l.key}:${stage}`, count + 1);
+      
       stations.push({
-        id: `${line.key}:${node.node_key}:${order}`,
-        node,
-        chain: line,
-        x: stageX(stage) + (offset - 0.5) * 30,
-        y: lineY(lineIndex) + (offset % 2 ? 24 : -4),
-        r: 9 + intensity * 9 + Math.min(node.stock_count ?? 0, 14) * 0.35,
-        stageIndex: stage,
-        order,
-        heat,
-        intensity,
-        selected: node.node_key === selectedNodeKey
+        id: `${l.key}:${n.node_key}`, node: n, chain: l,
+        x: stageX(stage) + (count * 20),
+        y: TOP + (lIdx * LINE_GAP) + (count % 2 ? 15 : -15),
+        r: 8 + nodeIntensity(n) * 10,
+        stageIndex: stage, order, heat: nodeHeat(n), intensity: nodeIntensity(n),
+        selected: n.node_key === selectedNodeKey
       });
     });
   });
 
-  const edgeMap = new Map(edges.map((edge) => [`${edge.source}->${edge.target}`, edge]));
   const segments: Segment[] = [];
-  for (const line of lines) {
-    const lineStations = stations.filter((station) => station.chain.key === line.key).sort((left, right) => left.order - right.order);
-    lineStations.slice(0, -1).forEach((station, index) => {
-      const next = lineStations[index + 1];
-      const directEdge = edgeMap.get(`${station.node.node_key}->${next.node.node_key}`);
-      const reverseEdge = edgeMap.get(`${next.node.node_key}->${station.node.node_key}`);
-      const edge = directEdge ?? reverseEdge;
-      const intensity = edge ? edgeIntensity(edge, station, next) : Math.min((station.intensity + next.intensity) / 2, 1);
+  lines.forEach(l => {
+    const lStations = stations.filter(s => s.chain.key === l.key).sort((a,b) => a.order - b.order);
+    lStations.slice(0, -1).forEach((s, i) => {
       segments.push({
-        key: `${line.key}:${station.node.node_key}->${next.node.node_key}:${index}`,
-        source: station,
-        target: next,
-        chain: line,
-        width: 4.6 + intensity * 7.6,
-        intensity,
-        direct: Boolean(directEdge)
+        key: `${l.key}:${i}`, source: s, target: lStations[i+1], chain: l,
+        width: 3 + Math.max(s.intensity, lStations[i+1].intensity) * 8,
+        intensity: (s.intensity + lStations[i+1].intensity) / 2, direct: true
       });
     });
-  }
+  });
 
   return { lines, stations, segments };
 }
 
-function stageIndex(node: ChainNode) {
-  const index = STAGES.findIndex((stage) => stage.layers.includes(node.layer));
-  return index >= 0 ? index : STAGES.length - 1;
+function stageIndex(n: ChainNode) {
+  const i = STAGES.findIndex(s => s.layers.includes(n.layer));
+  return i >= 0 ? i : STAGES.length - 1;
 }
-
-function stageX(index: number) {
-  return LEFT + index * STAGE_GAP;
+function stageX(i: number) { return LEFT + i * STAGE_GAP; }
+function segmentPath(s: Station, t: Station) {
+  const dx = Math.abs(t.x - s.x) * 0.5;
+  return `M${s.x},${s.y}C${s.x+dx},${s.y} ${t.x-dx},${t.y} ${t.x},${t.y}`;
 }
-
-function lineY(index: number) {
-  return TOP + index * LINE_GAP;
+function heatColor(i: number) {
+  if (i >= 0.8) return "#ef4444";
+  if (i >= 0.45) return "#f97316";
+  return "#eab308";
 }
-
-function segmentPath(source: Station, target: Station) {
-  const dx = Math.max(48, Math.abs(target.x - source.x) * 0.42);
-  return `M ${source.x} ${source.y} C ${source.x + dx} ${source.y}, ${target.x - dx} ${target.y}, ${target.x} ${target.y}`;
-}
-
-function edgeIntensity(edge: ChainEdge, source: Station, target: Station) {
-  const heat = edge.heat ?? (edge.intensity ?? 0) * 100;
-  const edgeValue = Math.max(heat / 100, edge.weight ?? 0);
-  return Math.min(Math.max(edgeValue * 0.62 + ((source.intensity + target.intensity) / 2) * 0.38, 0), 1);
-}
-
-function nodeHeat(node: ChainNode) {
-  return Math.max(node.heat ?? 0, node.momentum ?? 0, (node.intensity ?? 0) * 100);
-}
-
-function nodeIntensity(node: ChainNode) {
-  const value = node.intensity ?? nodeHeat(node) / 100;
-  return Math.min(Math.max(value, 0), 1);
-}
-
-function momentumBorder(node: ChainNode) {
-  const momentum = node.momentum ?? null;
-  if (momentum === null) return { color: "#ffffff", width: 2, label: "动量未知" };
-  if (momentum >= 66) return { color: "#dc2626", width: 3.2, label: "上涨加速" };
-  if (momentum <= 30) return { color: "#64748b", width: 2.1, label: "动量回落" };
-  return { color: "#f59e0b", width: 2.4, label: "横盘蓄势" };
-}
-
-function stationLabel(station: Station) {
-  const width = Math.max(104, Math.min(132, station.node.name.length * 13 + 28));
-  const above = station.order % 2 === 0;
-  return {
-    width,
-    x: station.x - width / 2,
-    y: above ? station.y - station.r - 45 : station.y + station.r + 12
-  };
-}
-
-function Legend({ activeChain }: { activeChain: ChainLine | null }) {
-  return (
-    <g transform="translate(1038 636)">
-      <rect width="250" height="92" rx="14" fill="#ffffff" fillOpacity="0.95" stroke="#f2dfd2" />
-      <g transform="translate(16 22)">
-        <RadioTower size={15} color="#ea580c" />
-        <text x="24" y="5" fill="#111827" fontSize="12" fontWeight="850">{activeChain?.name ?? "主路径"}</text>
-      </g>
-      <g transform="translate(18 48)">
-        <circle r="5" fill="#dc2626" />
-        <text x="14" y="4" fill="#64748b" fontSize="11.5" fontWeight="700">红边：上涨加速</text>
-      </g>
-      <g transform="translate(18 70)">
-        <circle r="5" fill="#f59e0b" />
-        <text x="14" y="4" fill="#64748b" fontSize="11.5" fontWeight="700">黄橙红：节点热度</text>
-      </g>
-    </g>
-  );
-}
-
-function warmColor(intensity: number) {
-  if (intensity >= 0.84) return "#b91c1c";
-  if (intensity >= 0.62) return "#ea580c";
-  if (intensity >= 0.36) return "#f59e0b";
-  return "#facc15";
-}
-
-function clipLabel(value: string, maxLength: number) {
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
-}
+function nodeHeat(n: ChainNode) { return Math.max(n.heat ?? 0, n.momentum ?? 0, (n.intensity ?? 0) * 100); }
+function nodeIntensity(n: ChainNode) { return Math.min(Math.max(n.intensity ?? nodeHeat(n)/100, 0), 1); }
+function clipLabel(v: string, m: number) { return v.length > m ? `${v.slice(0, m)}..` : v; }

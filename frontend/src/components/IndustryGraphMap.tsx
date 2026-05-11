@@ -2,7 +2,9 @@
 
 import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Maximize2, Minus, Plus, RotateCcw } from "lucide-react";
+import { Maximize2, Minus, Plus, RotateCcw, Target, Info } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { cn } from "@/lib/utils";
 import type { ChainEdge, ChainNode } from "@/lib/api";
 
 type IndustryGraphMapProps = {
@@ -130,39 +132,46 @@ export function IndustryGraphMap({
   };
 
   return (
-    <div className="overflow-hidden rounded-lg border border-[#f2dfd2] bg-white">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#f7e9de] px-4 py-3">
-        <div>
-          <div className="text-sm font-semibold text-slate-950">全产业链关系总图</div>
-          <div className="mt-1 text-xs text-slate-500">
-            {model.selectedName ? `${model.selectedName} 下游链 ${model.downstreamCount} 个节点${model.contextCount ? ` / 相关输入 ${model.contextCount}` : ""} / ` : ""}
-            {model.visibleNodeCount} 个节点 / {model.visibleEdgeCount} 条关系
+    <div className="relative group overflow-hidden rounded-3xl border border-slate-200 bg-white text-slate-900 shadow-2xl transition-all duration-500 hover:border-slate-300">
+      <div className="absolute inset-0 pointer-events-none opacity-30">
+        <div className="absolute top-[20%] right-[-10%] w-[50%] h-[50%] bg-blue-50 blur-[120px] rounded-full" />
+        <div className="absolute bottom-[20%] left-[-10%] w-[50%] h-[50%] bg-indigo-50 blur-[120px] rounded-full" />
+      </div>
+
+      <div className="relative z-10 flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 bg-white/60 backdrop-blur-xl px-6 py-4">
+        <div className="flex items-center gap-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-50 border border-indigo-100 shadow-sm">
+            <Target className="text-indigo-600" size={20} />
+          </div>
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-[0.1em] text-slate-900 flex items-center gap-2">
+              全产业链关系总图
+              <span className="px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-100 text-[9px] font-bold text-indigo-600 uppercase tracking-widest">Dynamic Mesh</span>
+            </h3>
+            <div className="mt-1 flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              {model.selectedName ? (
+                <span className="text-orange-600 font-black">{model.selectedName} 链路系</span>
+              ) : (
+                "全域概览模式"
+              )}
+              <span className="opacity-30">•</span>
+              <span>{model.visibleNodeCount} 节点</span>
+              <span className="opacity-30">•</span>
+              <span>{model.visibleEdgeCount} 关系</span>
+            </div>
           </div>
         </div>
+
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowLabels((value) => !value)}
-            className={`inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs ${
-              showLabels ? "border-orange-500 bg-orange-50 text-orange-700" : "border-[#f2dfd2] text-slate-600"
-            }`}
-          >
-            <Maximize2 size={14} />
-            标签
-          </button>
-          <IconButton label="缩小" onClick={() => setZoom((value) => clamp(value - 0.12, 0.62, 1.9))}>
-            <Minus size={15} />
-          </IconButton>
-          <IconButton label="放大" onClick={() => setZoom((value) => clamp(value + 0.12, 0.62, 1.9))}>
-            <Plus size={15} />
-          </IconButton>
-          <IconButton label="重置" onClick={resetViewport}>
-            <RotateCcw size={15} />
-          </IconButton>
+          <ControlButton active={showLabels} onClick={() => setShowLabels(!showLabels)} icon={Maximize2} label="标签" />
+          <div className="h-6 w-[1px] bg-slate-200 mx-1" />
+          <ControlButton onClick={() => setZoom(v => clamp(v - 0.15, 0.5, 2.5))} icon={Minus} label="缩小" />
+          <ControlButton onClick={() => setZoom(v => clamp(v + 0.15, 0.5, 2.5))} icon={Plus} label="放大" />
+          <ControlButton onClick={resetViewport} icon={RotateCcw} label="重置" />
         </div>
       </div>
 
-      <div className="relative h-[760px] bg-[#fffdf9]">
+      <div className="relative h-[760px] bg-slate-50/30">
         <svg
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
           role="img"
@@ -190,7 +199,7 @@ export function IndustryGraphMap({
               const centerDx = center.x - gesture.startCenter.x;
               const centerDy = center.y - gesture.startCenter.y;
               suppressClickRef.current = true;
-              setZoom(clamp(gesture.startZoom * zoomRatio, 0.62, 1.9));
+              setZoom(clamp(gesture.startZoom * zoomRatio, 0.5, 2.5));
               setRotation({
                 x: clamp(gesture.origin.x + centerDy * 0.0042, -1.18, 1.18),
                 y: gesture.origin.y + centerDx * 0.0048
@@ -227,214 +236,231 @@ export function IndustryGraphMap({
           style={{ cursor: isDragging ? "grabbing" : "grab", touchAction: "none" }}
         >
           <defs>
-            <clipPath id="industry-sphere-clip">
+            <radialGradient id="graph-sphere-bg" cx="45%" cy="35%" r="65%">
+              <stop offset="0%" stopColor="#ffffff" />
+              <stop offset="100%" stopColor="#f1f5f9" />
+            </radialGradient>
+            <filter id="soft-glow-node-light" x="-200%" y="-200%" width="500%" height="500%">
+              <feGaussianBlur stdDeviation="5" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+            <marker id="graph-arrow-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#f97316" />
+            </marker>
+            <clipPath id="industry-sphere-clip-light">
               <circle cx={CENTER_X} cy={CENTER_Y} r={SPHERE_RADIUS * zoom + 5} />
             </clipPath>
-            <filter id="graph-node-shadow" x="-80%" y="-80%" width="260%" height="260%">
-              <feDropShadow dx="0" dy="10" stdDeviation="8" floodColor="#7c2d12" floodOpacity="0.13" />
-            </filter>
-            <filter id="sphere-shadow" x="-20%" y="-20%" width="140%" height="160%">
-              <feDropShadow dx="0" dy="20" stdDeviation="18" floodColor="#7c2d12" floodOpacity="0.10" />
-            </filter>
-            <radialGradient id="sphere-surface" cx="42%" cy="32%" r="68%">
-              <stop offset="0" stopColor="#ffffff" stopOpacity="0.98" />
-              <stop offset="0.46" stopColor="#fff7ed" stopOpacity="0.95" />
-              <stop offset="1" stopColor="#fed7aa" stopOpacity="0.36" />
-            </radialGradient>
-            <radialGradient id="sphere-gloss" cx="35%" cy="28%" r="44%">
-              <stop offset="0" stopColor="#ffffff" stopOpacity="0.68" />
-              <stop offset="0.72" stopColor="#ffffff" stopOpacity="0.12" />
-              <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
-            </radialGradient>
-            <marker id="graph-arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="#ea580c" opacity="0.68" />
-            </marker>
           </defs>
 
-          <rect width={WIDTH} height={HEIGHT} fill="#fffdf9" />
-          <ellipse cx={CENTER_X} cy="668" rx={SPHERE_RADIUS * zoom * 1.02} ry={46 * zoom} fill="#fed7aa" opacity="0.2" />
-          <circle cx={CENTER_X} cy={CENTER_Y} r={SPHERE_RADIUS * zoom} fill="url(#sphere-surface)" filter="url(#sphere-shadow)" />
+          <circle cx={CENTER_X} cy={CENTER_Y} r={SPHERE_RADIUS * zoom} fill="url(#graph-sphere-bg)" stroke="#e2e8f0" strokeWidth="1" />
+          
+          <g clipPath="url(#industry-sphere-clip-light)">
+            <g opacity="0.15">
+              {projection.latitudeLines.map((path, index) => (
+                <path key={`lat-${index}`} d={path} fill="none" stroke="#94a3b8" strokeWidth="0.5" strokeDasharray="2 4" />
+              ))}
+              {projection.longitudeLines.map((path, index) => (
+                <path key={`lon-${index}`} d={path} fill="none" stroke="#94a3b8" strokeWidth="0.5" strokeDasharray="2 4" />
+              ))}
+            </g>
 
-          <g clipPath="url(#industry-sphere-clip)">
-            {projection.patches.map((patch) => (
-              <path key={patch.key} d={patch.path} fill={patch.color} opacity={patch.opacity} />
-            ))}
-            {projection.latitudeLines.map((path, index) => (
-              <path key={`lat-${index}`} d={path} fill="none" stroke="#f1c9ad" strokeWidth="1" strokeOpacity="0.28" />
-            ))}
-            {projection.longitudeLines.map((path, index) => (
-              <path key={`lon-${index}`} d={path} fill="none" stroke="#f2d8c6" strokeWidth="1" strokeOpacity="0.22" />
-            ))}
-            <g fill="none">
+            <g>
               {projection.edges.map((item) => (
-                <path
+                <motion.path
                   key={`${item.edge.source}-${item.edge.target}-${item.edge.relation_type ?? ""}`}
-                  d={item.path}
-                  stroke={item.active ? warmColor(item.intensity) : "#bfaea0"}
-                  strokeWidth={item.width}
-                  strokeOpacity={item.opacity}
-                  strokeLinecap="round"
-                  markerEnd={item.active && item.z > -0.1 ? "url(#graph-arrow-hot)" : undefined}
+                  initial={false}
+                  animate={{
+                    d: item.path,
+                    stroke: item.active ? "#f97316" : "#cbd5e1",
+                    strokeOpacity: item.opacity,
+                    strokeWidth: item.width
+                  }}
+                  fill="none"
+                  markerEnd={item.active && item.z > -0.1 ? "url(#graph-arrow-light)" : undefined}
                 />
               ))}
             </g>
           </g>
 
-          <circle cx={CENTER_X} cy={CENTER_Y} r={SPHERE_RADIUS * zoom} fill="url(#sphere-gloss)" pointerEvents="none" />
-          <circle cx={CENTER_X} cy={CENTER_Y} r={SPHERE_RADIUS * zoom} fill="none" stroke="#f4c7a8" strokeWidth="1.4" strokeOpacity="0.72" />
-
           <g>
             {projection.nodes.map((item) => {
               const active = item.node.node_key === selectedNodeKey;
-              const color = warmColor(item.intensity);
+              const hColor = heatColor(item.intensity);
               const layerColor = layerColorAt(item.layerIndex);
-              const downstream = item.downstreamDepth !== null;
               const labelVisible = showLabels && (item.z > -0.08 || active || item.connected);
               const r = item.r * item.scale;
+              
               return (
-                <g
+                <motion.g
                   key={item.node.node_key}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => {
-                    if (suppressClickRef.current) {
-                      suppressClickRef.current = false;
-                      return;
-                    }
-                    onSelect(item.node.node_key);
+                  initial={false}
+                  animate={{
+                    opacity: item.opacity,
+                    transform: `translate(${item.x}px, ${item.y}px) scale(${active ? 1.25 : 1})`
                   }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelect(item.node.node_key);
-                    }
-                  }}
-                  className="cursor-pointer outline-none"
-                  opacity={item.opacity}
+                  className="cursor-pointer"
+                  onClick={() => !suppressClickRef.current && onSelect(item.node.node_key)}
                 >
-                  <circle cx={item.x} cy={item.y} r={r * 2.15} fill={layerColor} opacity={active ? 0.22 : downstream ? 0.16 : item.contextual ? 0.12 : 0.08} />
-                  <circle
-                    cx={item.x}
-                    cy={item.y}
-                    r={r}
-                    fill={color}
-                    stroke={active ? "#111827" : downstream ? "#ea580c" : item.contextual ? "#f59e0b" : item.matched ? "#f97316" : "#ffffff"}
-                    strokeWidth={active ? 2.8 : downstream || item.contextual ? 2 : 1.2}
-                    filter="url(#graph-node-shadow)"
-                  />
-                  <circle cx={item.x - r * 0.28} cy={item.y - r * 0.34} r={Math.max(2, r * 0.18)} fill="#ffffff" opacity="0.72" />
-                  {labelVisible ? (
-                    <g transform={`translate(${item.x + r + 6} ${item.y - 11})`}>
-                      <rect width={labelWidth(item.node.name)} height="24" rx="7" fill="#ffffff" fillOpacity="0.94" stroke={active ? "#ea580c" : "#f3dfd3"} />
-                      <text x="8" y="16" fill="#111827" fontSize="11.5" fontWeight={active ? "800" : "650"}>
-                        {clipLabel(item.node.name, 10)}
-                      </text>
-                    </g>
-                  ) : null}
-                  <title>{`${item.node.name}｜${item.node.layer}｜热度 ${item.heat.toFixed(1)}`}</title>
-                </g>
+                  <circle r={r * 2.2} fill={layerColor} opacity={active ? 0.2 : 0.08} filter="url(#soft-glow-node-light)" />
+                  <circle r={r} fill="white" stroke={active ? "#0f172a" : hColor} strokeWidth={active ? 3 : 1.5} shadow-sm />
+                  <circle cx={-r * 0.3} cy={-r * 0.3} r={r * 0.25} fill={hColor} opacity={0.6} />
+                  
+                  <AnimatePresence>
+                    {labelVisible && (
+                      <motion.g
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 5 }}
+                        transform={`translate(${r + 6} -10)`}
+                      >
+                        <rect
+                          width={labelWidth(item.node.name)}
+                          height={22}
+                          rx={11}
+                          fill="white"
+                          stroke={active ? "#f97316" : "#e2e8f0"}
+                          className="shadow-md"
+                        />
+                        <text x="10" y="15" fill={active ? "#0f172a" : "#475569"} fontSize="11" fontWeight="800" className="pointer-events-none">
+                          {clipLabel(item.node.name, 12)}
+                        </text>
+                      </motion.g>
+                    )}
+                  </AnimatePresence>
+                </motion.g>
               );
             })}
           </g>
 
           <g>
             {projection.layerLabels.map((label) => (
-              <g key={label.key} transform={`translate(${label.x} ${label.y})`} opacity={label.opacity}>
-                <circle r="5" fill={label.color} opacity="0.72" />
-                <text x={label.textAnchor === "start" ? 11 : -11} y="4" textAnchor={label.textAnchor} fill="#475569" fontSize="11.5" fontWeight="700">
+              <motion.g
+                key={label.key}
+                initial={false}
+                animate={{
+                  transform: `translate(${label.x}px, ${label.y}px)`,
+                  opacity: label.opacity
+                }}
+              >
+                <circle r="4" fill={label.color} stroke="white" strokeWidth="1" className="shadow-sm" />
+                <text
+                  x={label.textAnchor === "start" ? 10 : -10}
+                  y="4"
+                  textAnchor={label.textAnchor}
+                  fill="#64748b"
+                  fontSize="10"
+                  fontWeight="900"
+                  className="uppercase tracking-widest"
+                >
                   {label.name}
                 </text>
-              </g>
+              </motion.g>
             ))}
           </g>
-
-          <g transform="translate(28 710)">
-            <rect width="330" height="34" rx="10" fill="#ffffff" stroke="#f2dfd2" />
-            <LegendDot x={20} color="#facc15" label="温和" />
-            <LegendDot x={94} color="#f59e0b" label="升温" />
-            <LegendDot x={170} color="#ea580c" label="活跃" />
-            <LegendDot x={246} color="#b91c1c" label="高热" />
-          </g>
-          <LayerLegend layers={model.layers} />
         </svg>
+
+        <div className="absolute bottom-8 left-8 p-5 rounded-2xl border border-slate-200 bg-white/90 backdrop-blur-xl shadow-xl flex flex-col gap-3">
+          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+            <Info size={12} />
+            热力强度区间
+          </div>
+          <div className="flex gap-4">
+            <LegendItem color="#eab308" label="温和" />
+            <LegendItem color="#f97316" label="活跃" />
+            <LegendItem color="#ef4444" label="爆红" />
+          </div>
+        </div>
+
+        <div className="absolute top-24 right-8 p-5 rounded-2xl border border-slate-200 bg-white/90 backdrop-blur-xl shadow-xl w-48 hidden lg:block">
+          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">产业空间分区</div>
+          <div className="space-y-2.5">
+            {model.layers.map((layer, index) => (
+              <div key={layer} className="flex items-center gap-3 group/layer cursor-default">
+                <div className="h-2.5 w-2.5 rounded-full transition-transform group-hover/layer:scale-125" style={{ backgroundColor: layerColorAt(index) }} />
+                <span className="text-[11px] font-bold text-slate-600 group-hover/layer:text-slate-900 transition-colors">{layer}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+function ControlButton({ icon: Icon, label, onClick, active }: { icon: any; label: string; onClick: () => void; active?: boolean }) {
   return (
     <button
       type="button"
-      aria-label={label}
-      title={label}
       onClick={onClick}
-      className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-[#f2dfd2] bg-white text-slate-600 hover:border-orange-300 hover:text-orange-700"
+      className={cn(
+        "flex h-9 items-center gap-2 rounded-xl border px-4 text-[11px] font-bold transition-all active:scale-95",
+        active 
+          ? "bg-slate-900 border-slate-900 text-white shadow-lg shadow-slate-200" 
+          : "bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-900 hover:shadow-sm"
+      )}
     >
-      {children}
+      <Icon size={14} />
+      {label}
     </button>
   );
 }
 
-function LegendDot({ x, color, label }: { x: number; color: string; label: string }) {
+function LegendItem({ color, label }: { color: string; label: string }) {
   return (
-    <g transform={`translate(${x} 17)`}>
-      <circle cx="0" cy="0" r="6" fill={color} />
-      <text x="12" y="4" fill="#64748b" fontSize="12">
-        {label}
-      </text>
-    </g>
+    <div className="flex items-center gap-2">
+      <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color, boxShadow: `0 0 10px ${color}66` }} />
+      <span className="text-[11px] font-bold text-slate-600 tracking-tight">{label}</span>
+    </div>
   );
 }
 
-function LayerLegend({ layers }: { layers: string[] }) {
-  const rowHeight = 22;
-  const width = 224;
-  const height = 38 + layers.length * rowHeight;
-  return (
-    <g transform="translate(928 84)">
-      <rect width={width} height={height} rx="12" fill="#ffffff" fillOpacity="0.92" stroke="#f2dfd2" />
-      <text x="14" y="22" fill="#111827" fontSize="12" fontWeight="800">
-        球面色块分类
-      </text>
-      {layers.map((layer, index) => (
-        <g key={layer} transform={`translate(14 ${40 + index * rowHeight})`}>
-          <rect width="12" height="12" rx="3" fill={layerColorAt(index)} fillOpacity="0.7" />
-          <text x="20" y="10" fill="#475569" fontSize="11.5" fontWeight="650">
-            {layer}
-          </text>
-        </g>
-      ))}
-    </g>
-  );
+function heatColor(intensity: number) {
+  if (intensity >= 0.8) return "#ef4444"; // Red
+  if (intensity >= 0.45) return "#f97316"; // Orange
+  return "#eab308"; // Yellow
 }
 
-function startGesture(
-  pointers: Map<number, PointerPoint>,
-  pointerId: number,
-  rotation: Rotation,
-  zoom: number,
-  gestureRef: React.MutableRefObject<GestureState | null>
-) {
-  const points = Array.from(pointers.values());
-  if (points.length >= 2) {
-    gestureRef.current = {
-      mode: "pinch",
-      startDistance: pointerDistance(points[0], points[1]),
-      startZoom: zoom,
-      startCenter: pointerCenter(points[0], points[1]),
-      origin: rotation
-    };
-    return;
-  }
-  const point = pointers.get(pointerId);
-  if (!point) return;
-  gestureRef.current = {
-    mode: "rotate",
-    pointerId,
-    startX: point.x,
-    startY: point.y,
-    origin: rotation
+function spherePosition(layerIndex: number, layerCount: number, index: number, count: number, heat: number, maxHeat: number) {
+  const sector = TWO_PI / Math.max(layerCount, 1);
+  const lonBase = -Math.PI + sector * (layerIndex + 0.5);
+  const rank = count <= 1 ? 0.5 : index / Math.max(count - 1, 1);
+  const latBase = (0.5 - rank) * Math.PI * 0.72;
+  const lonJitter = Math.sin((index + 1) * 2.399) * sector * 0.33;
+  const heatLift = (Math.min(heat / Math.max(maxHeat, 1), 1) - 0.5) * 0.16;
+  return sphericalToCartesian(clamp(latBase + heatLift, -1.18, 1.18), lonBase + lonJitter);
+}
+
+function sphericalToCartesian(lat: number, lon: number): Vec3 {
+  const cosLat = Math.cos(lat);
+  return {
+    x: cosLat * Math.sin(lon),
+    y: Math.sin(lat),
+    z: cosLat * Math.cos(lon)
+  };
+}
+
+function rotatePoint(point: Vec3, rotation: Rotation): Vec3 {
+  const yawCos = Math.cos(rotation.y);
+  const yawSin = Math.sin(rotation.y);
+  const x1 = point.x * yawCos + point.z * yawSin;
+  const z1 = -point.x * yawSin + point.z * yawCos;
+  const pitchCos = Math.cos(rotation.x);
+  const pitchSin = Math.sin(rotation.x);
+  return {
+    x: x1,
+    y: point.y * pitchCos - z1 * pitchSin,
+    z: point.y * pitchSin + z1 * pitchCos
+  };
+}
+
+function projectPoint(point: Vec3, radius: number) {
+  const perspective = 1 / (1 - point.z * 0.16);
+  return {
+    x: CENTER_X + point.x * radius * perspective,
+    y: CENTER_Y - point.y * radius * perspective
   };
 }
 
@@ -551,7 +577,7 @@ function projectGraph(model: ReturnType<typeof buildGraph>, rotation: Rotation, 
   return {
     nodes: Array.from(nodeMap.values()).sort((left, right) => left.z - right.z),
     edges: projectedEdges.sort((left, right) => left.z - right.z),
-    patches: buildLayerPatches(model.layers, rotation, radius),
+    patches: [], 
     latitudeLines: [-55, -30, 0, 30, 55].map((degree) => buildLatitudePath((degree / 180) * Math.PI, rotation, radius)),
     longitudeLines: Array.from({ length: 12 }, (_, index) => buildLongitudePath((-Math.PI + (index * TWO_PI) / 12), rotation, radius)),
     layerLabels: model.layers.map((name, index) => {
@@ -594,31 +620,6 @@ function buildSurfacePath(source: Vec3, target: Vec3, radius: number) {
   return commands.join(" ");
 }
 
-function buildLayerPatches(layers: string[], rotation: Rotation, radius: number) {
-  const sector = TWO_PI / Math.max(layers.length, 1);
-  return layers.map((layer, index) => {
-    const lonStart = -Math.PI + index * sector + 0.018;
-    const lonEnd = lonStart + sector - 0.036;
-    const points: string[] = [];
-    for (let step = 0; step <= 18; step += 1) {
-      const lat = -1.08 + (step / 18) * 2.16;
-      const point = projectPoint(rotatePoint(sphericalToCartesian(lat, lonStart), rotation), radius);
-      points.push(`${point.x} ${point.y}`);
-    }
-    for (let step = 18; step >= 0; step -= 1) {
-      const lat = -1.08 + (step / 18) * 2.16;
-      const point = projectPoint(rotatePoint(sphericalToCartesian(lat, lonEnd), rotation), radius);
-      points.push(`${point.x} ${point.y}`);
-    }
-    return {
-      key: layer,
-      color: layerColorAt(index),
-      opacity: 0.105,
-      path: `M ${points.join(" L ")} Z`
-    };
-  });
-}
-
 function buildLatitudePath(lat: number, rotation: Rotation, radius: number) {
   const points: string[] = [];
   for (let step = 0; step <= 72; step += 1) {
@@ -639,44 +640,32 @@ function buildLongitudePath(lon: number, rotation: Rotation, radius: number) {
   return points.join(" ");
 }
 
-function spherePosition(layerIndex: number, layerCount: number, index: number, count: number, heat: number, maxHeat: number) {
-  const sector = TWO_PI / Math.max(layerCount, 1);
-  const lonBase = -Math.PI + sector * (layerIndex + 0.5);
-  const rank = count <= 1 ? 0.5 : index / Math.max(count - 1, 1);
-  const latBase = (0.5 - rank) * Math.PI * 0.72;
-  const lonJitter = Math.sin((index + 1) * 2.399) * sector * 0.33;
-  const heatLift = (Math.min(heat / Math.max(maxHeat, 1), 1) - 0.5) * 0.16;
-  return sphericalToCartesian(clamp(latBase + heatLift, -1.18, 1.18), lonBase + lonJitter);
-}
-
-function sphericalToCartesian(lat: number, lon: number): Vec3 {
-  const cosLat = Math.cos(lat);
-  return {
-    x: cosLat * Math.sin(lon),
-    y: Math.sin(lat),
-    z: cosLat * Math.cos(lon)
-  };
-}
-
-function rotatePoint(point: Vec3, rotation: Rotation): Vec3 {
-  const yawCos = Math.cos(rotation.y);
-  const yawSin = Math.sin(rotation.y);
-  const x1 = point.x * yawCos + point.z * yawSin;
-  const z1 = -point.x * yawSin + point.z * yawCos;
-  const pitchCos = Math.cos(rotation.x);
-  const pitchSin = Math.sin(rotation.x);
-  return {
-    x: x1,
-    y: point.y * pitchCos - z1 * pitchSin,
-    z: point.y * pitchSin + z1 * pitchCos
-  };
-}
-
-function projectPoint(point: Vec3, radius: number) {
-  const perspective = 1 / (1 - point.z * 0.16);
-  return {
-    x: CENTER_X + point.x * radius * perspective,
-    y: CENTER_Y - point.y * radius * perspective
+function startGesture(
+  pointers: Map<number, PointerPoint>,
+  pointerId: number,
+  rotation: Rotation,
+  zoom: number,
+  gestureRef: React.MutableRefObject<GestureState | null>
+) {
+  const points = Array.from(pointers.values());
+  if (points.length >= 2) {
+    gestureRef.current = {
+      mode: "pinch",
+      startDistance: pointerDistance(points[0], points[1]),
+      startZoom: zoom,
+      startCenter: pointerCenter(points[0], points[1]),
+      origin: rotation
+    };
+    return;
+  }
+  const point = pointers.get(pointerId);
+  if (!point) return;
+  gestureRef.current = {
+    mode: "rotate",
+    pointerId,
+    startX: point.x,
+    startY: point.y,
+    origin: rotation
   };
 }
 
@@ -745,13 +734,6 @@ function normalizeLayerKey(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "_");
 }
 
-function warmColor(intensity: number) {
-  if (intensity >= 0.86) return "#b91c1c";
-  if (intensity >= 0.64) return "#ea580c";
-  if (intensity >= 0.38) return "#f59e0b";
-  return "#facc15";
-}
-
 function layerColorAt(index: number) {
   return LAYER_PALETTE[index % LAYER_PALETTE.length];
 }
@@ -761,7 +743,7 @@ function clipLabel(value: string, maxLength: number) {
 }
 
 function labelWidth(value: string) {
-  return Math.min(98, Math.max(46, clipLabel(value, 10).length * 12 + 16));
+  return Math.min(120, Math.max(60, clipLabel(value, 12).length * 9 + 20));
 }
 
 function pointerDistance(left: PointerPoint, right: PointerPoint) {

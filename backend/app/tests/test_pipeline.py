@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+import json
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
+from app.data_sources.hot_terms_client import HOT_TERMS_SOURCE_MAP, HotTermsEndpoint, HotTermsSourceItem, HotTermsSourceResult, _parse_html_payload
 from app.data_sources.mock_data import MockMarketDataClient
 from app.db.models import Base, DailyBar, DailyReport, DataIngestionBatch, DataSourceRun, EvidenceChain, FundamentalMetric, Industry, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal, utcnow
 from app.pipeline.industry_mapping_job import run_industry_mapping_job
@@ -12,8 +14,10 @@ from app.pipeline.daily_report_job import run_daily_report_job
 from app.pipeline.evidence_chain_job import run_evidence_chain_job
 from app.pipeline.industry_heat_job import run_industry_heat_job
 from app.pipeline.ingestion_task_service import claim_next_ingestion_task, create_ingestion_task, priority_candidates, run_ingestion_task, run_next_ingestion_task, task_payload
+from app.pipeline.hot_terms_ingestion_job import run_hot_terms_ingestion_job
 from app.pipeline.market_data_job import run_market_data_job
 from app.pipeline.news_ingestion_job import run_news_ingestion_job
+from app.pipeline.retail_research_daily import retail_research_payload
 from app.pipeline.sector_industry_mapping_job import run_sector_industry_mapping_job
 from app.pipeline.stock_universe_job import run_stock_universe_job
 from app.pipeline.tenbagger_score_job import run_tenbagger_score_job
@@ -195,6 +199,8 @@ def test_daily_pipeline_jobs_are_idempotent() -> None:
         evidence_count = len(session.scalars(select(EvidenceChain)).all())
         fundamental_count = len(session.scalars(select(FundamentalMetric)).all())
         report_count = len(session.scalars(select(DailyReport)).all())
+        report = session.scalar(select(DailyReport))
+        retail = retail_research_payload(session)
         data_runs = session.scalars(select(DataSourceRun)).all()
 
         assert stock_count >= 5
@@ -205,6 +211,10 @@ def test_daily_pipeline_jobs_are_idempotent() -> None:
         assert evidence_count == stock_count
         assert fundamental_count == stock_count
         assert report_count == 1
+        assert report is not None
+        assert "## 零售线索候选" in report.full_markdown
+        assert retail["summary"]["candidate_count"] == stock_count
+        assert retail["top_candidates"]
         assert all(score.company_score > 0 for score in session.scalars(select(StockScore)).all())
         assert any("营收同比" in chain.company_logic for chain in session.scalars(select(EvidenceChain)).all())
         assert {row.job_name for row in data_runs} == {"stock_universe", "market_data"}
@@ -263,6 +273,239 @@ def test_news_ingestion_persists_source_metadata() -> None:
         assert article is not None
         assert article.source_kind == "rss"
         assert article.source_confidence == 0.8
+
+
+def test_hot_terms_ingestion_persists_external_source_and_is_idempotent() -> None:
+    class OneHotTermsClient:
+        def fetch_all(self, source_keys=None, limit_per_source=12):
+            return [
+                HotTermsSourceResult(
+                    key="reddit",
+                    label="Reddit",
+                    kind="community",
+                    status="success",
+                    items=[
+                        HotTermsSourceItem(
+                            source_key="reddit",
+                            source_label="Reddit",
+                            source_kind="community",
+                            source_confidence=0.56,
+                            channel="r/stocks",
+                            title="光模块 demand is rising with AI算力 capex",
+                            summary="CPO and optical module supply chain discussion",
+                            source_url="https://reddit.test/r/stocks/1",
+                            published_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
+                            rank=1,
+                        ),
+                        HotTermsSourceItem(
+                            source_key="reddit",
+                            source_label="Reddit",
+                            source_kind="community",
+                            source_confidence=0.56,
+                            channel="r/stocks",
+                            title="Weekend portfolio chat with no mapped industry signal",
+                            summary="General discussion without investable industry keywords",
+                            source_url="https://reddit.test/r/stocks/noise",
+                            published_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
+                            rank=2,
+                        )
+                    ],
+                )
+            ]
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        industry = Industry(name="AI算力", description="")
+        session.add(industry)
+        session.flush()
+        session.add(IndustryKeyword(industry_id=industry.id, keyword="光模块", weight=1.0, is_active=True))
+        session.commit()
+
+        result = run_hot_terms_ingestion_job(session, client=OneHotTermsClient())
+        article = session.scalar(select(NewsArticle).where(NewsArticle.source == "reddit"))
+        run = session.scalar(select(DataSourceRun).where(DataSourceRun.job_name == "hot_terms_reddit"))
+
+        assert result["inserted"] == 1
+        assert result["skipped"] == 0
+        assert result["sources"][0]["irrelevant"] == 1
+        assert article is not None
+        assert article.source_kind == "community"
+        assert article.source_channel == "r/stocks"
+        assert article.source_label == "Reddit"
+        assert article.source_rank == 1
+        assert article.is_synthetic is False
+        assert {"AI算力", "光模块"}.issubset(set(json.loads(article.matched_keywords)))
+        assert json.loads(article.related_industries) == ["AI算力"]
+        assert json.loads(article.match_reason) == {
+            "primary": "keyword",
+            "keyword": ["光模块"],
+            "industry": ["AI算力"],
+            "alias": ["ai"],
+            "unmatched": [],
+        }
+        assert run is not None
+        assert run.status == "success"
+
+        second = run_hot_terms_ingestion_job(session, client=OneHotTermsClient())
+        assert second["inserted"] == 0
+        assert second["skipped"] == 1
+
+
+def test_hot_terms_ingestion_skips_synthetic_items() -> None:
+    class SyntheticHotTermsItem:
+        def __init__(self) -> None:
+            self.source_key = "reddit"
+            self.source_label = "Reddit"
+            self.source_kind = "community"
+            self.source_confidence = 0.56
+            self.channel = "r/stocks"
+            self.title = "AI算力 synthetic placeholder should never be stored"
+            self.summary = "光模块 synthetic summary"
+            self.source_url = "https://reddit.test/r/stocks/synthetic"
+            self.published_at = datetime(2026, 5, 8, tzinfo=timezone.utc)
+            self.rank = 1
+            self.is_synthetic = True
+
+    class SyntheticHotTermsClient:
+        def fetch_all(self, source_keys=None, limit_per_source=12):
+            return [
+                HotTermsSourceResult(
+                    key="reddit",
+                    label="Reddit",
+                    kind="community",
+                    status="success",
+                    items=[SyntheticHotTermsItem()],
+                )
+            ]
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        industry = Industry(name="AI算力", description="")
+        session.add(industry)
+        session.flush()
+        session.add(IndustryKeyword(industry_id=industry.id, keyword="光模块", weight=1.0, is_active=True))
+        session.commit()
+
+        result = run_hot_terms_ingestion_job(session, client=SyntheticHotTermsClient())
+
+        assert result["inserted"] == 0
+        assert result["sources"][0]["irrelevant"] == 1
+        assert session.scalar(select(NewsArticle.id)) is None
+
+
+def test_hot_terms_ingestion_requires_word_boundary_for_short_latin_aliases() -> None:
+    class NoisyHotTermsClient:
+        def fetch_all(self, source_keys=None, limit_per_source=12):
+            return [
+                HotTermsSourceResult(
+                    key="reddit",
+                    label="Reddit",
+                    kind="community",
+                    status="success",
+                    items=[
+                        HotTermsSourceItem(
+                            source_key="reddit",
+                            source_label="Reddit",
+                            source_kind="community",
+                            source_confidence=0.56,
+                            channel="r/stocks",
+                            title="Retail pain trade is plain market chatter",
+                            summary="Said again without any mapped industry evidence.",
+                            source_url="https://reddit.test/r/stocks/noisy-ai-substring",
+                            published_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
+                            rank=1,
+                        ),
+                        HotTermsSourceItem(
+                            source_key="reddit",
+                            source_label="Reddit",
+                            source_kind="community",
+                            source_confidence=0.56,
+                            channel="r/stocks",
+                            title="Nvidia AI server capex lifts optical module demand",
+                            summary="AI infrastructure orders are still the core discussion.",
+                            source_url="https://reddit.test/r/stocks/ai-server",
+                            published_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
+                            rank=2,
+                        ),
+                        HotTermsSourceItem(
+                            source_key="reddit",
+                            source_label="Reddit",
+                            source_kind="community",
+                            source_confidence=0.56,
+                            channel="r/investing",
+                            title="Seven automakers discussed broad demand but no breakout",
+                            summary="The word seven should not trigger the short alias itself.",
+                            source_url="https://reddit.test/r/investing/seven-automakers",
+                            published_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
+                            rank=3,
+                        ),
+                    ],
+                )
+            ]
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        ai_industry = Industry(name="AI算力", description="")
+        ev_industry = Industry(name="新能源车", description="")
+        session.add_all([ai_industry, ev_industry])
+        session.flush()
+        session.add_all(
+            [
+                IndustryKeyword(industry_id=ai_industry.id, keyword="光模块", weight=1.0, is_active=True),
+                IndustryKeyword(industry_id=ev_industry.id, keyword="电池", weight=1.0, is_active=True),
+            ]
+        )
+        session.commit()
+
+        result = run_hot_terms_ingestion_job(session, client=NoisyHotTermsClient())
+        articles = session.scalars(select(NewsArticle).where(NewsArticle.source == "reddit")).all()
+
+        assert result["inserted"] == 1
+        assert result["sources"][0]["irrelevant"] == 2
+        assert len(articles) == 1
+        assert articles[0].source_url.endswith("/ai-server")
+        assert json.loads(articles[0].related_industries) == ["AI算力"]
+        assert json.loads(articles[0].match_reason) == {
+            "primary": "alias",
+            "keyword": [],
+            "industry": ["AI算力"],
+            "alias": ["ai", "nvidia"],
+            "unmatched": [],
+        }
+
+
+def test_tonghuashun_hot_terms_parser_keeps_article_links_only() -> None:
+    source = HOT_TERMS_SOURCE_MAP["tonghuashun"]
+    endpoint = HotTermsEndpoint("https://news.10jqka.com.cn/today_list/", "html", "today")
+    payload = """
+    <html><body>
+      <a href="http://stock.10jqka.com.cn/">股票</a>
+      <a href="http://news.10jqka.com.cn/today_list/">财经要闻</a>
+      <a href="http://news.10jqka.com.cn/20260511/c676588198.shtml">金融精准支持科技创新</a>
+      <a href="http://news.10jqka.com.cn/20260511/c676588198.shtml">金融机构进一步加强服务的长段落摘要</a>
+      <a href="http://stock.10jqka.com.cn/20260511/c676500001.shtml">芯片设备板块热度提升</a>
+    </body></html>
+    """.encode()
+
+    items = _parse_html_payload(source, endpoint, payload, limit=10)
+
+    assert [item.title for item in items] == ["金融精准支持科技创新", "芯片设备板块热度提升"]
+    assert all("10jqka.com.cn/20260511/c" in item.source_url for item in items)
+
+
+def test_wsj_hot_terms_uses_recent_google_news_discovery() -> None:
+    urls = [endpoint.url for endpoint in HOT_TERMS_SOURCE_MAP["wsj"].endpoints]
+
+    assert any("when%3A1d" in url for url in urls)
 
 
 def test_trend_signal_job_uses_research_universe_gate() -> None:

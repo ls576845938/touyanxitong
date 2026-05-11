@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { createChart, type IChartApi } from "lightweight-charts";
+import { createChart, type IChartApi, ColorType } from "lightweight-charts";
 import type { BarRow } from "@/lib/api";
 
 export function CandleChart({ rows }: { rows: BarRow[] }) {
@@ -10,30 +10,55 @@ export function CandleChart({ rows }: { rows: BarRow[] }) {
 
   useEffect(() => {
     if (!ref.current || rows.length === 0) return;
+    
     const chart = createChart(ref.current, {
-      height: 380,
+      height: 400,
       layout: {
-        background: { color: "#ffffff" },
-        textColor: "#172026"
+        background: { type: ColorType.Solid, color: "#ffffff" },
+        textColor: "#0f172a", // slate-900
+        fontSize: 11,
       },
       grid: {
-        vertLines: { color: "#edf2f1" },
-        horzLines: { color: "#edf2f1" }
+        vertLines: { color: "#f1f5f9" }, // slate-100
+        horzLines: { color: "#f1f5f9" }  // slate-100
       },
-      rightPriceScale: { borderColor: "#d9e2e0" },
-      timeScale: { borderColor: "#d9e2e0" }
+      rightPriceScale: { 
+        borderColor: "#e2e8f0", // slate-200
+        scaleMargins: {
+          top: 0.1,
+          bottom: 0.2,
+        },
+      },
+      timeScale: { 
+        borderColor: "#e2e8f0", // slate-200
+        fixLeftEdge: true,
+        fixRightEdge: true,
+      },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+      },
+      handleScale: {
+        axisPressedMouseMove: true,
+        mouseWheel: true,
+        pinch: true,
+      },
     });
+
     chartRef.current = chart;
+    
     const series = chart.addCandlestickSeries({
-      upColor: "#2e7d6f",
-      downColor: "#a7434b",
+      upColor: "#ef4444",    // red-500 (Up in China context)
+      downColor: "#10b981",  // emerald-500 (Down in China context)
       borderVisible: false,
-      wickUpColor: "#2e7d6f",
-      wickDownColor: "#a7434b"
+      wickUpColor: "#ef4444",
+      wickDownColor: "#10b981"
     });
+
     const uniqueRows = Array.from(new Map(rows.map((row) => [row.time, row])).values()).sort((left, right) =>
       left.time.localeCompare(right.time)
     );
+
     series.setData(
       uniqueRows.map((row) => ({
         time: row.time,
@@ -43,13 +68,16 @@ export function CandleChart({ rows }: { rows: BarRow[] }) {
         close: row.close
       }))
     );
+    
     chart.timeScale().fitContent();
 
     const resize = () => {
       if (ref.current) chart.applyOptions({ width: ref.current.clientWidth });
     };
+    
     resize();
     window.addEventListener("resize", resize);
+    
     return () => {
       window.removeEventListener("resize", resize);
       chart.remove();
@@ -59,11 +87,11 @@ export function CandleChart({ rows }: { rows: BarRow[] }) {
 
   if (rows.length === 0) {
     return (
-      <div className="flex h-[380px] w-full items-center justify-center rounded-md border border-line bg-slate-50 text-sm text-slate-600">
-        暂无可展示 K 线。请先对该标的运行行情批次下载。
+      <div className="flex h-[400px] w-full items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-sm text-slate-400">
+        暂无可展示 K 线数据
       </div>
     );
   }
 
-  return <div ref={ref} className="h-[380px] w-full" />;
+  return <div ref={ref} className="h-[400px] w-full" />;
 }

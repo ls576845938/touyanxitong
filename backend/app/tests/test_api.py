@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import Base, Industry, IndustryHeat, Stock, StockScore, TrendSignal
+from app.db.models import Base, DataSourceRun, Industry, IndustryHeat, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal
 from app.db.session import get_session
 from app.data_sources.mock_data import MockMarketDataClient
 from app.main import app
@@ -305,6 +305,333 @@ def test_api_contracts_return_research_outputs(tmp_path) -> None:
     assert report_by_date.status_code == 200
     assert report_by_date.json()["title"] == report.json()["title"]
     app.dependency_overrides.clear()
+
+
+def test_research_hot_terms_contract_and_source_status(tmp_path) -> None:
+    db_path = tmp_path / "hot_terms_api.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}, future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        ai = Industry(name="AI算力", description="")
+        robot = Industry(name="机器人", description="")
+        session.add_all([ai, robot])
+        session.flush()
+        session.add_all(
+            [
+                IndustryKeyword(industry_id=ai.id, keyword="光模块", weight=1.0, is_active=True),
+                IndustryKeyword(industry_id=robot.id, keyword="减速器", weight=1.0, is_active=True),
+                IndustryHeat(
+                    industry_id=ai.id,
+                    trade_date=date(2026, 5, 8),
+                    heat_score=16,
+                    heat_1d=16,
+                    heat_7d=12,
+                    top_keywords='["光模块"]',
+                    explanation="AI算力热度上行",
+                ),
+                NewsArticle(
+                    title="光模块 demand is rising with AI算力 capex",
+                    content="",
+                    summary="",
+                    source="reddit",
+                    source_kind="community",
+                    source_confidence=0.56,
+                    source_url="https://reddit.test/r/stocks/1",
+                    published_at=datetime(2026, 5, 8, 9, tzinfo=timezone.utc),
+                    matched_keywords='["光模块"]',
+                    related_industries='["AI算力"]',
+                    related_stocks="[]",
+                ),
+                NewsArticle(
+                    title="AI算力订单延续增长，光模块与液冷环节关注度提升",
+                    content="",
+                    summary="",
+                    source="mock",
+                    source_kind="mock",
+                    source_confidence=0.3,
+                    source_url="mock://news/2026-05-08/1",
+                    published_at=datetime(2026, 5, 8, 9, 30, tzinfo=timezone.utc),
+                    matched_keywords='["光模块"]',
+                    related_industries='["AI算力"]',
+                    related_stocks="[]",
+                    is_synthetic=False,
+                ),
+                NewsArticle(
+                    title="机器人 减速器 新订单",
+                    content="",
+                    summary="",
+                    source="wsj",
+                    source_kind="professional_media",
+                    source_confidence=0.78,
+                    source_url="https://wsj.test/markets/1",
+                    published_at=datetime(2026, 5, 8, 10, tzinfo=timezone.utc),
+                    matched_keywords="[]",
+                    related_industries="[]",
+                    related_stocks="[]",
+                ),
+                NewsArticle(
+                    title="同花顺 光模块 产业链更新",
+                    content="",
+                    summary="",
+                    source="tonghuashun",
+                    source_kind="market_media",
+                    source_confidence=0.74,
+                    source_url="https://news.10jqka.com.cn/20260508/c676500001.shtml",
+                    published_at=datetime(2026, 5, 8, 11, tzinfo=timezone.utc),
+                    matched_keywords='["光模块"]',
+                    related_industries='["AI算力"]',
+                    related_stocks="[]",
+                ),
+                NewsArticle(
+                    title="Apollo holds talks to sell private credit fund",
+                    content="",
+                    summary="",
+                    source="wsj",
+                    source_kind="professional_media",
+                    source_confidence=0.78,
+                    source_url="https://wsj.test/markets/noise",
+                    published_at=datetime(2026, 5, 8, 12, tzinfo=timezone.utc),
+                    matched_keywords="[]",
+                    related_industries="[]",
+                    related_stocks="[]",
+                ),
+                NewsArticle(
+                    title="Reuters AI chip suppliers lift optical module sentiment",
+                    content="AI infrastructure and Nvidia capex remain the context.",
+                    summary="Reuters market story tied to AI supply chain sentiment.",
+                    source="reuters_markets",
+                    source_kind="professional_media",
+                    source_confidence=0.8,
+                    source_channel="google_ai_semis",
+                    source_label="Reuters Markets",
+                    source_rank=1,
+                    source_url="https://reuters.test/markets/ai-chips",
+                    published_at=datetime(2026, 5, 8, 13, tzinfo=timezone.utc),
+                    matched_keywords='["光模块"]',
+                    related_industries='["AI算力"]',
+                    related_stocks="[]",
+                    match_reason='{"primary":"keyword","keyword":["光模块"],"industry":["AI算力"],"alias":["ai","nvidia"],"unmatched":[]}',
+                    is_synthetic=False,
+                ),
+                DataSourceRun(
+                    job_name="hot_terms_eastmoney",
+                    requested_source="hot_terms",
+                    effective_source="eastmoney",
+                    source_kind="market_media",
+                    source_confidence=0.76,
+                    markets="[]",
+                    status="failed",
+                    rows_inserted=0,
+                    rows_updated=0,
+                    rows_total=0,
+                    error="fixture network failure",
+                    started_at=datetime(2026, 5, 8, 11, tzinfo=timezone.utc),
+                    finished_at=datetime(2026, 5, 8, 11, tzinfo=timezone.utc),
+                ),
+                DataSourceRun(
+                    job_name="hot_terms_wsj",
+                    requested_source="hot_terms",
+                    effective_source="wsj",
+                    source_kind="professional",
+                    source_confidence=0.82,
+                    markets="[]",
+                    status="failed",
+                    rows_inserted=0,
+                    rows_updated=0,
+                    rows_total=6,
+                    error="fixture latest connector failure",
+                    started_at=datetime(2026, 5, 8, 12, tzinfo=timezone.utc),
+                    finished_at=datetime(2026, 5, 8, 12, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        session.commit()
+
+    def override_session():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_session] = override_session
+    client = TestClient(app)
+    try:
+        response = client.get("/api/research/hot-terms?window=today&limit=10")
+        payload = response.json()
+
+        assert response.status_code == 200
+        assert payload["window"] == "1d"
+        assert {"latest_date", "updated_at", "summary", "sources", "hot_terms", "hot_industries", "platform_terms"}.issubset(payload)
+        assert payload["summary"]["data_mode"] == "database_aggregate"
+        assert payload["summary"]["matched_article_count"] == 5
+        assert payload["summary"]["unmatched_article_count"] == 1
+        assert "data_lag_days" in payload["summary"]
+        assert any(term["term"] == "光模块" for term in payload["hot_terms"])
+        assert any(term["term"] == "减速器" for term in payload["hot_terms"])
+        assert all(term["term"].lower() != "apollo" for term in payload["hot_terms"])
+        source_status = {source["key"]: source["status"] for source in payload["sources"]}
+        assert source_status["reddit"] == "active"
+        assert source_status["tonghuashun"] == "active"
+        assert source_status["eastmoney"] == "error"
+        assert source_status["wsj"] == "error"
+        assert source_status["reuters_markets"] == "active"
+        assert source_status["industry_heat"] == "active"
+        wsj_source = next(source for source in payload["sources"] if source["key"] == "wsj")
+        assert wsj_source["connector_status"] == "failed"
+        assert wsj_source["window_data_status"] == "active"
+        assert wsj_source["last_irrelevant"] == 6
+        assert any(source["key"] == "reuters_markets" and source["terms"] for source in payload["platform_terms"])
+        optical = next(term for term in payload["hot_terms"] if term["term"] == "光模块")
+        example = next(item for item in optical["examples"] if item["source"] == "reuters_markets")
+        assert example["source_channel"] == "google_ai_semis"
+        assert example["source_label"] == "Reuters Markets"
+        assert example["source_rank"] == 1
+        assert example["is_synthetic"] is False
+        assert "关键词" in example["match_reason"]
+        mock_example = next(item for item in optical["examples"] if item["source"] == "mock")
+        assert mock_example["is_synthetic"] is True
+
+        invalid = client.get("/api/research/hot-terms?window=month")
+        assert invalid.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_research_hot_terms_refresh_endpoint(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "hot_terms_refresh.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}, future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        ai = Industry(name="AI算力", description="")
+        session.add(ai)
+        session.flush()
+        session.add(IndustryKeyword(industry_id=ai.id, keyword="光模块", weight=1.0, is_active=True))
+        session.commit()
+
+    def fake_run_hot_terms_ingestion_job(session, *, source_keys=None, limit_per_source=12, timeout_seconds=5):
+        assert limit_per_source == 3
+        assert timeout_seconds == 2
+        session.add(
+            NewsArticle(
+                title="雪球 光模块 热榜",
+                content="",
+                summary="",
+                source="xueqiu",
+                source_kind="community",
+                source_confidence=0.58,
+                source_url="https://xueqiu.test/hot/1",
+                published_at=datetime(2026, 5, 8, 12, tzinfo=timezone.utc),
+                matched_keywords='["光模块"]',
+                related_industries='["AI算力"]',
+                related_stocks="[]",
+            )
+        )
+        session.add(
+            DataSourceRun(
+                job_name="hot_terms_xueqiu",
+                requested_source="hot_terms",
+                effective_source="xueqiu",
+                source_kind="community",
+                source_confidence=0.58,
+                markets="[]",
+                status="success",
+                rows_inserted=1,
+                rows_updated=0,
+                rows_total=1,
+                error="",
+                started_at=datetime(2026, 5, 8, 12, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 5, 8, 12, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+        return {
+            "status": "success",
+            "inserted": 1,
+            "skipped": 0,
+            "failed_sources": 0,
+            "source_count": 1,
+            "sources": [{"key": "xueqiu", "label": "雪球", "status": "success", "fetched": 1, "inserted": 1, "skipped": 0, "error": ""}],
+        }
+
+    from app.api import routes_research
+
+    monkeypatch.setattr(routes_research, "run_hot_terms_ingestion_job", fake_run_hot_terms_ingestion_job)
+
+    def override_session():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_session] = override_session
+    client = TestClient(app)
+    try:
+        response = client.post("/api/research/hot-terms/refresh?limit_per_source=3&timeout_seconds=2")
+        payload = response.json()
+
+        assert response.status_code == 200
+        assert payload["inserted"] == 1
+        assert payload["snapshot"]["summary"]["matched_article_count"] == 1
+        assert any(source["key"] == "xueqiu" and source["status"] == "active" for source in payload["snapshot"]["sources"])
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_research_hot_terms_does_not_promote_generic_title_terms(tmp_path) -> None:
+    db_path = tmp_path / "hot_terms_generic_titles.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}, future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        ai = Industry(name="AI算力", description="")
+        session.add(ai)
+        session.flush()
+        session.add(IndustryKeyword(industry_id=ai.id, keyword="光模块", weight=1.0, is_active=True))
+        session.add(
+            NewsArticle(
+                title="最新部署 每日必读 财经要闻",
+                content="",
+                summary="",
+                source="local_news",
+                source_kind="mock",
+                source_confidence=0.3,
+                source_url="https://local.test/noise",
+                published_at=datetime(2026, 5, 8, 9, tzinfo=timezone.utc),
+                matched_keywords="[]",
+                related_industries='["AI算力"]',
+                related_stocks="[]",
+            )
+        )
+        session.commit()
+
+    def override_session():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_session] = override_session
+    client = TestClient(app)
+    try:
+        response = client.get("/api/research/hot-terms?window=1d&limit=10")
+        payload = response.json()
+        terms = {row["term"] for row in payload["hot_terms"]}
+
+        assert response.status_code == 200
+        assert "AI算力" in terms
+        assert "最新部署" not in terms
+        assert "每日必读" not in terms
+        assert "财经要闻" not in terms
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_industry_radar_scores_structured_evidence_without_news(tmp_path) -> None:

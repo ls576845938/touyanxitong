@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.models import DailyBar, DailyReport, EvidenceChain, IndustryHeat, Stock, StockScore, TrendSignal
 from app.engines.report_context import build_report_context
 from app.engines.report_engine import build_daily_report
+from app.engines.retail_research_engine import build_retail_daily_context
 from app.pipeline.utils import latest_trade_date
 
 
@@ -22,6 +23,7 @@ def run_daily_report_job(session: Session, report_date: date | None = None) -> d
     evidence = session.scalars(select(EvidenceChain).where(EvidenceChain.trade_date == target_date)).all()
     evidence_by_code = {item.stock_code: item for item in evidence}
     context = build_report_context(session, target_date)
+    retail_context = build_retail_daily_context(session, target_date)
     covered_stock_count = session.scalar(
         select(func.count(func.distinct(DailyBar.stock_code))).where(DailyBar.trade_date <= target_date)
     )
@@ -43,6 +45,7 @@ def run_daily_report_job(session: Session, report_date: date | None = None) -> d
             "trend_signal_count": int(trend_signal_count or 0),
             "scored_stock_count": len(scores),
         },
+        retail_research=retail_context,
     )
     payload = {
         "title": result.title,

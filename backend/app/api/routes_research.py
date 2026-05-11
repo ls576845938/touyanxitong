@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
@@ -9,8 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import EvidenceChain, Industry, IndustryHeat, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal
+from app.db.models import DataSourceRun, EvidenceChain, Industry, IndustryHeat, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal
 from app.db.session import get_session
+from app.pipeline.hot_terms_ingestion_job import run_hot_terms_ingestion_job
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 
@@ -24,11 +26,40 @@ HOT_SOURCE_CATALOG = [
     {"key": "taoguba", "label": "淘股吧", "kind": "community"},
     {"key": "ibkr", "label": "盈透", "kind": "broker"},
     {"key": "wsj", "label": "华尔街日报", "kind": "professional_media"},
+    {"key": "reuters_markets", "label": "Reuters Markets", "kind": "professional_media"},
+    {"key": "cnbc_markets", "label": "CNBC Markets", "kind": "market_media"},
+    {"key": "marketwatch", "label": "MarketWatch", "kind": "market_media"},
+    {"key": "barrons", "label": "Barron's", "kind": "professional_media"},
+    {"key": "investing", "label": "Investing.com", "kind": "market_media"},
     {"key": "industry_heat", "label": "系统产业热度", "kind": "internal"},
     {"key": "local_news", "label": "本地资讯库", "kind": "internal"},
 ]
 
 HOT_SOURCE_LABELS = {item["key"]: item["label"] for item in HOT_SOURCE_CATALOG}
+EXTERNAL_HOT_SOURCE_KEYS = {item["key"] for item in HOT_SOURCE_CATALOG if item["kind"] != "internal"}
+HOT_TERM_STOPWORDS = {
+    "热度值",
+    "概念活跃",
+    "概念走强",
+    "最新部署",
+    "重磅会议",
+    "财经要闻",
+    "公司新闻",
+    "每日必读",
+    "滚动新闻",
+    "同花顺原创",
+    "互动平台",
+    "国内经济",
+    "国际经济",
+    "comments",
+    "comment",
+    "market",
+    "markets",
+    "stock",
+    "stocks",
+    "wsj",
+    "google",
+}
 
 
 @router.get("/tasks")
@@ -101,6 +132,30 @@ def research_hot_terms(
     return _hot_terms_payload_v2(session=session, window=window_key, limit=limit)
 
 
+@router.post("/hot-terms/refresh")
+def refresh_research_hot_terms(
+    sources: str | None = Query(default=None, description="Comma separated source keys"),
+    limit_per_source: int = Query(default=12, ge=1, le=40),
+    timeout_seconds: int = Query(default=5, ge=2, le=15),
+    window: str = Query(default="1d", description="1d or 7d snapshot after refresh"),
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    window_key = _normalize_hot_window(window)
+    if window_key not in {"1d", "7d"}:
+        raise HTTPException(status_code=400, detail="window must be 1d or 7d")
+    source_keys = [item.strip() for item in sources.split(",") if item.strip()] if sources else None
+    result = run_hot_terms_ingestion_job(
+        session,
+        source_keys=source_keys,
+        limit_per_source=limit_per_source,
+        timeout_seconds=timeout_seconds,
+    )
+    return {
+        **result,
+        "snapshot": _hot_terms_payload_v2(session=session, window=window_key, limit=80),
+    }
+
+
 def _hot_terms_payload_v2(*, session: Session, window: str, limit: int) -> dict[str, object]:
     days = 1 if window == "1d" else 7
     latest_heat_date = session.scalars(
@@ -113,12 +168,15 @@ def _hot_terms_payload_v2(*, session: Session, window: str, limit: int) -> dict[
     heat_start_date = latest_heat_date - timedelta(days=days - 1) if latest_heat_date else None
     article_start_dt = _window_start_datetime(latest_article_dt, days)
     industry_keyword_map = _industry_keyword_map(session)
+    industry_terms_by_name = _industry_terms_by_name(session)
 
     term_stats: dict[str, dict[str, Any]] = {}
     industry_stats: dict[str, dict[str, Any]] = {}
     platform_terms: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     source_counts: Counter[str] = Counter()
     article_count = 0
+    matched_article_count = 0
+    unmatched_article_count = 0
 
     if heat_start_date:
         heat_query = (
@@ -155,9 +213,17 @@ def _hot_terms_payload_v2(*, session: Session, window: str, limit: int) -> dict[
         for article in session.scalars(article_query).all():
             article_count += 1
             source_key = _normalize_hot_source(article.source, article.source_kind)
+            industries, keywords = _verified_article_signal(
+                article,
+                industry_keyword_map=industry_keyword_map,
+                industry_terms_by_name=industry_terms_by_name,
+                source_key=source_key,
+            )
+            if not keywords and not industries:
+                unmatched_article_count += 1
+                continue
+            matched_article_count += 1
             source_counts[source_key] += 1
-            industries = _article_industries(article, industry_keyword_map)
-            keywords = _extract_keyword_texts(article.matched_keywords) or _title_terms(article.title)
             article_score = _article_score(article)
             published_at = _iso_datetime(article.published_at)
 
@@ -167,7 +233,7 @@ def _hot_terms_payload_v2(*, session: Session, window: str, limit: int) -> dict[
             for keyword in keywords:
                 inferred_industries = industries or industry_keyword_map.get(keyword.lower(), [])
                 if not inferred_industries:
-                    inferred_industries = ["未映射"]
+                    continue
                 for industry_name in inferred_industries[:4]:
                     _add_term_stat(
                         term_stats,
@@ -176,14 +242,16 @@ def _hot_terms_payload_v2(*, session: Session, window: str, limit: int) -> dict[
                         source_key,
                         industry_name,
                         published_at,
-                        {"title": article.title, "source": article.source, "url": article.source_url},
+                        _hot_term_example(article),
                     )
                     _add_platform_term(platform_terms, source_key, keyword, article_score, industry_name)
 
+    source_runs = _latest_hot_source_runs(session)
     hot_terms = _format_hot_terms(term_stats, limit)
     hot_industries = _format_hot_industries(industry_stats, hot_terms, limit=min(40, limit))
-    formatted_platform_terms = _format_platform_terms(platform_terms, source_counts, limit=12)
+    formatted_platform_terms = _format_platform_terms(platform_terms, source_counts, source_runs, limit=12)
     latest_date = _latest_snapshot_date(latest_heat_date, latest_article_dt)
+    data_lag_days = _data_lag_days(latest_date)
 
     return {
         "latest_date": latest_date,
@@ -194,9 +262,13 @@ def _hot_terms_payload_v2(*, session: Session, window: str, limit: int) -> dict[
             "industry_count": len(hot_industries),
             "article_count": article_count,
             "source_count": sum(1 for count in source_counts.values() if count > 0),
+            "matched_article_count": matched_article_count,
+            "unmatched_article_count": unmatched_article_count,
+            "data_lag_days": data_lag_days,
+            "is_stale": data_lag_days is not None and data_lag_days > 0,
             "data_mode": "database_aggregate",
         },
-        "sources": _format_hot_sources(source_counts),
+        "sources": _format_hot_sources(source_counts, source_runs),
         "hot_terms": hot_terms,
         "hot_industries": hot_industries,
         "platform_terms": formatted_platform_terms,
@@ -748,11 +820,6 @@ def _hot_terms_payload(session: Session, window: str, limit: int) -> dict[str, o
     }
 
 
-def _normalize_hot_window(window: str | None) -> str:
-    normalized = (window or "1d").strip().lower()
-    return normalized if normalized in {"1d", "7d"} else "1d"
-
-
 def _source_mix_label(source_mix: set[str]) -> str:
     ordered = [item for item in ["industry_heat", "news_article", "industry_keyword"] if item in source_mix]
     if not ordered:
@@ -772,8 +839,16 @@ def _loads_json_list(raw: str) -> list[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
-def _normalize_hot_window(window: str) -> str:
-    normalized = window.strip().lower()
+def _loads_json_object(raw: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_hot_window(window: str | None) -> str:
+    normalized = (window or "1d").strip().lower()
     if normalized in {"today", "daily", "1", "1d"}:
         return "1d"
     if normalized in {"week", "weekly", "7", "7d"}:
@@ -805,6 +880,18 @@ def _industry_keyword_map(session: Session) -> dict[str, list[str]]:
     return dict(mapping)
 
 
+def _industry_terms_by_name(session: Session) -> dict[str, list[str]]:
+    rows = session.execute(
+        select(IndustryKeyword, Industry)
+        .join(Industry, Industry.id == IndustryKeyword.industry_id)
+        .where(IndustryKeyword.is_active == True)  # noqa: E712
+    ).all()
+    mapping: dict[str, list[str]] = defaultdict(list)
+    for keyword, industry in rows:
+        mapping[industry.name].extend([industry.name, keyword.keyword])
+    return {industry: _dedupe_strings(terms) for industry, terms in mapping.items()}
+
+
 def _industry_heat_score(heat: IndustryHeat) -> float:
     return max(
         float(heat.heat_score or 0),
@@ -816,7 +903,17 @@ def _industry_heat_score(heat: IndustryHeat) -> float:
 
 def _article_score(article: NewsArticle) -> float:
     confidence = max(float(article.source_confidence or 0.3), 0.2)
-    source_weight = 1.15 if article.source_kind in {"news", "professional", "media"} else 1.0
+    source_weight = {
+        "professional_media": 1.2,
+        "professional": 1.2,
+        "market_media": 1.12,
+        "media": 1.12,
+        "news": 1.15,
+        "rss": 1.05,
+        "broker": 1.05,
+        "community": 0.88,
+        "mock": 0.6,
+    }.get(str(article.source_kind or "").lower(), 1.0)
     keyword_bonus = min(len(_loads_json_list(article.matched_keywords)) * 1.2, 8)
     return 8 * confidence * source_weight + keyword_bonus + 4
 
@@ -829,6 +926,131 @@ def _article_industries(article: NewsArticle, industry_keyword_map: dict[str, li
     for keyword in _extract_keyword_texts(article.matched_keywords):
         inferred.extend(industry_keyword_map.get(keyword.lower(), []))
     return _dedupe_strings(inferred)
+
+
+def _verified_article_signal(
+    article: NewsArticle,
+    *,
+    industry_keyword_map: dict[str, list[str]],
+    industry_terms_by_name: dict[str, list[str]],
+    source_key: str,
+) -> tuple[list[str], list[str]]:
+    if source_key not in EXTERNAL_HOT_SOURCE_KEYS:
+        industries = _article_industries(article, industry_keyword_map)
+        return industries, _article_hot_keywords(article, industry_keyword_map, industries, source_key)
+
+    text = " ".join(
+        str(value or "")
+        for value in [article.title, article.summary, article.content]
+        if value
+    )
+    stored_industries = [
+        str(item).strip()
+        for item in _loads_json_list(article.related_industries)
+        if str(item).strip()
+    ]
+    keyword_candidates = _dedupe_strings(
+        [
+            *_extract_keyword_texts(article.matched_keywords),
+            *_title_terms(article.title),
+        ]
+    )
+    valid_keywords: list[str] = []
+    valid_industries: list[str] = []
+
+    for keyword in keyword_candidates:
+        if not _is_hot_term_candidate(keyword):
+            continue
+        if not _hot_keyword_supported_by_text(
+            keyword,
+            text,
+            industry_keyword_map=industry_keyword_map,
+            industry_terms_by_name=industry_terms_by_name,
+        ):
+            continue
+        valid_keywords.append(keyword)
+        valid_industries.extend(industry_keyword_map.get(keyword.lower(), []))
+        if keyword in industry_terms_by_name:
+            valid_industries.append(keyword)
+
+    for industry in stored_industries:
+        if _hot_industry_supported_by_text(industry, text, industry_terms_by_name):
+            valid_industries.append(industry)
+
+    industries = _dedupe_strings(valid_industries)
+    keywords = _dedupe_strings(valid_keywords)
+    if industries and not keywords:
+        keywords = [industry for industry in industries if _is_hot_term_candidate(industry)][:4]
+    return industries, keywords
+
+
+def _hot_keyword_supported_by_text(
+    keyword: str,
+    text: str,
+    *,
+    industry_keyword_map: dict[str, list[str]],
+    industry_terms_by_name: dict[str, list[str]],
+) -> bool:
+    mapped_industries = industry_keyword_map.get(keyword.lower(), [])
+    is_industry_name = keyword in industry_terms_by_name
+    if not mapped_industries and not is_industry_name:
+        return False
+    if _term_matches_hot_text(text, keyword):
+        return True
+    if is_industry_name:
+        return _hot_industry_supported_by_text(keyword, text, industry_terms_by_name)
+    return any(
+        _hot_industry_supported_by_text(industry, text, industry_terms_by_name)
+        for industry in mapped_industries
+    )
+
+
+def _hot_industry_supported_by_text(industry: str, text: str, industry_terms_by_name: dict[str, list[str]]) -> bool:
+    if _term_matches_hot_text(text, industry):
+        return True
+    terms = [*industry_terms_by_name.get(industry, []), *_hot_industry_aliases(industry)]
+    return any(_term_matches_hot_text(text, term) for term in terms)
+
+
+def _term_matches_hot_text(text: str, term: str) -> bool:
+    clean = str(term).strip()
+    if not clean:
+        return False
+    lowered = clean.lower()
+    normalized = text.lower()
+    if _is_ascii_term(lowered):
+        return re.search(rf"(?<![a-z0-9]){re.escape(lowered)}(?![a-z0-9])", normalized) is not None
+    return lowered in normalized
+
+
+def _is_ascii_term(value: str) -> bool:
+    return bool(value) and all(ord(char) < 128 for char in value)
+
+
+def _hot_industry_aliases(industry: str) -> list[str]:
+    normalized = industry.lower()
+    terms: list[str] = []
+    if any(flag in normalized for flag in ["半导体", "芯片", "ai算力"]):
+        terms.extend(["ai", "chip", "chips", "semiconductor", "semiconductors", "nvidia", "intel"])
+    if any(flag in normalized for flag in ["新能源车", "汽车", "动力电池"]):
+        terms.extend(["ev", "electric vehicle", "electric vehicles", "battery", "batteries"])
+    if any(flag in normalized for flag in ["油气", "能源"]):
+        terms.extend(["oil", "gas", "lng", "crude", "aramco"])
+    if any(flag in normalized for flag in ["黄金", "贵金属"]):
+        terms.extend(["gold", "silver", "precious metals"])
+    if "机器人" in normalized:
+        terms.extend(["robot", "robots", "robotics"])
+    if "低空" in normalized or "无人机" in normalized:
+        terms.extend(["drone", "drones", "evtol"])
+    if "创新药" in normalized or "医药" in normalized:
+        terms.extend(["drug", "drugs", "pharma", "biotech", "wegovy"])
+    if "银行" in normalized:
+        terms.extend(["bank", "banks", "credit"])
+    if "物流" in normalized or "航运" in normalized:
+        terms.extend(["shipping", "logistics", "freight"])
+    if "军工" in normalized or "卫星" in normalized:
+        terms.extend(["defense", "military", "satellite", "space"])
+    return terms
 
 
 def _extract_keyword_texts(raw: str) -> list[str]:
@@ -844,16 +1066,59 @@ def _extract_keyword_texts(raw: str) -> list[str]:
     return _dedupe_strings(_clean_term(value) for value in keywords)
 
 
+def _article_hot_keywords(
+    article: NewsArticle,
+    industry_keyword_map: dict[str, list[str]],
+    industries: list[str],
+    source_key: str,
+) -> list[str]:
+    matched_keywords = [
+        keyword
+        for keyword in _extract_keyword_texts(article.matched_keywords)
+        if _is_hot_term_candidate(keyword)
+    ]
+    if matched_keywords:
+        return matched_keywords
+
+    title_terms = [term for term in _title_terms(article.title) if _is_hot_term_candidate(term)]
+    if not title_terms:
+        return [industry for industry in industries if _is_hot_term_candidate(industry)][:4]
+
+    mapped_terms = [term for term in title_terms if industry_keyword_map.get(term.lower())]
+    if mapped_terms:
+        return mapped_terms
+
+    if industries:
+        return [industry for industry in industries if _is_hot_term_candidate(industry)][:4]
+
+    return []
+
+
 def _title_terms(title: str) -> list[str]:
-    separators = " ,，。；;:：/|｜-()（）[]【】"
-    normalized = title
+    normalized = re.sub(r"[+-]?\d+(?:\.\d+)?%?", " ", title)
+    normalized = re.sub(r"热度值\s*\S*", " ", normalized, flags=re.IGNORECASE)
+    separators = " ,，。；;:：/|｜-()（）[]【】#<>《》“”\"'·"
     for separator in separators:
         normalized = normalized.replace(separator, " ")
     return _dedupe_strings(
         token.strip()
         for token in normalized.split()
-        if 2 <= len(token.strip()) <= 24 and not token.strip().isdigit()
+        if _is_hot_term_candidate(token.strip())
     )[:8]
+
+
+def _is_hot_term_candidate(term: str) -> bool:
+    clean = _clean_term(term)
+    if not clean:
+        return False
+    lowered = clean.lower()
+    if lowered in HOT_TERM_STOPWORDS:
+        return False
+    if clean.isdigit() or len(clean) < 2 or len(clean) > 32:
+        return False
+    if re.fullmatch(r"[\d.万亿%+\-]+", clean):
+        return False
+    return True
 
 
 def _clean_term(value: object) -> str:
@@ -882,7 +1147,7 @@ def _normalize_hot_source(source: str, source_kind: str) -> str:
         return "xueqiu"
     if "reddit" in haystack:
         return "reddit"
-    if "同花顺" in source or "10jqka" in haystack or "ths" in haystack:
+    if "同花顺" in source or "tonghuashun" in haystack or "10jqka" in haystack or "ths" in haystack:
         return "tonghuashun"
     if "东方财富" in source or "eastmoney" in haystack:
         return "eastmoney"
@@ -892,6 +1157,16 @@ def _normalize_hot_source(source: str, source_kind: str) -> str:
         return "ibkr"
     if "华尔街日报" in source or "wall street journal" in haystack or "wsj" in haystack:
         return "wsj"
+    if "reuters" in haystack or "路透" in source:
+        return "reuters_markets"
+    if "cnbc" in haystack:
+        return "cnbc_markets"
+    if "marketwatch" in haystack:
+        return "marketwatch"
+    if "barron" in haystack:
+        return "barrons"
+    if "investing" in haystack:
+        return "investing"
     return "local_news"
 
 
@@ -902,7 +1177,7 @@ def _add_term_stat(
     source_key: str,
     industry: str,
     latest_at: str | None,
-    example: dict[str, str] | None,
+    example: dict[str, Any] | None,
 ) -> None:
     clean = _clean_term(term)
     if not clean:
@@ -928,6 +1203,52 @@ def _add_term_stat(
         stat["latest_at"] = latest_at
     if example and len(stat["examples"]) < 3:
         stat["examples"].append(example)
+
+
+def _hot_term_example(article: NewsArticle) -> dict[str, Any]:
+    match_reason_raw = str(getattr(article, "match_reason", "") or "")
+    is_synthetic = bool(getattr(article, "is_synthetic", False)) or _looks_synthetic_article(article)
+    return {
+        "title": article.title,
+        "source": article.source,
+        "url": article.source_url,
+        "source_channel": str(getattr(article, "source_channel", "") or ""),
+        "source_label": str(getattr(article, "source_label", "") or article.source),
+        "source_rank": int(getattr(article, "source_rank", 0) or 0),
+        "match_reason": _format_match_reason(match_reason_raw),
+        "match_reason_raw": match_reason_raw,
+        "is_synthetic": is_synthetic,
+    }
+
+
+def _looks_synthetic_article(article: NewsArticle) -> bool:
+    source = str(getattr(article, "source", "") or "").lower()
+    source_url = str(getattr(article, "source_url", "") or "").lower()
+    return (
+        source.startswith("mock")
+        or "fallback" in source
+        or source_url.startswith("mock:")
+        or source_url.startswith("fallback:")
+        or "mock://" in source_url
+    )
+
+
+def _format_match_reason(raw: str) -> str:
+    reason = _loads_json_object(raw)
+    if not reason:
+        return ""
+    pieces: list[str] = []
+    primary = str(reason.get("primary") or "").strip()
+    if primary:
+        pieces.append(f"primary={primary}")
+    for key, label in [("keyword", "关键词"), ("industry", "产业"), ("alias", "别名")]:
+        values = [str(item).strip() for item in reason.get(key, []) if str(item).strip()] if isinstance(reason.get(key), list) else []
+        if values:
+            pieces.append(f"{label}: {'/'.join(values[:4])}")
+    unmatched = [str(item).strip() for item in reason.get("unmatched", []) if str(item).strip()] if isinstance(reason.get("unmatched"), list) else []
+    if unmatched and not pieces:
+        pieces.append(f"未匹配: {'/'.join(unmatched[:3])}")
+    return " | ".join(pieces)
 
 
 def _add_industry_stat(
@@ -1021,10 +1342,11 @@ def _format_hot_industries(
 def _format_platform_terms(
     platform_terms: dict[str, dict[str, dict[str, Any]]],
     source_counts: Counter[str],
+    source_runs: dict[str, DataSourceRun],
     limit: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for source in _format_hot_sources(source_counts):
+    for source in _format_hot_sources(source_counts, source_runs):
         source_key = str(source["key"])
         terms = []
         for stat in platform_terms.get(source_key, {}).values():
@@ -1045,34 +1367,99 @@ def _format_platform_terms(
     return rows
 
 
-def _format_hot_sources(source_counts: Counter[str]) -> list[dict[str, Any]]:
+def _format_hot_sources(source_counts: Counter[str], source_runs: dict[str, DataSourceRun] | None = None) -> list[dict[str, Any]]:
+    source_runs = source_runs or {}
     rows: list[dict[str, Any]] = []
     known = {item["key"] for item in HOT_SOURCE_CATALOG}
     for item in HOT_SOURCE_CATALOG:
         key = str(item["key"])
         count = int(source_counts[key])
+        run = source_runs.get(key)
+        run_total = int(run.rows_total) if run else 0
+        run_inserted = int(run.rows_inserted) if run else 0
+        run_skipped = int(run.rows_updated) if run else 0
+        run_irrelevant = max(run_total - run_inserted - run_skipped, 0)
+        connector_status = run.status if run else ("internal_ready" if item["kind"] == "internal" else "pending_connector")
+        window_data_status = "active" if count > 0 else ("internal_ready" if item["kind"] == "internal" else "empty")
         rows.append(
             {
                 "key": key,
                 "label": item["label"],
                 "kind": item["kind"],
-                "status": "active" if count > 0 else ("internal_ready" if item["kind"] == "internal" else "pending_connector"),
+                "status": _hot_source_status(count=count, kind=str(item["kind"]), run=run),
+                "connector_status": connector_status,
+                "window_data_status": window_data_status,
                 "article_count": count,
+                "last_run_status": run.status if run else None,
+                "last_error": run.error if run and run.error else "",
+                "last_run_at": _iso_datetime(run.finished_at) if run else None,
+                "connector_item_count": run_total,
+                "last_inserted": run_inserted,
+                "last_skipped": run_skipped,
+                "last_irrelevant": run_irrelevant,
+                "relevance_rate": round((run_inserted + run_skipped) / run_total, 4) if run_total else None,
             }
         )
     for key, count in source_counts.items():
         if key in known:
             continue
+        run = source_runs.get(key)
+        run_total = int(run.rows_total) if run else 0
+        run_inserted = int(run.rows_inserted) if run else 0
+        run_skipped = int(run.rows_updated) if run else 0
+        run_irrelevant = max(run_total - run_inserted - run_skipped, 0)
+        connector_status = run.status if run else "pending_connector"
+        window_data_status = "active" if count > 0 else "empty"
         rows.append(
             {
                 "key": key,
                 "label": HOT_SOURCE_LABELS.get(key, key),
                 "kind": "external",
-                "status": "active" if count > 0 else "pending_connector",
+                "status": _hot_source_status(count=int(count), kind="external", run=run),
+                "connector_status": connector_status,
+                "window_data_status": window_data_status,
                 "article_count": int(count),
+                "last_run_status": run.status if run else None,
+                "last_error": run.error if run and run.error else "",
+                "last_run_at": _iso_datetime(run.finished_at) if run else None,
+                "connector_item_count": run_total,
+                "last_inserted": run_inserted,
+                "last_skipped": run_skipped,
+                "last_irrelevant": run_irrelevant,
+                "relevance_rate": round((run_inserted + run_skipped) / run_total, 4) if run_total else None,
             }
         )
     return rows
+
+
+def _hot_source_status(*, count: int, kind: str, run: DataSourceRun | None) -> str:
+    if kind == "internal":
+        return "active" if count > 0 else "internal_ready"
+    if run is None:
+        return "active" if count > 0 else "pending_connector"
+    if run.status == "failed":
+        return "error"
+    if run.status == "partial":
+        return "degraded"
+    if count > 0:
+        return "active"
+    if run.status in {"success", "empty"}:
+        return "connected_empty"
+    return run.status or "pending_connector"
+
+
+def _latest_hot_source_runs(session: Session) -> dict[str, DataSourceRun]:
+    rows = session.scalars(
+        select(DataSourceRun)
+        .where(DataSourceRun.job_name.like("hot_terms_%"))
+        .order_by(DataSourceRun.finished_at.desc(), DataSourceRun.started_at.desc())
+    ).all()
+    latest: dict[str, DataSourceRun] = {}
+    for row in rows:
+        key = row.effective_source or row.job_name.removeprefix("hot_terms_")
+        if key not in latest:
+            latest[key] = row
+    return latest
 
 
 def _counter_labels(counter: Counter[str], limit: int = 6) -> list[dict[str, Any]]:
@@ -1093,6 +1480,16 @@ def _latest_snapshot_date(latest_heat_date: Any, latest_article_dt: datetime | N
     if latest_article_dt:
         candidates.append(latest_article_dt.date().isoformat())
     return max(candidates) if candidates else None
+
+
+def _data_lag_days(latest_date: str | None) -> int | None:
+    if not latest_date:
+        return None
+    try:
+        parsed = datetime.fromisoformat(latest_date).date()
+    except ValueError:
+        return None
+    return max((datetime.now(timezone.utc).date() - parsed).days, 0)
 
 
 def _iso_datetime(value: datetime | None) -> str | None:

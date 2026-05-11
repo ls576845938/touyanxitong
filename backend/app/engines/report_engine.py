@@ -28,6 +28,7 @@ def build_daily_report(
     research_universe: dict[str, Any] | None = None,
     watchlist_changes: dict[str, Any] | None = None,
     scan_summary: dict[str, Any] | None = None,
+    retail_research: dict[str, Any] | None = None,
 ) -> DailyReportResult:
     top_industries = [
         {
@@ -78,6 +79,7 @@ def build_daily_report(
     quality_status = data_quality.get("status") if data_quality else "UNKNOWN"
     universe_summary = research_universe.get("summary", {}) if research_universe else {}
     changes_summary = watchlist_changes.get("summary", {}) if watchlist_changes else {}
+    retail_summary = retail_research.get("summary", {}) if retail_research else {}
     scan = scan_summary or {}
     security_master_count = scan.get("security_master_count", universe_summary.get("stock_count", len(stocks_by_code)))
     covered_stock_count = scan.get("covered_stock_count", "-")
@@ -87,6 +89,7 @@ def build_daily_report(
         f"已有行情覆盖 {covered_stock_count} 只，"
         f"今日完成 {len(scores)} 只有效评分扫描，"
         f"生成 {len(new_watchlist_stocks)} 个观察池候选；"
+        f"零售线索 S/A {retail_summary.get('s_count', 0) + retail_summary.get('a_count', 0)} 个；"
         f"数据质量 {quality_status}，研究池准入 {universe_summary.get('eligible_count', '-')}/{universe_summary.get('stock_count', '-')}。"
         "结果仅用于投研线索整理。"
     )
@@ -121,11 +124,11 @@ def build_daily_report(
     _append_data_quality_section(markdown_lines, data_quality)
     markdown_lines.extend([
         "",
-        "## 今日最强赛道",
+        "## 今日热度较高赛道",
     ])
     for item in top_industries:
         markdown_lines.append(f"- 产业ID {item['industry_id']}：热度分 {item['heat_score']}，{item['explanation']}")
-    markdown_lines.extend(["", "## 今日趋势增强股票"])
+    markdown_lines.extend(["", "## 今日趋势增强观察样本"])
     for item in top_trend_stocks[:10]:
         markdown_lines.append(f"- {item['name']}（{item['code']}）：{item['rating']}，总分 {item['final_score']}。")
     markdown_lines.extend(["", "## 新进入观察池"])
@@ -136,6 +139,8 @@ def build_daily_report(
         evidence = evidence_by_code.get(item["code"])
         if evidence:
             markdown_lines.append(f"- {item['name']}：{evidence.summary}")
+    markdown_lines.extend(["", "## 零售线索候选"])
+    _append_retail_research_section(markdown_lines, retail_research)
     markdown_lines.extend(["", "## 风险预警"])
     if risk_alerts:
         markdown_lines.extend(f"- {alert}" for alert in risk_alerts[:10])
@@ -216,6 +221,49 @@ def _append_data_quality_section(markdown_lines: list[str], data_quality: dict[s
     if issues:
         markdown_lines.append("### 需处理的数据问题")
         markdown_lines.extend(f"- {item['name']}（{item['code']}）：{item['message']}" for item in issues)
+
+
+def _append_retail_research_section(markdown_lines: list[str], retail_research: dict[str, Any] | None) -> None:
+    if not retail_research:
+        markdown_lines.append("- 暂无散户投研闭环数据。")
+        return
+    summary = retail_research.get("summary", {})
+    markdown_lines.append(
+        f"- 股票池候选 {summary.get('candidate_count', 0)} 个，证据事件 {summary.get('event_count', 0)} 条，"
+        f"S {summary.get('s_count', 0)} / A {summary.get('a_count', 0)} / B {summary.get('b_count', 0)} / C {summary.get('c_count', 0)}。"
+    )
+    events = retail_research.get("new_evidence_events", [])
+    markdown_lines.append("### 新增证据事件")
+    if events:
+        for event in events[:8]:
+            markdown_lines.append(
+                f"- {event.get('title')}：方向 {event.get('impact_direction')}，置信度 {event.get('confidence')}，"
+                f"数据质量 {event.get('data_quality_status')}。"
+            )
+    else:
+        markdown_lines.append("- 暂无新增结构化证据事件。")
+    pools = retail_research.get("stock_pool_changes", [])
+    markdown_lines.append("### 股票池变化")
+    if pools:
+        for pool in pools[:8]:
+            security = pool.get("security") or {}
+            markdown_lines.append(
+                f"- {security.get('name', '-')}（{security.get('symbol', '-')}）：观察等级 {pool.get('pool_level')}，"
+                f"conviction {pool.get('conviction_score')}，风险分 {pool.get('risk_score')}。"
+            )
+    else:
+        markdown_lines.append("- 暂无股票池变化。")
+    portfolio = retail_research.get("portfolio_risk", {})
+    warnings = portfolio.get("risk_alerts", []) if isinstance(portfolio, dict) else []
+    if warnings:
+        markdown_lines.append("### 组合暴露提示")
+        markdown_lines.extend(f"- {item}" for item in warnings[:5])
+    tasks = retail_research.get("research_tasks", [])
+    markdown_lines.append("### 今日研究任务")
+    if tasks:
+        markdown_lines.extend(f"- {task}" for task in tasks[:10])
+    else:
+        markdown_lines.append("- 补齐 S/A 候选的来源证据、趋势证据、风险提示和证伪条件。")
 
 
 def _nested(payload: dict[str, Any] | None, first: str, second: str) -> Any:

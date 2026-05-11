@@ -12,7 +12,9 @@ from app.api.routes_industry import router as industry_router
 from app.api.routes_market import router as market_router
 from app.api.routes_research import router as research_router
 from app.api.routes_reports import router as reports_router
+from app.api.routes_retail import router as retail_router
 from app.api.routes_stocks import router as stocks_router
+from app.api.routes_tenbagger import router as tenbagger_router
 from app.api.routes_watchlist import router as watchlist_router
 from app.config import settings
 from app.db.session import database_url, get_database_info, init_db
@@ -68,3 +70,5 @@ app.include_router(stocks_router)
 app.include_router(reports_router)
 app.include_router(watchlist_router)
 app.include_router(research_router)
+app.include_router(tenbagger_router)
+app.include_router(retail_router)

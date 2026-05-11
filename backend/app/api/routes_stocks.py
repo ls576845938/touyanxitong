@@ -7,8 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import DailyBar, EvidenceChain, Stock, StockScore, TrendSignal
+from app.db.models import DailyBar, EvidenceChain, FundamentalMetric, Stock, StockScore, TrendSignal
 from app.db.session import get_session
+from app.engines.data_gate_engine import assess_research_data_gate
 from app.pipeline.ingestion_task_service import create_ingestion_task, run_ingestion_task, source_comparison, task_payload
 from app.pipeline.research_universe import eligible_stock_codes
 
@@ -176,6 +177,15 @@ def stock_evidence(code: str, session: Session = Depends(get_session)) -> dict[s
     trend = session.scalars(
         select(TrendSignal).where(TrendSignal.stock_code == code).order_by(TrendSignal.trade_date.desc()).limit(1)
     ).first()
+    fundamental = None
+    if score is not None:
+        fundamental = session.scalars(
+            select(FundamentalMetric)
+            .where(FundamentalMetric.stock_code == code, FundamentalMetric.report_date <= score.trade_date)
+            .order_by(FundamentalMetric.report_date.desc())
+            .limit(1)
+        ).first()
+    research_eligible = code in eligible_stock_codes(session, stocks=[stock])
     return {
         "stock": _stock_payload(stock),
         "score": {
@@ -188,7 +198,7 @@ def stock_evidence(code: str, session: Session = Depends(get_session)) -> dict[s
             "catalyst_score": score.catalyst_score if score else None,
             "risk_penalty": score.risk_penalty if score else None,
             "confidence": _score_confidence_payload(score) if score else _empty_score_confidence(),
-            "research_gate": _research_gate_payload(True, score) if score else _research_gate_payload(False, None),
+            "research_gate": _formal_research_gate_payload(stock, score, fundamental, research_eligible),
             "fundamental_summary": _fundamental_summary(stock, score) if score else _fundamental_summary(stock, None),
             "news_evidence_status": _news_evidence_status(score) if score else "missing",
             "explanation": score.explanation if score else "",
@@ -385,6 +395,28 @@ def _research_gate_payload(research_eligible: bool, score: StockScore | None) ->
     if not reasons:
         reasons.append("研究准入和评分可信度满足观察要求")
     return {"passed": passed, "status": "pass" if passed else "review", "reasons": reasons}
+
+
+def _formal_research_gate_payload(
+    stock: Stock,
+    score: StockScore | None,
+    fundamental: FundamentalMetric | None,
+    research_eligible: bool,
+) -> dict[str, object]:
+    base = _research_gate_payload(research_eligible, score)
+    gate = assess_research_data_gate(stock=stock, score=score, fundamental=fundamental)
+    passed = bool(base["passed"] and gate.status == "PASS")
+    status = "pass" if passed else "blocked" if gate.status == "FAIL" else "review"
+    reasons = [str(item) for item in base["reasons"]]
+    reasons.extend(reason for reason in gate.reasons if reason not in reasons)
+    return {
+        "passed": passed,
+        "status": status,
+        "formal_status": gate.status,
+        "gate_score": gate.score,
+        "reasons": reasons,
+        "required_actions": gate.required_actions,
+    }
 
 
 def _fundamental_summary(stock: Stock, score: StockScore | None) -> dict[str, object]:

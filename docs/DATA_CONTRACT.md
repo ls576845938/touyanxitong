@@ -21,6 +21,8 @@
 - `industry_heat`: 产业热度。
 - `stock_score`: 十倍股早期特征评分。
 - `evidence_chain`: 单股证据链。
+- `tenbagger_thesis`: 十倍股研究假设，承接空间、成长、质量、估值、趋势、证据、风险、门控状态和证伪条件。
+- `signal_backtest_run`: 信号回测/校准运行摘要，用于按 as-of 日期评估规则分层效果。
 - `daily_report`: 每日投研简报。
 
 ## Source
@@ -62,6 +64,14 @@
 - `auto` 资讯源会为每个 `INDUSTRY_SEEDS` 行业生成一个搜索 feed，query 覆盖行业名和该行业核心关键词，并限制单 feed item 数以控制抓取耗时。单个 feed 网络错误或解析错误只跳过该 feed，不中断整批资讯入库。
 - 产业关键词匹配会把 feed query 作为弱上下文参与匹配，用于处理搜索命中某赛道但标题/摘要未重复关键词的资讯；文章仍保留原始标题、摘要、`source_url` 和 `published_at`。
 - 产业热度计算会按 `source_kind/source_confidence` 加权：mock 证据只用于闭环演示并显著降权；真实新闻/RSS 权重更高。近 30 日匹配资讯不足或只有 mock 证据时，`industry_heat.explanation` 必须明确提示“资讯覆盖不足/已降权”。
+
+热词源合同：
+
+- `/api/research/hot-terms` 聚合 `news_article`、`industry_heat` 和 `industry_keyword`，输出平台热词、热门产业、分平台矩阵和来源状态。
+- `/api/research/hot-terms/refresh` 只抓公开 RSS 或公开列表页，覆盖 `xueqiu/reddit/tonghuashun/eastmoney/taoguba/ibkr/wsj/reuters_markets/cnbc_markets/marketwatch/barrons/investing`。不登录、不携带用户 Cookie、不绕过付费墙或私有 API。
+- 外部热词入库仍写入 `news_article`：`source` 为平台 key，`source_kind` 为 `community|market_media|broker|professional_media`，`source_confidence` 按来源质量降权或加权。热词链路必须写入 `source_channel/source_label/source_rank/match_reason/is_synthetic`，其中 `is_synthetic=true` 不得作为正式外部热词入库；存量 `mock://`、`mock*`、`*fallback*` 新闻在迁移和 API 输出层都会强制标记为 synthetic。
+- 每个平台刷新会写入 `data_source_run.job_name=hot_terms_<source>`，记录成功、部分失败、失败、空结果、错误信息、插入数、跳过数和过滤数。接口按最近一次运行把来源标成 `active`、`connected_empty`、`degraded`、`error` 或 `pending_connector`，并额外返回 `connector_status/window_data_status/relevance_rate` 供前端展示。
+- 社区源只做标题/摘要级发现并降权；付费墙源只做标题级发现；正文、评论全文、研报全文不进入默认热词抓取。
 
 产业雷达 `/api/industries/radar` 的热度字段分层：
 
@@ -194,6 +204,28 @@ A股 `board` 至少支持：
 - `rows`: 仅在 `include_rows=true` 时返回，包含 `eligible`、`exclusion_reasons`、`selected_bar_source`、`data_source_trust`、`source_profile`。
 
 `trend_signal` pipeline 必须先通过同一套准入池筛选股票，再计算趋势指标；历史不足、低成交额、低市值、低价、ST/退市/非活跃或 source 不可信的股票不能进入趋势池，也不能继续生成评分、证据链和日报候选。
+
+## Tenbagger Research Loop
+
+十倍股研究闭环分为三层：
+
+- 发现层：`stock_score` 仍负责产业、公司、趋势、催化、风险的早期线索排序。
+- 假设层：`tenbagger_thesis` 在评分之上生成可证伪研究假设，拆分为空间、成长、质量、估值容忍、趋势时机、证据覆盖、风险和 readiness。估值/TAM/管理层等数据缺失时必须写入 `missing_evidence`，不能用高分掩盖证据缺口。
+- 校准层：`signal_backtest_run` 用历史信号日后的同源 K 线计算 forward return、max return 和分层命中率。该结果只用于规则校准，不代表可交易收益。
+
+正式研究数据门控：
+
+- `data_gate_status=FAIL`：不得进入正式十倍股候选，只能作为线索或数据补齐任务。
+- `data_gate_status=WARN`：可进入验证队列，但必须显示待补证据。
+- `data_gate_status=PASS`：行情、结构化数据、基本面和证据覆盖达到当前系统要求。
+- mock/fallback 行情、mock 基本面、个股新闻/公告证据缺失都会降低 readiness；不能被前端展示为正式通过。
+
+Point-in-time 约束：
+
+- 行情只使用 `trade_date <= as_of_date`。
+- 财务只使用 `report_date <= as_of_date`。
+- 新闻、公告和 RSS 只使用 `published_at <= as_of_date`。
+- 回测入场价使用信号日后的下一根同 source K 线，避免信号日收盘后不可得价格造成偏差。
 
 ## Backfill Manifest
 
