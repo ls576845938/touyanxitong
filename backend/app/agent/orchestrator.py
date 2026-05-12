@@ -10,33 +10,92 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agent.guardrails import RISK_DISCLAIMER, sanitize_financial_output, sanitize_financial_text
-from app.agent.runtime.base import AgentRuntimeResult, RuntimeAdapter
-from app.agent.runtime.mock_adapter import MockRuntimeAdapter
+from app.agent.runtime import AgentRuntimeResult, MockRuntimeAdapter, RealRuntimeAdapter, RuntimeAdapter
 from app.agent.schemas import AgentRunRequest, AgentRunResponse, AgentTaskType
 from app.agent.skills.generator import generate_skill_from_run
 from app.agent.skills.registry import load_skill_template
 from app.agent.tools import evidence_tools, industry_tools, market_tools, report_tools, scoring_tools
+from app.config import settings
 from app.db.models import AgentArtifact, AgentRun, AgentSkill, AgentStep, AgentToolCall, Industry, IndustryKeyword, Stock
 from app.services.stock_resolver import STOCK_ALIAS_CODES, resolve_stock
 
 
 class AgentOrchestrator:
-    def __init__(self, session: Session, runtime_adapter: RuntimeAdapter | None = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        runtime_adapter: RuntimeAdapter | None = None,
+        session_factory: Callable[[], Session] | None = None,
+    ) -> None:
         self.session = session
-        self.runtime_adapter = runtime_adapter or MockRuntimeAdapter()
+        self.session_factory = session_factory
+        if runtime_adapter:
+            self.runtime_adapter = runtime_adapter
+        elif settings.openai_api_key:
+            self.runtime_adapter = RealRuntimeAdapter()
+        else:
+            self.runtime_adapter = MockRuntimeAdapter()
 
-    def run(self, request: AgentRunRequest) -> AgentRunResponse:
+    def create_run_record(self, request: AgentRunRequest) -> int:
         run = AgentRun(
             user_id=request.user_id,
             task_type=str(request.task_type or AgentTaskType.AUTO),
             user_prompt=request.user_prompt,
             runtime_provider=self.runtime_adapter.provider_name,
-            status="running",
+            status="pending",
         )
         self.session.add(run)
         self.session.commit()
         self.session.refresh(run)
+        return run.id
 
+    def execute_async(self, run_id: int, request: AgentRunRequest) -> None:
+        """Entry point for background task execution."""
+        from loguru import logger
+        
+        # Use injected factory or default production one
+        if self.session_factory:
+            factory = self.session_factory
+        else:
+            from app.db.session import SessionLocal as factory
+        
+        logger.info(f"Starting background agent run: {run_id}")
+        try:
+            with factory() as session:
+                self.session = session
+                run = session.get(AgentRun, run_id)
+                if not run:
+                    logger.error(f"Run {run_id} not found in background task")
+                    return
+                
+                run.status = "running"
+                session.commit()
+                self._run_logic(run, request)
+                logger.info(f"Finished background agent run: {run_id} with status {run.status}")
+        except Exception as exc:
+            logger.exception(f"Background agent run {run_id} failed: {exc}")
+            try:
+                with factory() as err_session:
+                    run = err_session.get(AgentRun, run_id)
+                    if run:
+                        run.status = "failed"
+                        run.error_message = str(exc)
+                        run.completed_at = datetime.now(timezone.utc)
+                        err_session.commit()
+            except Exception:
+                pass
+
+    def run(self, request: AgentRunRequest) -> AgentRunResponse:
+        """Legacy synchronous entry point."""
+        run_id = self.create_run_record(request)
+        run = self.session.get(AgentRun, run_id)
+        if not run:
+             raise RuntimeError("Failed to create run record")
+        run.status = "running"
+        self.session.commit()
+        return self._run_logic(run, request)
+
+    def _run_logic(self, run: AgentRun, request: AgentRunRequest) -> AgentRunResponse:
         artifact_id: int | None = None
         warnings: list[str] = []
         selected_task_type = AgentTaskType.STOCK_DEEP_RESEARCH
@@ -139,32 +198,9 @@ class AgentOrchestrator:
                 artifact_id=artifact_id,
                 warnings=warnings,
             )
-        except Exception as exc:
-            self.session.rollback()
-            persisted_run = self.session.get(AgentRun, run.id)
-            if persisted_run is not None:
-                persisted_run.status = "failed"
-                persisted_run.error_message = str(exc)
-                persisted_run.completed_at = datetime.now(timezone.utc)
-                self._record_step(
-                    persisted_run.id,
-                    "agent_run_error",
-                    "orchestrator",
-                    "failed",
-                    {"prompt": request.user_prompt},
-                    {},
-                    error_message=str(exc),
-                )
-                self.session.commit()
-            return AgentRunResponse(
-                run_id=run.id,
-                status="failed",
-                selected_task_type=selected_task_type,
-                report_title=report_title,
-                summary=summary or "Agent 运行失败，请查看错误信息和步骤日志。",
-                artifact_id=artifact_id,
-                warnings=[str(exc)],
-            )
+        except Exception:
+            # Re-raise to be caught by execute_async or synchronous run
+            raise
 
     def _select_task_type(
         self,
@@ -174,19 +210,34 @@ class AgentOrchestrator:
     ) -> AgentTaskType:
         if request.task_type and request.task_type != AgentTaskType.AUTO:
             return request.task_type
+
         prompt = request.user_prompt
+        # Priority 1: Industry/Chain keywords (Structural analysis is usually more specific)
+        if _contains_any(prompt, ["产业链", "行业", "主题", "上下游", "节点", "赛道", "板块"]):
+            return AgentTaskType.INDUSTRY_CHAIN_RADAR
+
+        # Priority 2: Market Brief (Daily/Reports)
+        if _contains_any(prompt, ["日报", "市场简报", "简报", "复盘"]):
+            return AgentTaskType.DAILY_MARKET_BRIEF
+        
+        # Priority 3: Tenbagger (specialized growth search)
+        if _contains_any(prompt, ["十倍股", "十倍", "成长空间", "早期特征", "10倍"]):
+            return AgentTaskType.TENBAGGER_CANDIDATE
+
+        # Priority 4: Specific Stocks (Deep Research)
         if selected_symbols:
             return AgentTaskType.STOCK_DEEP_RESEARCH
-        if _contains_any(prompt, ["产业链", "行业", "主题", "上下游", "节点", "赛道"]):
-            return AgentTaskType.INDUSTRY_CHAIN_RADAR
-        if _contains_any(prompt, ["十倍股", "十倍", "成长空间", "早期特征"]):
-            return AgentTaskType.TENBAGGER_CANDIDATE
-        if _contains_any(prompt, ["筛选", "筛出", "股票池", "强势股", "动量", "趋势池"]):
+
+        # Priority 5: Screening/Pools
+        if _contains_any(prompt, ["筛选", "筛出", "股票池", "候选池", "强势股", "动量", "趋势池", "标的"]):
             return AgentTaskType.TREND_POOL_SCAN
-        if _contains_any(prompt, ["日报", "今日", "今天", "市场简报", "简报"]):
-            return AgentTaskType.DAILY_MARKET_BRIEF
+
+        if _contains_any(prompt, ["今日", "今天"]):
+             return AgentTaskType.DAILY_MARKET_BRIEF
+            
         if selected_industries:
             return AgentTaskType.INDUSTRY_CHAIN_RADAR
+
         return AgentTaskType.TREND_POOL_SCAN
 
     def _collect_context(

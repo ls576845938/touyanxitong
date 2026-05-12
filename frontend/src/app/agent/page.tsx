@@ -76,17 +76,53 @@ export default function AgentPage() {
         save_as_skill: false
       });
       setRun(response);
-      const [stepRows, artifactRows] = await Promise.all([
-        api.agentRunSteps(response.run_id),
-        api.agentRunArtifacts(response.run_id)
-      ]);
-      setSteps(stepRows);
-      setArtifact(artifactRows.at(-1) ?? null);
+      
+      // Start polling for results
+      pollRunStatus(response.run_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Agent 运行失败");
-    } finally {
+      setError(err instanceof Error ? err.message : "Agent 投研请求发送失败");
       setLoading(false);
     }
+  }
+
+  async function pollRunStatus(runId: number) {
+    let attempts = 0;
+    const maxAttempts = 30; // 30 seconds max for MVP
+    
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        const detail = await api.agentRunDetail(runId);
+        setRun({
+          run_id: detail.id,
+          status: detail.status,
+          selected_task_type: detail.task_type,
+          report_title: detail.latest_artifact?.title || "Agent 运行中",
+          summary: detail.status === "failed" ? detail.error_message : (detail.latest_artifact?.content_md?.slice(0, 100) || "正在处理数据..."),
+          artifact_id: detail.latest_artifact?.id || null,
+          warnings: []
+        });
+
+        const stepRows = await api.agentRunSteps(runId);
+        setSteps(stepRows);
+
+        if (detail.status === "success" || detail.status === "failed") {
+          clearInterval(interval);
+          setLoading(false);
+          if (detail.latest_artifact) {
+            setArtifact(detail.latest_artifact);
+          }
+        }
+        
+        if (attempts >= maxAttempts) {
+          clearInterval(interval);
+          setLoading(false);
+          setError("等待 Agent 运行超时，请稍后在历史记录中查看。");
+        }
+      } catch (err) {
+        console.error("Polling error:", err);
+      }
+    }, 1000);
   }
 
   return (
@@ -524,10 +560,32 @@ function InfoBlock({ label, empty, children }: { label: string; empty: string; c
   );
 }
 
+import { CandleChart } from "@/components/CandleChart";
+import { IndustryHeatChart } from "@/components/IndustryHeatChart";
+
 function MarkdownBlock({ content }: { content: string }) {
   return (
     <article className="space-y-3 text-sm leading-7 text-slate-700">
       {content.split("\n").map((line, index) => {
+        const trimmed = line.trim();
+        
+        // Dynamic Chart Parsing
+        if (trimmed.startsWith(":::chart") && trimmed.endsWith(":::")) {
+          try {
+            const rawJson = trimmed.slice(8, -3);
+            const config = JSON.parse(rawJson);
+            if (config.type === "candle" && config.symbol) {
+              return <StockChartMount key={index} symbol={config.symbol} />;
+            }
+            if (config.type === "industry_heat") {
+              return <IndustryHeatMount key={index} />;
+            }
+          } catch (err) {
+            console.error("Failed to parse chart tag:", err);
+            return <div key={index} className="text-xs text-rose-400 italic">[无效的图表配置]</div>;
+          }
+        }
+
         if (line.startsWith("# ")) {
           return <h1 key={index} className="pb-2 text-2xl font-black tracking-tight text-slate-950">{line.replace(/^# /, "")}</h1>;
         }
@@ -546,5 +604,63 @@ function MarkdownBlock({ content }: { content: string }) {
         return <p key={index} className="font-medium text-slate-600">{line}</p>;
       })}
     </article>
+  );
+}
+
+function StockChartMount({ symbol }: { symbol: string }) {
+  const [rows, setRows] = useState<BarRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.stockBars(symbol)
+      .then(setRows)
+      .finally(() => setLoading(false));
+  }, [symbol]);
+
+  return (
+    <div className="my-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 bg-slate-50/50 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+        Interactive Chart: {symbol}
+      </div>
+      <div className="p-4">
+        {loading ? (
+          <div className="flex h-[400px] items-center justify-center text-xs font-bold text-slate-400">
+            <Loader2 size={16} className="mr-2 animate-spin" />
+            正在加载行情数据...
+          </div>
+        ) : (
+          <CandleChart rows={rows} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function IndustryHeatMount() {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.industryRadar()
+      .then(setData)
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <div className="my-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 bg-slate-50/50 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+        Industry Heatmap
+      </div>
+      <div className="p-4">
+        {loading ? (
+          <div className="flex h-[400px] items-center justify-center text-xs font-bold text-slate-400">
+            <Loader2 size={16} className="mr-2 animate-spin" />
+            正在生成热力图...
+          </div>
+        ) : (
+          <IndustryHeatChart data={data || []} />
+        )}
+      </div>
+    </div>
   );
 }

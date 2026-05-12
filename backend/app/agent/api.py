@@ -27,9 +27,29 @@ from app.db.session import get_session
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 
-@router.post("/runs", response_model=AgentRunResponse)
-def create_agent_run(payload: AgentRunRequest, session: Session = Depends(get_session)) -> AgentRunResponse:
-    return AgentOrchestrator(session).run(payload)
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+
+
+@router.post("/runs", response_model=AgentRunResponse, status_code=202)
+def create_agent_run(
+    payload: AgentRunRequest,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session),
+) -> AgentRunResponse:
+    orchestrator = AgentOrchestrator(session)
+    # Create the run record first
+    run_id = orchestrator.create_run_record(payload)
+    # Schedule the execution in the background
+    background_tasks.add_task(orchestrator.execute_async, run_id, payload)
+    
+    # Return initial status
+    return AgentRunResponse(
+        run_id=run_id,
+        status="pending",
+        selected_task_type=payload.task_type or AgentTaskType.AUTO,
+        report_title="正在排队...",
+        summary="您的投研请求已进入后台处理队列，请稍后通过轮询获取结果。",
+    )
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunDetail)

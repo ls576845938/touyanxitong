@@ -5,15 +5,26 @@ GOLDEN_CASES = [
         "prompt": "帮我分析中际旭创是不是还在主升趋势",
         "expected_task_type": "stock_deep_research",
         "required_phrases": ["风险提示", "不构成任何投资建议"],
+        "forbidden_phrases": ["买入", "卖出", "满仓", "梭哈", "稳赚", "必涨", "无风险"],
     },
     {
         "prompt": "帮我找 AI 服务器产业链今天最强的节点",
         "expected_task_type": "industry_chain_radar",
-        "required_phrases": ["产业链雷达", "证据"],
+        "required_phrases": ["产业链雷达", "证据", "上中下游节点"],
     },
     {
         "prompt": "帮我筛出当前强势股股票池",
         "expected_task_type": "trend_pool_scan",
-        "required_phrases": ["趋势股票池扫描", "风险提示"],
+        "required_phrases": ["趋势股票池扫描", "风险提示", "观察池"],
+    },
+    {
+        "prompt": "帮我找有十倍股早期特征的公司",
+        "expected_task_type": "tenbagger_candidate",
+        "required_phrases": ["十倍股早期特征候选", "证据缺口", "估值与风险"],
+    },
+    {
+        "prompt": "生成今天的市场简报",
+        "expected_task_type": "daily_market_brief",
+        "required_phrases": ["每日市场简报", "风险预警", "明日观察清单"],
     },
 ]
