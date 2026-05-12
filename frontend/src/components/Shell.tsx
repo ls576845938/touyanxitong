@@ -8,38 +8,26 @@ import {
   ClipboardCheck, 
   Database, 
   FileText, 
-  FlaskConical,
-  Flame, 
+  Crosshair,
   Gauge, 
-  Layers3, 
-  Map as MapIcon, 
   Network,
-  Repeat2, 
-  ShieldCheck,
-  TrendingUp,
   LayoutGrid,
   Activity,
-  Share2
+  Share2,
+  Bot
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { StockSearch } from "@/components/StockSearch";
 
 const navItems = [
   { href: "/", label: "总览", icon: Gauge },
-  { href: "/universe", label: "证券库", icon: Database },
-  { href: "/industry", label: "产业雷达", icon: Layers3 },
-  { href: "/industry/chain", label: "产业链", icon: MapIcon },
-  { href: "/industry/review", label: "复盘", icon: Flame },
-  { href: "/trend", label: "趋势池", icon: BarChart3 },
-  { href: "/watchlist", label: "观察池", icon: Repeat2 },
-  { href: "/research", label: "研究", icon: ClipboardCheck },
-  { href: "/research/ai-infra-map", label: "AI图谱", icon: Network },
+  { href: "/agent", label: "Agent", icon: Bot },
   { href: "/research/ai-big-graph", label: "AI大图谱", icon: Share2 },
-  { href: "/research/evidence", label: "证据", icon: FileText },
-  { href: "/research/stock-pool", label: "股票池", icon: TrendingUp },
-  { href: "/research/thesis", label: "十倍假设", icon: FlaskConical },
-  { href: "/research/data-quality", label: "门控", icon: ShieldCheck },
-  { href: "/research/hot-terms", label: "热词", icon: TrendingUp },
+  { href: "/trend", label: "趋势雷达", icon: BarChart3 },
+  { href: "/research/thesis", label: "逻辑狙击", icon: Crosshair },
+  { href: "/research", label: "研究任务", icon: ClipboardCheck },
+  { href: "/research/ai-infra-map", label: "深度图谱", icon: Network },
+  { href: "/universe", label: "证券库", icon: Database },
   { href: "/portfolio/dashboard", label: "组合", icon: BarChart3 },
   { href: "/report", label: "简报", icon: FileText }
 ];

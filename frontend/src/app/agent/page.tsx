@@ -1,0 +1,417 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import { Bot, CheckCircle2, FileText, Loader2, Play, Save, ShieldAlert, Sparkles, XCircle } from "lucide-react";
+import { api, type AgentArtifact, type AgentRunResponse, type AgentSkill, type AgentStep, type AgentTaskType } from "@/lib/api";
+
+const FALLBACK_SKILLS: AgentSkill[] = [
+  { id: "system:stock_deep_research", name: "个股深度投研", description: "趋势、评分、产业链和证据链报告。", skill_type: "stock_deep_research", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
+  { id: "system:industry_chain_radar", name: "产业链雷达", description: "产业链热度、节点和核心股票。", skill_type: "industry_chain_radar", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
+  { id: "system:trend_pool_scan", name: "趋势股票池扫描", description: "按评分和动量筛出观察池。", skill_type: "trend_pool_scan", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
+  { id: "system:tenbagger_candidate", name: "十倍股早期特征", description: "候选清单和证据缺口。", skill_type: "tenbagger_candidate", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
+  { id: "system:daily_market_brief", name: "每日市场简报", description: "强产业链、催化和风险预警。", skill_type: "daily_market_brief", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null }
+];
+
+const EXAMPLES = [
+  "帮我分析中际旭创是不是还在主升趋势。",
+  "帮我找 AI 服务器产业链今天最强的节点。",
+  "帮我筛出当前最有十倍股早期特征的股票池。"
+];
+
+export default function AgentPage() {
+  const [prompt, setPrompt] = useState(EXAMPLES[0]);
+  const [taskType, setTaskType] = useState<AgentTaskType>("auto");
+  const [skills, setSkills] = useState<AgentSkill[]>(FALLBACK_SKILLS);
+  const [run, setRun] = useState<AgentRunResponse | null>(null);
+  const [steps, setSteps] = useState<AgentStep[]>([]);
+  const [artifact, setArtifact] = useState<AgentArtifact | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.agentSkills()
+      .then((rows) => setSkills(rows.filter((row) => row.is_system).slice(0, 5)))
+      .catch(() => setSkills(FALLBACK_SKILLS));
+  }, []);
+
+  const selectedSkill = useMemo(
+    () => skills.find((skill) => skill.skill_type === taskType),
+    [skills, taskType]
+  );
+
+  async function startRun() {
+    const cleaned = prompt.trim();
+    if (!cleaned) {
+      setError("请输入一个投研问题。");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setRun(null);
+    setSteps([]);
+    setArtifact(null);
+    try {
+      const response = await api.agentRun({
+        user_prompt: cleaned,
+        task_type: taskType,
+        time_window: "120d",
+        save_as_skill: false
+      });
+      setRun(response);
+      const [stepRows, artifactRows] = await Promise.all([
+        api.agentRunSteps(response.run_id),
+        api.agentRunArtifacts(response.run_id)
+      ]);
+      setSteps(stepRows);
+      setArtifact(artifactRows.at(-1) ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Agent 运行失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 px-6 py-8">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <section className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+              <Bot size={14} />
+              Agent Research
+            </div>
+            <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-900">Agent 一键投研</h1>
+            <p className="mt-2 max-w-3xl text-sm font-medium leading-6 text-slate-500">
+              用一句自然语言生成投研工作流，系统只读取平台已有数据，输出投研分析、观察清单、风险提示和证据链。
+            </p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs font-bold text-slate-500">
+            Runtime: Alpha Radar mock adapter
+          </div>
+        </section>
+
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <main className="space-y-6">
+            <AgentCommandBox
+              prompt={prompt}
+              loading={loading}
+              error={error}
+              onPromptChange={setPrompt}
+              onSubmit={startRun}
+              onExample={setPrompt}
+            />
+
+            <SkillTemplatePicker
+              skills={skills}
+              value={taskType}
+              selectedSkill={selectedSkill}
+              onChange={setTaskType}
+            />
+
+            <ResearchReportViewer loading={loading} run={run} artifact={artifact} />
+          </main>
+
+          <aside className="space-y-6">
+            <AgentRunTimeline loading={loading} steps={steps} run={run} />
+            <EvidencePanel artifact={artifact} run={run} />
+            <SkillBuilderPanel prompt={prompt} run={run} artifact={artifact} />
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentCommandBox({
+  prompt,
+  loading,
+  error,
+  onPromptChange,
+  onSubmit,
+  onExample
+}: {
+  prompt: string;
+  loading: boolean;
+  error: string;
+  onPromptChange: (value: string) => void;
+  onSubmit: () => void;
+  onExample: (value: string) => void;
+}) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-3 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+        <Sparkles size={16} className="text-indigo-600" />
+        Command
+      </div>
+      <textarea
+        value={prompt}
+        onChange={(event) => onPromptChange(event.target.value)}
+        rows={4}
+        className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-medium leading-6 text-slate-800 outline-none focus:border-indigo-400 focus:bg-white"
+        placeholder="输入你的投研问题"
+      />
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          {EXAMPLES.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onExample(item)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:border-indigo-200 hover:text-indigo-700"
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={loading}
+          className="inline-flex h-10 items-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+          开始一键投研
+        </button>
+      </div>
+      {error && (
+        <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+          {error}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SkillTemplatePicker({
+  skills,
+  value,
+  selectedSkill,
+  onChange
+}: {
+  skills: AgentSkill[];
+  value: AgentTaskType;
+  selectedSkill?: AgentSkill;
+  onChange: (value: AgentTaskType) => void;
+}) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="text-xs font-black uppercase tracking-widest text-slate-500">System Skills</div>
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value as AgentTaskType)}
+          className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-600 outline-none"
+        >
+          <option value="auto">Auto</option>
+          {skills.map((skill) => (
+            <option key={String(skill.id)} value={skill.skill_type}>
+              {skill.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="grid gap-3 md:grid-cols-5">
+        {skills.map((skill) => {
+          const active = value === skill.skill_type;
+          return (
+            <button
+              key={String(skill.id)}
+              type="button"
+              onClick={() => onChange(skill.skill_type as AgentTaskType)}
+              className={`min-h-28 rounded-lg border p-3 text-left transition-colors ${
+                active ? "border-indigo-300 bg-indigo-50 text-indigo-900" : "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300"
+              }`}
+            >
+              <div className="text-sm font-black">{skill.name}</div>
+              <div className="mt-2 text-xs font-medium leading-5 text-slate-500">{skill.description}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-3 text-xs font-medium text-slate-500">
+        当前模板：{value === "auto" ? "系统自动识别" : selectedSkill?.name ?? value}
+      </div>
+    </section>
+  );
+}
+
+function AgentRunTimeline({ loading, steps, run }: { loading: boolean; steps: AgentStep[]; run: AgentRunResponse | null }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center justify-between">
+        <div className="text-xs font-black uppercase tracking-widest text-slate-500">Run Timeline</div>
+        {run && <span className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-black uppercase text-slate-500">#{run.run_id}</span>}
+      </div>
+      {loading && steps.length === 0 && (
+        <div className="flex items-center gap-2 text-sm font-bold text-slate-500">
+          <Loader2 size={16} className="animate-spin" />
+          正在执行投研工作流
+        </div>
+      )}
+      {!loading && steps.length === 0 && (
+        <div className="text-sm font-medium leading-6 text-slate-500">执行后会展示任务识别、工具调用、报告生成和合规检查步骤。</div>
+      )}
+      <div className="space-y-3">
+        {steps.map((step) => (
+          <div key={step.id} className="flex gap-3">
+            <div className="mt-0.5">
+              {step.status === "success" ? <CheckCircle2 size={16} className="text-emerald-600" /> : <XCircle size={16} className="text-rose-600" />}
+            </div>
+            <div>
+              <div className="text-sm font-black text-slate-800">{step.step_name}</div>
+              <div className="text-xs font-bold text-slate-400">{step.agent_role}</div>
+              {step.error_message && <div className="mt-1 text-xs font-bold text-rose-600">{step.error_message}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ResearchReportViewer({ loading, run, artifact }: { loading: boolean; run: AgentRunResponse | null; artifact: AgentArtifact | null }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
+        <div className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+          <FileText size={16} className="text-indigo-600" />
+          Research Report
+        </div>
+        {run && <div className="text-xs font-bold text-slate-500">{run.selected_task_type}</div>}
+      </div>
+      <div className="p-5">
+        {loading && (
+          <div className="flex min-h-80 items-center justify-center text-sm font-bold text-slate-500">
+            <Loader2 size={18} className="mr-2 animate-spin" />
+            正在生成结构化报告
+          </div>
+        )}
+        {!loading && !artifact && (
+          <div className="flex min-h-80 items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 text-sm font-medium text-slate-500">
+            输入投研问题后，这里会显示 Markdown 报告。
+          </div>
+        )}
+        {artifact && <MarkdownBlock content={artifact.content_md} />}
+      </div>
+    </section>
+  );
+}
+
+function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run: AgentRunResponse | null }) {
+  const refs = artifact?.evidence_refs ?? [];
+  const warnings = run?.warnings ?? [];
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+        <ShieldAlert size={16} className="text-amber-600" />
+        Evidence & Risk
+      </div>
+      <div className="space-y-4">
+        <InfoBlock label="证据来源" empty="暂无证据引用">
+          {refs.map((ref, index) => (
+            <div key={index} className="rounded-lg bg-slate-50 p-3 text-xs font-medium leading-5 text-slate-600">
+              <div className="font-black text-slate-800">{String(ref.title ?? ref.source ?? `证据 ${index + 1}`)}</div>
+              {typeof ref.url === "string" && ref.url && <div className="mt-1 break-all text-slate-400">{ref.url}</div>}
+            </div>
+          ))}
+        </InfoBlock>
+        <InfoBlock label="风险提示" empty="执行后展示风险提示">
+          {warnings.map((item) => (
+            <div key={item} className="rounded-lg bg-amber-50 p-3 text-xs font-bold leading-5 text-amber-800">{item}</div>
+          ))}
+        </InfoBlock>
+        {artifact && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs font-bold leading-5 text-slate-600">
+            {artifact.risk_disclaimer}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SkillBuilderPanel({ prompt, run, artifact }: { prompt: string; run: AgentRunResponse | null; artifact: AgentArtifact | null }) {
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<AgentSkill | null>(null);
+  const [error, setError] = useState("");
+
+  async function saveSkill() {
+    if (!run || !artifact) return;
+    setSaving(true);
+    setError("");
+    try {
+      const skill = await api.createAgentSkill({
+        name: `${artifact.title} Skill`,
+        description: `由一键投研保存：${prompt.slice(0, 80)}`,
+        skill_type: run.selected_task_type,
+        skill_md: artifact.content_md,
+        skill_config: {
+          run_id: run.run_id,
+          artifact_id: artifact.id,
+          user_prompt: prompt,
+          selected_task_type: run.selected_task_type
+        },
+        is_system: false
+      });
+      setSaved(skill);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存 Skill 失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-3 text-xs font-black uppercase tracking-widest text-slate-500">Skill Builder</div>
+      <p className="text-sm font-medium leading-6 text-slate-500">将当前成功流程保存为可复用 Skill，下次可直接选择模板复用。</p>
+      <button
+        type="button"
+        disabled={!run || !artifact || saving}
+        onClick={saveSkill}
+        className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+      >
+        {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+        保存为我的 Skill
+      </button>
+      {saved && <div className="mt-3 rounded-lg bg-emerald-50 p-3 text-xs font-black text-emerald-700">已保存：{saved.name}</div>}
+      {error && <div className="mt-3 rounded-lg bg-rose-50 p-3 text-xs font-black text-rose-700">{error}</div>}
+    </section>
+  );
+}
+
+function InfoBlock({ label, empty, children }: { label: string; empty: string; children: ReactNode }) {
+  const childArray = Array.isArray(children) ? children.filter(Boolean) : children ? [children] : [];
+  return (
+    <div>
+      <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</div>
+      {childArray.length > 0 ? <div className="space-y-2">{children}</div> : <div className="rounded-lg bg-slate-50 p-3 text-xs font-bold text-slate-400">{empty}</div>}
+    </div>
+  );
+}
+
+function MarkdownBlock({ content }: { content: string }) {
+  return (
+    <article className="space-y-3 text-sm leading-7 text-slate-700">
+      {content.split("\n").map((line, index) => {
+        if (line.startsWith("# ")) {
+          return <h1 key={index} className="pb-2 text-2xl font-black tracking-tight text-slate-950">{line.replace(/^# /, "")}</h1>;
+        }
+        if (line.startsWith("## ")) {
+          return <h2 key={index} className="pt-4 text-base font-black text-slate-900">{line.replace(/^## /, "")}</h2>;
+        }
+        if (line.startsWith("- ")) {
+          return <p key={index} className="rounded-lg bg-slate-50 px-3 py-2 font-medium text-slate-600">{line}</p>;
+        }
+        if (line.trim() === "---") {
+          return <hr key={index} className="border-slate-200" />;
+        }
+        if (!line.trim()) {
+          return <div key={index} className="h-1" />;
+        }
+        return <p key={index} className="font-medium text-slate-600">{line}</p>;
+      })}
+    </article>
+  );
+}

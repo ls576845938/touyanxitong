@@ -1290,6 +1290,71 @@ export type SignalBacktestRunResponse = {
   run: SignalBacktestRun | null;
 };
 
+export type AgentTaskType =
+  | "stock_deep_research"
+  | "industry_chain_radar"
+  | "trend_pool_scan"
+  | "tenbagger_candidate"
+  | "daily_market_brief"
+  | "auto";
+
+export type AgentRunRequest = {
+  user_prompt: string;
+  task_type?: AgentTaskType;
+  symbols?: string[];
+  industry_keywords?: string[];
+  risk_preference?: string | null;
+  time_window?: string | null;
+  save_as_skill?: boolean;
+};
+
+export type AgentRunResponse = {
+  run_id: number;
+  status: string;
+  selected_task_type: AgentTaskType;
+  report_title: string;
+  summary: string;
+  artifact_id: number | null;
+  warnings: string[];
+};
+
+export type AgentStep = {
+  id: number;
+  run_id: number;
+  step_name: string;
+  agent_role: string;
+  status: string;
+  input_json: Record<string, unknown>;
+  output_json: Record<string, unknown>;
+  error_message: string;
+  created_at: string;
+};
+
+export type AgentArtifact = {
+  id: number;
+  run_id: number;
+  artifact_type: string;
+  title: string;
+  content_md: string;
+  content_json: Record<string, unknown>;
+  evidence_refs: Record<string, unknown>[];
+  risk_disclaimer: string;
+  created_at: string;
+};
+
+export type AgentSkill = {
+  id: number | string;
+  name: string;
+  description: string;
+  skill_type: AgentTaskType | string;
+  skill_md: string;
+  skill_config: Record<string, unknown>;
+  owner_user_id: string | null;
+  is_system: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 async function getJson<T>(path: string, options?: { cacheMs?: number }): Promise<T> {
   const cacheMs = options?.cacheMs ?? DEFAULT_GET_CACHE_MS;
   const cacheKey = `${API_BASE_URL}${path}`;
@@ -1495,7 +1560,22 @@ export const api = {
   stockHistory: (code: string) => getJson<StockHistory>(`/api/stocks/${code}/history`),
   stockBars: (code: string) => getJson<BarRow[]>(`/api/stocks/${code}/bars`),
   sourceComparison: (code: string) => getJson<SourceComparison>(`/api/stocks/${code}/source-comparison`),
-  ingestStock: (code: string, source = "akshare") => postJson<IngestionTask>(`/api/stocks/${code}/ingest?source=${encodeURIComponent(source)}`, {})
+  ingestStock: (code: string, source = "akshare") => postJson<IngestionTask>(`/api/stocks/${code}/ingest?source=${encodeURIComponent(source)}`, {}),
+  agentRun: (payload: AgentRunRequest) => postJson<AgentRunResponse>("/api/agent/runs", payload),
+  agentRunDetail: (runId: number) => getJson<AgentRunResponse & { latest_artifact?: AgentArtifact | null }>(`/api/agent/runs/${runId}`, { cacheMs: 0 }),
+  agentRunSteps: (runId: number) => getJson<AgentStep[]>(`/api/agent/runs/${runId}/steps`, { cacheMs: 0 }),
+  agentRunArtifacts: (runId: number) => getJson<AgentArtifact[]>(`/api/agent/runs/${runId}/artifacts`, { cacheMs: 0 }),
+  agentSkills: () => getJson<AgentSkill[]>("/api/agent/skills", { cacheMs: 0 }),
+  agentSkill: (skillId: number | string) => getJson<AgentSkill>(`/api/agent/skills/${encodeURIComponent(String(skillId))}`, { cacheMs: 0 }),
+  createAgentSkill: (payload: {
+    name: string;
+    description?: string;
+    skill_type?: AgentTaskType | string;
+    skill_md?: string;
+    skill_config?: Record<string, unknown>;
+    owner_user_id?: string | null;
+    is_system?: boolean;
+  }) => postJson<AgentSkill>("/api/agent/skills", payload)
 };
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
@@ -1507,7 +1587,14 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
     cache: "no-store"
   });
   if (!response.ok) {
-    throw new Error(`${path} failed: ${response.status}`);
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = typeof payload?.detail === "string" ? payload.detail : JSON.stringify(payload);
+    } catch {
+      detail = await response.text();
+    }
+    throw new Error(`${path} failed: ${response.status}${detail ? `: ${detail}` : ""}`);
   }
   return response.json() as Promise<T>;
 }
