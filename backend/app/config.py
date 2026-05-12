@@ -49,5 +49,9 @@ class Settings:
     tiingo_api_key: str | None = os.getenv("TIINGO_API_KEY") or None
     eodhd_api_key: str | None = os.getenv("EODHD_API_KEY") or None
 
+    # Hermes sidecar
+    hermes_endpoint: str = os.getenv("HERMES_ENDPOINT", "")
+    hermes_enabled: bool = _bool_env("HERMES_ENABLED", False)
+
 
 settings = Settings()

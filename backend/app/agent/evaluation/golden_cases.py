@@ -27,10 +27,15 @@ GOLDEN_CASES = [
         "expected_task_type": "daily_market_brief",
         "required_phrases": ["每日市场简报", "风险预警", "明日观察清单"],
     },
-    # ---- MVP 2.1 edge cases ----
-    # Note: Avoid prompts containing 'A'/'AI' substrings because the production
-    # DB has US stocks with codes A (安捷伦) and AI (C3.ai) which _extract_symbols
-    # picks up as false positives (stock.code in prompt substring check).
+    # ---- MVP 2.2 edge cases ----
+    # _extract_symbols now uses word-boundary matching and skips short codes,
+    # so "AI" and "A" in industry context no longer produce false positives.
+    {
+        "prompt": "AI 算力上游、中游、下游分别谁最强",
+        "expected_task_type": "industry_chain_radar",
+        "required_phrases": ["产业链", "风险提示"],
+        "forbidden_phrases": ["买入", "卖出", "满仓"],
+    },
     {
         "prompt": "半导体上游、中游、下游分别谁最强",
         "expected_task_type": "industry_chain_radar",

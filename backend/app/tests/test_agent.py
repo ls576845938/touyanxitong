@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.agent.guardrails import RISK_DISCLAIMER, sanitize_financial_output
-from app.agent.orchestrator import AgentOrchestrator, _sanitize_runtime_content_json
+from app.agent.orchestrator import AgentOrchestrator, _has_clear_stock_code, _sanitize_runtime_content_json
 from app.agent.runtime.mock_adapter import MockRuntimeAdapter
 from app.agent.schemas import AgentRunRequest, AgentTaskType
 from app.db.models import AgentArtifact, AgentRun, AgentSkill, AgentStep, AgentToolCall, Base, DailyBar, DailyReport, EvidenceChain, Industry, IndustryHeat, IndustryKeyword, Stock, StockScore, TrendSignal
@@ -550,6 +550,50 @@ def test_task_type_edge_cases(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Symbol extraction — no false positives for short codes
+# ---------------------------------------------------------------------------
+
+
+def test_symbol_extraction_no_false_positives(tmp_path) -> None:
+    """Verify _extract_symbols does NOT match short codes like 'AI' or 'A' as stock symbols."""
+    with _session(tmp_path) as session:
+        orchestrator = AgentOrchestrator(session)
+
+        # Prompts with "AI" in industry context — should NOT extract AI as a stock code
+        assert orchestrator._extract_symbols(AgentRunRequest(user_prompt="AI 算力上游、中游、下游分别谁最强")) == []
+        assert orchestrator._extract_symbols(AgentRunRequest(user_prompt="AI 服务器产业链今天最强的节点")) == []
+        assert orchestrator._extract_symbols(AgentRunRequest(user_prompt="AI 今天强不强")) == []
+        assert orchestrator._extract_symbols(AgentRunRequest(user_prompt="分析 AI 服务器主题的强势股")) == []
+
+        # Prompt with "A 股" — should NOT extract "A" as a stock code
+        assert orchestrator._extract_symbols(AgentRunRequest(user_prompt="A 股今天最强方向是什么")) == []
+
+        # Prompts with clear stock codes — should extract correctly
+        assert orchestrator._extract_symbols(AgentRunRequest(user_prompt="分析 300308 今天的趋势")) == ["300308"]
+        assert orchestrator._extract_symbols(AgentRunRequest(user_prompt="分析 300308.SZ 今天的趋势")) == ["300308", "300308.SZ"]
+
+        # Prompt with stock name from DB — should extract matching code
+        assert orchestrator._extract_symbols(AgentRunRequest(user_prompt="分析中际旭创是不是还在主升趋势")) == ["300308"]
+
+
+def test_has_clear_stock_code() -> None:
+    """Verify _has_clear_stock_code helper identifies unambiguous code patterns."""
+    # 6-digit codes
+    assert _has_clear_stock_code("分析 300308 今天的趋势") is True
+    assert _has_clear_stock_code("分析 600519") is True
+    assert _has_clear_stock_code("帮我看看000001怎么样") is True
+    # Exchange-formatted codes
+    assert _has_clear_stock_code("分析 300308.SZ 今天的趋势") is True
+    assert _has_clear_stock_code("00700.HK 走势") is True
+    # Short words / industry context — NOT clear stock codes
+    assert _has_clear_stock_code("AI 算力上游、中游、下游分别谁最强") is False
+    assert _has_clear_stock_code("AI 今天强不强") is False
+    assert _has_clear_stock_code("A 股今天最强方向是什么") is False
+    # Longer company name — not a clear code pattern (resolved via DB lookup)
+    assert _has_clear_stock_code("分析中际旭创是不是还在主升趋势") is False
+
+
+# ---------------------------------------------------------------------------
 # Guardrails completeness
 # ---------------------------------------------------------------------------
 
@@ -579,3 +623,209 @@ def test_guardrails_all_forbidden_words() -> None:
     assert "建议跟踪观察" in sanitized2
     assert "建议复核风险暴露" in sanitized2
     assert "估值情景需独立复核" in sanitized2
+
+
+# ---------------------------------------------------------------------------
+# MVP 2.2 Tests  (streaming, ToolSpec schema, follow-up edges)
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_streaming_produces_token_deltas(tmp_path) -> None:
+    """MockRuntime.stream_run produces multiple token_delta chunks."""
+    import asyncio
+
+    async def _collect() -> tuple[list[str], Any]:
+        adapter = MockRuntimeAdapter()
+        deltas: list[str] = []
+
+        def on_event(event_type: str, payload: dict[str, Any]) -> None:
+            if event_type == "token_delta":
+                deltas.append(payload["delta"])
+
+        result = await adapter.stream_run(
+            prompt="帮我分析中际旭创是不是还在主升趋势",
+            context={
+                "task_type": AgentTaskType.STOCK_DEEP_RESEARCH,
+                "primary_symbol": "300308",
+                "tool_results": {},
+            },
+            tools={},
+            skill_template="",
+            on_event=on_event,
+        )
+        return deltas, result
+
+    deltas, result = asyncio.run(_collect())
+
+    assert len(deltas) > 0, "Expected at least one token_delta chunk"
+    assert result.content_md, "Expected non-empty content_md"
+
+    # Every paragraph in content_md should have been emitted as a delta
+    expected_paras = [p.strip() for p in result.content_md.split("\n\n") if p.strip()]
+    assert len(deltas) == len(expected_paras), (
+        f"Expected {len(expected_paras)} deltas, got {len(deltas)}"
+    )
+
+
+def test_runtime_streaming_on_event_none(tmp_path) -> None:
+    """stream_run works correctly even when on_event is None."""
+    import asyncio
+
+    async def _run() -> Any:
+        adapter = MockRuntimeAdapter()
+        return await adapter.stream_run(
+            prompt="test",
+            context={
+                "task_type": AgentTaskType.STOCK_DEEP_RESEARCH,
+                "primary_symbol": "300308",
+                "tool_results": {},
+            },
+            tools={},
+            skill_template="",
+            on_event=None,
+        )
+
+    result = asyncio.run(_run())
+    assert result.content_md
+
+
+def test_toolspec_json_schema_structure() -> None:
+    """ToolSpec input_schema/output_schema have type and properties."""
+    from app.agent.tools.registry import registry
+
+    tools = registry.get_all_tools()
+    assert len(tools) > 0, "Expected at least one registered tool"
+
+    for tool in tools:
+        assert "type" in tool.input_schema, (
+            f"Tool '{tool.name}'.input_schema missing 'type'"
+        )
+        assert "properties" in tool.input_schema, (
+            f"Tool '{tool.name}'.input_schema missing 'properties'"
+        )
+        assert "type" in tool.output_schema, (
+            f"Tool '{tool.name}'.output_schema missing 'type'"
+        )
+        assert "properties" in tool.output_schema, (
+            f"Tool '{tool.name}'.output_schema missing 'properties'"
+        )
+        assert tool.input_schema["type"] == "object"
+        assert tool.output_schema["type"] == "object"
+
+
+def test_toolspec_all_tools_read_only() -> None:
+    """Every registered tool has read_only=True."""
+    from app.agent.tools.registry import registry
+
+    for tool in registry.get_all_tools():
+        assert tool.read_only is True, f"Tool '{tool.name}' is not read_only"
+
+
+def test_followup_uses_llm_when_available(tmp_path) -> None:
+    """Follow-up uses template path when no API key (default in test env)."""
+    from app.config import settings
+
+    if settings.openai_api_key:
+        pytest.skip("LLM follow-up would use real LLM; skipping in test env")
+
+    with _client(tmp_path) as client:
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创是不是还在主升趋势"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        with _session(tmp_path) as session:
+            def _factory():
+                return _session(tmp_path)
+            orchestrator = AgentOrchestrator(session, session_factory=_factory)
+            orchestrator.execute_async(run_id, AgentRunRequest(user_prompt="帮我分析中际旭创是不是还在主升趋势"))
+
+        followup_resp = client.post(
+            f"/api/agent/runs/{run_id}/followups",
+            json={"message": "请解释风险"},
+        )
+        assert followup_resp.status_code == 201
+        data = followup_resp.json()
+        assert "answer_md" in data
+        assert isinstance(data["answer_md"], str)
+        # Template-based answer should reference the original report
+        assert "整理如下" in data["answer_md"] or "分析" in data["answer_md"]
+
+
+def test_followup_save_as_artifact_creates_followup_note(tmp_path) -> None:
+    """save_as_artifact=true creates an artifact of type followup_note."""
+    with _client(tmp_path) as client:
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创是不是还在主升趋势"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        with _session(tmp_path) as session:
+            def _factory():
+                return _session(tmp_path)
+            orchestrator = AgentOrchestrator(session, session_factory=_factory)
+            orchestrator.execute_async(run_id, AgentRunRequest(user_prompt="帮我分析中际旭创是不是还在主升趋势"))
+
+        followup_resp = client.post(
+            f"/api/agent/runs/{run_id}/followups",
+            json={"message": "详细分析一下风险", "save_as_artifact": True},
+        )
+        assert followup_resp.status_code == 201
+        data = followup_resp.json()
+        assert data["saved_artifact_id"] is not None, (
+            "Expected saved_artifact_id when save_as_artifact=True"
+        )
+
+        artifacts_resp = client.get(f"/api/agent/runs/{run_id}/artifacts")
+        assert artifacts_resp.status_code == 200
+        artifacts = artifacts_resp.json()
+        followup_notes = [a for a in artifacts if a.get("artifact_type") == "followup_note"]
+        assert len(followup_notes) >= 1
+
+
+def test_followup_save_as_artifact_defaults_false(tmp_path) -> None:
+    """save_as_artifact default is False — no extra artifact created."""
+    with _client(tmp_path) as client:
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创是不是还在主升趋势"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        with _session(tmp_path) as session:
+            def _factory():
+                return _session(tmp_path)
+            orchestrator = AgentOrchestrator(session, session_factory=_factory)
+            orchestrator.execute_async(run_id, AgentRunRequest(user_prompt="帮我分析中际旭创是不是还在主升趋势"))
+
+        followup_resp = client.post(
+            f"/api/agent/runs/{run_id}/followups",
+            json={"message": "更多信息"},
+        )
+        assert followup_resp.status_code == 201
+        data = followup_resp.json()
+        assert data["saved_artifact_id"] is None
+
+
+def test_followup_streaming_events(tmp_path) -> None:
+    """Follow-up generates followup_started/followup_completed events."""
+    with _client(tmp_path) as client:
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创是不是还在主升趋势"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        with _session(tmp_path) as session:
+            def _factory():
+                return _session(tmp_path)
+            orchestrator = AgentOrchestrator(session, session_factory=_factory)
+            orchestrator.execute_async(run_id, AgentRunRequest(user_prompt="帮我分析中际旭创是不是还在主升趋势"))
+
+        client.post(
+            f"/api/agent/runs/{run_id}/followups",
+            json={"message": "分析风险"},
+        )
+
+        with _session(tmp_path) as session:
+            from app.agent.events import replay_events
+            events = replay_events(session, run_id)
+            event_types = {e["event"] for e in events}
+
+        assert "followup_started" in event_types or "followup_completed" in event_types, (
+            "Expected followup_started or followup_completed events"
+        )

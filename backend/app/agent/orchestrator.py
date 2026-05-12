@@ -9,6 +9,7 @@ from typing import Any, Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agent.events import publish_event
 from app.agent.guardrails import RISK_DISCLAIMER, sanitize_financial_output, sanitize_financial_text
 from app.agent.runtime import AgentRuntimeResult, MockRuntimeAdapter, RealRuntimeAdapter, RuntimeAdapter
 from app.agent.schemas import AgentRunRequest, AgentRunResponse, AgentTaskType
@@ -47,6 +48,17 @@ class AgentOrchestrator:
         self.session.add(run)
         self.session.commit()
         self.session.refresh(run)
+        publish_event(
+            self.session,
+            run.id,
+            "run_created",
+            {
+                "status": "pending",
+                "task_type": str(request.task_type or AgentTaskType.AUTO),
+                "user_prompt": request.user_prompt,
+            },
+        )
+        self.session.commit()
         return run.id
 
     def execute_async(self, run_id: int, request: AgentRunRequest) -> None:
@@ -70,6 +82,7 @@ class AgentOrchestrator:
                 
                 run.status = "running"
                 session.commit()
+                publish_event(session, run_id, "run_started", {"status": "running"})
                 self._run_logic(run, request)
                 logger.info(f"Finished background agent run: {run_id} with status {run.status}")
         except Exception as exc:
@@ -81,6 +94,16 @@ class AgentOrchestrator:
                         run.status = "failed"
                         run.error_message = str(exc)
                         run.completed_at = datetime.now(timezone.utc)
+                        publish_event(
+                            err_session,
+                            run_id,
+                            "run_failed",
+                            {
+                                "status": "failed",
+                                "error_message": str(exc),
+                                "completed_at": run.completed_at.isoformat(),
+                            },
+                        )
                         err_session.commit()
             except Exception:
                 pass
@@ -164,6 +187,16 @@ class AgentOrchestrator:
             self.session.add(artifact)
             self.session.flush()
             artifact_id = artifact.id
+            publish_event(
+                self.session,
+                run.id,
+                "artifact_created",
+                {
+                    "id": artifact_id,
+                    "artifact_type": "research_report",
+                    "title": runtime_result.title,
+                },
+            )
             self._record_step(
                 run.id,
                 "persist_artifact",
@@ -186,6 +219,16 @@ class AgentOrchestrator:
 
             run.status = "success"
             run.completed_at = datetime.now(timezone.utc)
+            publish_event(
+                self.session,
+                run.id,
+                "run_completed",
+                {
+                    "status": "success",
+                    "error_message": "",
+                    "completed_at": run.completed_at.isoformat(),
+                },
+            )
             report_title = runtime_result.title
             summary = runtime_result.summary
             self.session.commit()
@@ -226,7 +269,16 @@ class AgentOrchestrator:
 
         # Priority 4: Specific Stocks (Deep Research)
         if selected_symbols:
-            return AgentTaskType.STOCK_DEEP_RESEARCH
+            # Safety guard: if ALL auto-matched symbols are short codes (1-2 chars),
+            # no explicit symbols were passed, and no clear code pattern exists,
+            # these are likely false positives (e.g. "AI" matched from industry text).
+            # Fall through to let industry/other priorities handle the request.
+            if (not request.symbols
+                    and all(len(s) <= 2 for s in selected_symbols)
+                    and not _has_clear_stock_code(prompt)):
+                pass  # Short-code false positive — do not treat as stock research
+            else:
+                return AgentTaskType.STOCK_DEEP_RESEARCH
 
         # Priority 5: Screening/Pools
         if _contains_any(prompt, ["筛选", "筛出", "股票池", "候选池", "强势股", "动量", "趋势池", "标的"]):
@@ -303,6 +355,12 @@ class AgentOrchestrator:
     def _call_tool(self, run_id: int, tool_name: str, func: Callable[..., dict[str, Any]], *args: Any, **kwargs: Any) -> dict[str, Any]:
         started = time.perf_counter()
         input_json = {"args": [_safe_arg(arg) for arg in args], "kwargs": kwargs}
+        publish_event(
+            self.session,
+            run_id,
+            "tool_call_started",
+            {"tool_name": tool_name, "input": input_json},
+        )
         try:
             output = func(*args, **kwargs)
             success = output.get("status") != "error"
@@ -312,18 +370,30 @@ class AgentOrchestrator:
             success = False
             error_message = str(exc)
         latency_ms = int((time.perf_counter() - started) * 1000)
-        self.session.add(
-            AgentToolCall(
-                run_id=run_id,
-                tool_name=tool_name,
-                input_json=_json_dumps(input_json),
-                output_json=_json_dumps(output),
-                latency_ms=latency_ms,
-                success=success,
-                error_message=error_message,
-            )
+        tc = AgentToolCall(
+            run_id=run_id,
+            tool_name=tool_name,
+            input_json=_json_dumps(input_json),
+            output_json=_json_dumps(output),
+            latency_ms=latency_ms,
+            success=success,
+            error_message=error_message,
         )
+        self.session.add(tc)
         self.session.flush()
+        publish_event(
+            self.session,
+            run_id,
+            "tool_call_completed",
+            {
+                "id": tc.id,
+                "tool_name": tool_name,
+                "output": output,
+                "latency_ms": latency_ms,
+                "success": success,
+                "error_message": error_message,
+            },
+        )
         return output
 
     def _record_step(
@@ -336,18 +406,42 @@ class AgentOrchestrator:
         output_json: dict[str, Any],
         error_message: str = "",
     ) -> None:
-        self.session.add(
-            AgentStep(
-                run_id=run_id,
-                agent_role=agent_role,
-                step_name=step_name,
-                status=status,
-                input_json=_json_dumps(input_json),
-                output_json=_json_dumps(output_json),
-                error_message=error_message,
-            )
+        step = AgentStep(
+            run_id=run_id,
+            agent_role=agent_role,
+            step_name=step_name,
+            status=status,
+            input_json=_json_dumps(input_json),
+            output_json=_json_dumps(output_json),
+            error_message=error_message,
         )
+        self.session.add(step)
         self.session.flush()
+        publish_event(
+            self.session,
+            run_id,
+            "step_started",
+            {
+                "id": step.id,
+                "step_name": step_name,
+                "agent_role": agent_role,
+                "status": status,
+                "input": input_json,
+            },
+        )
+        publish_event(
+            self.session,
+            run_id,
+            "step_completed",
+            {
+                "id": step.id,
+                "step_name": step_name,
+                "agent_role": agent_role,
+                "status": status,
+                "output": output_json,
+                "error_message": error_message,
+            },
+        )
 
     def _save_generated_skill(
         self,
@@ -372,21 +466,36 @@ class AgentOrchestrator:
 
     def _extract_symbols(self, request: AgentRunRequest) -> list[str]:
         symbols: list[str] = []
+        # 1) Explicit symbols passed by the caller — always trust these
         for item in request.symbols or []:
             stock = resolve_stock(self.session, item)
             symbols.append(stock.code if stock is not None else item)
         prompt = request.user_prompt
+        # 2) 6-digit A-share codes (non-digit boundaries — works with mixed Chinese/English text)
         codes = re.findall(r"(?<!\d)(\d{6})(?!\d)", prompt)
         symbols.extend(codes)
+        # 3) Explicit format codes (e.g. 300308.SZ, 00700.HK)
+        codes_explicit = re.findall(r"(?<!\d)(\d{5,6}\.[A-Z]{2})(?![A-Za-z0-9_])", prompt.upper())
+        symbols.extend(codes_explicit)
+        # 4) STOCK_ALIAS_CODES — word-boundary matching, skip short aliases
         upper_prompt = prompt.upper()
         for alias, code in STOCK_ALIAS_CODES.items():
-            if alias in upper_prompt or alias in prompt:
-                symbols.append(code)
+            if len(alias) <= 2:
+                continue  # Skip 1-2 char aliases (e.g. HW, AI) to avoid false positives
+            if re.search(r'[a-zA-Z]', alias):
+                # English alias: require ASCII word boundary match
+                if _is_ascii_word_boundary(upper_prompt, alias):
+                    symbols.append(code)
+            else:
+                # Chinese-only alias (e.g. 台积电, 英伟达): substring match OK (3+ chars)
+                if alias in prompt:
+                    symbols.append(code)
+        # 5) DB stock matching — word boundaries for codes, 3+ char names
         stocks = self.session.scalars(select(Stock).where(Stock.is_active.is_(True)).limit(50000)).all()
         for stock in stocks:
-            if stock.code and stock.code in prompt:
+            if stock.code and len(stock.code) >= 3 and _is_ascii_word_boundary(prompt, stock.code):
                 symbols.append(stock.code)
-            elif stock.name and len(stock.name) >= 2 and stock.name in prompt:
+            if stock.name and len(stock.name) >= 3 and stock.name in prompt:
                 symbols.append(stock.code)
         return _dedupe([item for item in symbols if item])
 
@@ -462,3 +571,25 @@ def _dedupe(items: list[str]) -> list[str]:
         seen.add(item)
         rows.append(item)
     return rows
+
+
+def _is_ascii_word_boundary(text: str, word: str) -> bool:
+    """Check if word appears as a standalone ASCII word (not substring of another word)."""
+    return bool(re.search(
+        r'(?<![a-zA-Z0-9_])' + re.escape(word) + r'(?![a-zA-Z0-9_])',
+        text,
+    ))
+
+
+def _has_clear_stock_code(prompt: str) -> bool:
+    """Check if prompt contains clear/unequivocal stock code patterns.
+
+    Returns True when the prompt contains unambiguous stock identifiers like
+    6-digit A-share codes or exchange-formatted codes (e.g., 300308.SZ).
+    Returns False for ambiguous references like company names or short tickers.
+    """
+    if re.search(r'(?<!\d)(\d{6})(?!\d)', prompt):
+        return True
+    if re.search(r'(?<!\d)(\d{5,6}\.[A-Za-z]{2})(?![A-Za-z0-9_])', prompt):
+        return True
+    return False

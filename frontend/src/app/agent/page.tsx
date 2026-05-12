@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Bot, CheckCircle2, FileText, Loader2, MessageSquare, Play, Radio, Save, ShieldAlert, Sparkles, Wrench, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, Download, FileText, Loader2, MessageSquare, Play, Printer, Radio, Save, ShieldAlert, Sparkles, Wrench, XCircle } from "lucide-react";
 import { api, type AgentArtifact, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow } from "@/lib/api";
 
 const FALLBACK_SKILLS: AgentSkill[] = [
@@ -36,6 +36,16 @@ function readConfidence(value: unknown) {
   return "未提供";
 }
 
+function downloadMarkdown(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function AgentPage() {
   const [prompt, setPrompt] = useState(EXAMPLES[0]);
   const [taskType, setTaskType] = useState<AgentTaskType>("auto");
@@ -52,6 +62,9 @@ export default function AgentPage() {
   const [followupInput, setFollowupInput] = useState("");
   const [followupMode, setFollowupMode] = useState<string>("auto");
   const [sendingFollowup, setSendingFollowup] = useState(false);
+  const [streamingContent, setStreamingContent] = useState("");
+  const [streamingFollowupContent, setStreamingFollowupContent] = useState("");
+  const lastSeqRef = useRef<number>(0);
 
   useEffect(() => {
     api.agentSkills()
@@ -64,6 +77,36 @@ export default function AgentPage() {
       sseRef.current?.close();
       sseRef.current = null;
     };
+  }, []);
+
+  // Replay: reconnect SSE if a run was in progress before page refresh
+  useEffect(() => {
+    const storedRunId = sessionStorage.getItem("agent_last_run_id");
+    if (storedRunId) {
+      const runId = parseInt(storedRunId, 10);
+      if (!isNaN(runId) && !completedRef.current) {
+        api.agentRunDetail(runId).then((detail) => {
+          if (detail.status === "running" || detail.status === "pending") {
+            setRun({
+              run_id: detail.id,
+              status: detail.status,
+              selected_task_type: detail.task_type,
+              report_title: detail.latest_artifact?.title || "Agent 运行中",
+              summary: detail.latest_artifact?.content_md?.slice(0, 100) || "正在处理数据...",
+              artifact_id: detail.latest_artifact?.id || null,
+              warnings: []
+            });
+            setLoading(true);
+            connectSSE(runId, 0);
+          } else {
+            sessionStorage.removeItem("agent_last_run_id");
+          }
+        }).catch(() => {
+          sessionStorage.removeItem("agent_last_run_id");
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selectedSkill = useMemo(
@@ -96,6 +139,7 @@ export default function AgentPage() {
         save_as_skill: false
       });
       setRun(response);
+      sessionStorage.setItem("agent_last_run_id", String(response.run_id));
 
       // Try SSE first, fall back to polling
       if (!connectSSE(response.run_id)) {
@@ -147,11 +191,11 @@ export default function AgentPage() {
     }, 1000);
   }
 
-  function connectSSE(runId: number): boolean {
+  function connectSSE(runId: number, sinceSeq?: number): boolean {
     setSseStatus("connecting");
     let es: EventSource;
     try {
-      es = api.agentRunEvents(runId);
+      es = api.agentRunEvents(runId, sinceSeq);
     } catch {
       setSseStatus("failed");
       return false;
@@ -160,6 +204,12 @@ export default function AgentPage() {
 
     function handleSSEEvent(data: AgentSSEEvent) {
       const { event, payload } = data;
+
+      // Dedup by seq
+      const seq = data.seq || 0;
+      if (seq > 0 && seq <= lastSeqRef.current) return;
+      if (seq > 0) lastSeqRef.current = seq;
+
       switch (event) {
         case "run_started":
           setRun((prev) => prev ? { ...prev, status: "running" } : prev);
@@ -209,18 +259,24 @@ export default function AgentPage() {
           }
           break;
         }
+        case "token_delta":
+          setStreamingContent((prev) => prev + (typeof payload?.delta === "string" ? payload.delta : ""));
+          break;
         case "artifact_created":
+          setStreamingContent("");
           api.agentRunArtifacts(runId).then((arts) => {
             if (arts.length > 0) setArtifact(arts[arts.length - 1]);
           }).catch(() => {});
           break;
         case "run_completed":
           completedRef.current = true;
+          setStreamingContent("");
           setLoading(false);
           setRun((prev) => prev ? { ...prev, status: "success" } : prev);
           setSseStatus("idle");
           es.close();
           sseRef.current = null;
+          sessionStorage.removeItem("agent_last_run_id");
           api.agentRunArtifacts(runId).then((arts) => {
             if (arts.length > 0) setArtifact(arts[arts.length - 1]);
           }).catch(() => {});
@@ -228,19 +284,31 @@ export default function AgentPage() {
           break;
         case "run_failed":
           completedRef.current = true;
+          setStreamingContent("");
           setLoading(false);
           setRun((prev) => prev ? { ...prev, status: "failed" } : prev);
           setSseStatus("idle");
           es.close();
           sseRef.current = null;
+          sessionStorage.removeItem("agent_last_run_id");
           setError(typeof payload?.error === "string" ? payload.error : "Agent 运行失败");
+          break;
+        case "followup_started":
+          setStreamingFollowupContent("");
+          break;
+        case "followup_token_delta":
+          setStreamingFollowupContent((prev) => prev + (typeof payload?.delta === "string" ? payload.delta : ""));
+          break;
+        case "followup_completed":
+          setStreamingFollowupContent("");
+          loadFollowupMessages(runId);
           break;
         case "heartbeat":
           break;
       }
     }
 
-    const sseEventTypes = ["run_started", "step_started", "tool_call_started", "tool_call_completed", "step_completed", "artifact_created", "run_completed", "run_failed", "heartbeat"];
+    const sseEventTypes = ["run_started", "step_started", "tool_call_started", "tool_call_completed", "step_completed", "token_delta", "artifact_created", "run_completed", "run_failed", "heartbeat", "followup_started", "followup_token_delta", "followup_completed"];
     for (const evt of sseEventTypes) {
       es.addEventListener(evt, ((msg: MessageEvent) => {
         try { handleSSEEvent(JSON.parse(msg.data) as AgentSSEEvent); }
@@ -329,7 +397,7 @@ export default function AgentPage() {
               onChange={setTaskType}
             />
 
-            <ResearchReportViewer loading={loading} run={run} artifact={artifact} error={error} />
+            <ResearchReportViewer loading={loading} run={run} artifact={artifact} error={error} streamingContent={streamingContent} />
 
             <FollowUpSection
               run={run}
@@ -338,6 +406,7 @@ export default function AgentPage() {
               followupInput={followupInput}
               followupMode={followupMode}
               sendingFollowup={sendingFollowup}
+              streamingFollowupContent={streamingFollowupContent}
               show={!!(run && artifact && run.status === "success")}
               onInputChange={setFollowupInput}
               onModeChange={setFollowupMode}
@@ -346,7 +415,7 @@ export default function AgentPage() {
           </main>
 
           <aside className="space-y-6">
-            <AgentRunTimeline loading={loading} steps={steps} run={run} sseStatus={sseStatus} />
+            <AgentRunTimeline loading={loading} steps={steps} run={run} sseStatus={sseStatus} isGenerating={streamingContent !== ""} />
             <EvidencePanel artifact={artifact} run={run} />
             <SkillBuilderPanel prompt={prompt} run={run} artifact={artifact} />
           </aside>
@@ -469,7 +538,7 @@ function SkillTemplatePicker({
   );
 }
 
-function AgentRunTimeline({ loading, steps, run, sseStatus }: { loading: boolean; steps: AgentStep[]; run: AgentRunResponse | null; sseStatus: "idle" | "connecting" | "connected" | "failed" }) {
+function AgentRunTimeline({ loading, steps, run, sseStatus, isGenerating }: { loading: boolean; steps: AgentStep[]; run: AgentRunResponse | null; sseStatus: "idle" | "connecting" | "connected" | "failed"; isGenerating: boolean }) {
   const failedSteps = steps.filter((step) => step.status !== "success");
 
   return (
@@ -502,6 +571,12 @@ function AgentRunTimeline({ loading, steps, run, sseStatus }: { loading: boolean
         <div className="mt-4 flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-3 text-sm font-bold text-indigo-700">
           <Loader2 size={16} className="animate-spin" />
           正在执行投研工作流，步骤和报告会在本次运行完成后刷新。
+        </div>
+      )}
+      {isGenerating && (
+        <div className="mt-4 flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-3 text-sm font-bold text-indigo-700">
+          <Loader2 size={16} className="animate-spin" />
+          报告生成中...
         </div>
       )}
       {!loading && steps.length === 0 && (
@@ -579,23 +654,99 @@ function ResearchReportViewer({
   loading,
   run,
   artifact,
-  error
+  error,
+  streamingContent
 }: {
   loading: boolean;
   run: AgentRunResponse | null;
   artifact: AgentArtifact | null;
   error: string;
+  streamingContent: string;
 }) {
+  function handleDownloadMarkdown() {
+    if (!artifact) return;
+    const title = artifact.title || "投研报告";
+    const filename = `alpha-radar-report-${artifact.run_id}.md`;
+    const content = `# ${title}\n\n${artifact.content_md}`;
+    downloadMarkdown(content, filename);
+  }
+
+  function handlePrintPdf() {
+    window.print();
+  }
+
+  function handleOpenPrintView() {
+    if (!artifact) return;
+    window.open(api.agentRunExportPrintUrl(artifact.run_id), "_blank");
+  }
+
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      {/* Print CSS: hides sidebar, inputs, buttons, timeline, evidence panel */}
+      <style>{`
+        @media print {
+          body * {
+            visibility: hidden;
+          }
+          .report-print-area,
+          .report-print-area * {
+            visibility: visible;
+          }
+          .report-print-area {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            padding: 0.5in;
+          }
+          .report-print-area h1 { font-size: 22pt; }
+          .report-print-area h2 { font-size: 16pt; }
+          .report-print-area p, .report-print-area li { font-size: 11pt; }
+          .no-print { display: none !important; }
+          @page { margin: 0.5in; }
+        }
+      `}</style>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
         <div className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
           <FileText size={16} className="text-indigo-600" />
           Research Report
         </div>
-        {run && <div className="text-xs font-bold text-slate-500">{run.selected_task_type}</div>}
+        <div className="flex items-center gap-2">
+          {run && <div className="text-xs font-bold text-slate-500">{run.selected_task_type}</div>}
+          {artifact && (
+            <div className="flex items-center gap-1.5 no-print">
+              <button
+                type="button"
+                onClick={handleDownloadMarkdown}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 hover:border-slate-300 hover:text-slate-800"
+                title="导出 Markdown"
+              >
+                <Download size={14} />
+                导出 .md
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenPrintView}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-bold text-indigo-600 hover:border-indigo-300 hover:text-indigo-800"
+                title="打开打印版（Ctrl+P 保存为 PDF）"
+              >
+                <FileText size={14} />
+                打印版导出
+              </button>
+              <button
+                type="button"
+                onClick={handlePrintPdf}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 hover:border-slate-300 hover:text-slate-800"
+                title="打印 PDF"
+              >
+                <Printer size={14} />
+                打印 PDF
+              </button>
+            </div>
+          )}
+        </div>
       </div>
-      <div className="p-5">
+      <div className="report-print-area p-5">
         {loading && (
           <div className="flex min-h-80 items-center justify-center text-sm font-bold text-slate-500">
             <Loader2 size={18} className="mr-2 animate-spin" />
@@ -619,6 +770,15 @@ function ResearchReportViewer({
           </div>
         )}
         {artifact && <MarkdownBlock content={artifact.content_md} />}
+        {streamingContent && (
+          <div className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/50 p-4">
+            <div className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-indigo-400">
+              <Loader2 size={12} className="animate-spin" />
+              报告生成中...
+            </div>
+            <MarkdownBlock content={streamingContent} />
+          </div>
+        )}
       </div>
     </section>
   );
@@ -877,6 +1037,7 @@ function FollowUpSection({
   followupInput,
   followupMode,
   sendingFollowup,
+  streamingFollowupContent,
   show,
   onInputChange,
   onModeChange,
@@ -888,6 +1049,7 @@ function FollowUpSection({
   followupInput: string;
   followupMode: string;
   sendingFollowup: boolean;
+  streamingFollowupContent: string;
   show: boolean;
   onInputChange: (value: string) => void;
   onModeChange: (value: string) => void;
@@ -919,6 +1081,15 @@ function FollowUpSection({
               <div className="text-sm font-medium leading-6 text-slate-700">{msg.content}</div>
             </div>
           ))}
+          {streamingFollowupContent && (
+            <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-3">
+              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-indigo-400">
+                <Loader2 size={10} className="animate-spin" />
+                Agent 思考中...
+              </div>
+              <div className="text-sm font-medium leading-6 text-slate-700">{streamingFollowupContent}</div>
+            </div>
+          )}
         </div>
       )}
 

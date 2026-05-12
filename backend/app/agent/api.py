@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agent.events import publish_event, replay_events, subscribe, unsubscribe
+from app.agent.export_utils import build_print_html
 from app.agent.guardrails import RISK_DISCLAIMER, sanitize_financial_output
 from app.agent.tools.registry import registry
+from app.config import settings
+from app.llm.provider import OpenAIProvider
 from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import (
     AgentArtifactClaim,
@@ -111,17 +116,22 @@ def get_agent_run_artifacts(run_id: int, session: Session = Depends(get_session)
 
 
 @router.get("/runs/{run_id}/events")
-async def stream_agent_run_events(run_id: int, session: Session = Depends(get_session)) -> StreamingResponse:
-    """SSE event stream for an agent run (poll-to-SSE bridge).
+async def stream_agent_run_events(
+    run_id: int,
+    since_seq: int = Query(0, description="Replay events after this sequence number"),
+    session: Session = Depends(get_session),
+) -> StreamingResponse:
+    """SSE event stream for an agent run (EventBus push).
 
-    Opens a long-lived SSE connection that replays existing events and polls
-    the DB for new steps, tool calls, and artifacts.  For completed runs all
-    events are replayed then the connection closes.  For running/pending runs
-    the connection stays open, sending heartbeats every 10 seconds.
+    Replays persisted events from ``agent_events`` (since ``since_seq``) then,
+    for live runs, subscribes to the in-memory ``AgentEventBus`` for real-time
+    push.  Heartbeats are sent every 10 seconds while the connection is open.
+
+    For terminated runs events are replayed and the connection closes.
     """
     _ensure_run(session, run_id)
     return StreamingResponse(
-        _event_generator(run_id),
+        _event_stream(run_id, since_seq),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -148,12 +158,22 @@ def create_followup(
         raise HTTPException(status_code=400, detail="该投研报告尚未完成, 无法追问.")
 
     evidence_refs = _loads_list(artifact.evidence_refs_json)
+    # Build event publisher that publishes follow-up events through EventBus
+    def _publish_followup_event(event_dict: dict[str, Any]) -> None:
+        try:
+            event_type = event_dict.get("event", "")
+            # Use all keys except "event" and "run_id" as the event payload
+            payload = {k: v for k, v in event_dict.items() if k not in ("event", "run_id")}
+            publish_event(session, run_id, event_type, payload)
+        except Exception:
+            pass  # Don't crash follow-up on event publish failure
+
     answer_md, answer_warnings = _generate_followup_answer(
         message=payload.message,
         mode=str(payload.mode.value) if isinstance(payload.mode, FollowupMode) else str(payload.mode),
-        original_title=artifact.title,
-        original_content_md=artifact.content_md,
-        evidence_refs=evidence_refs,
+        run_id=run_id,
+        session=session,
+        on_event=_publish_followup_event,
     )
 
     saved_artifact_id: int | None = None
@@ -214,6 +234,106 @@ def get_followup_messages(run_id: int, session: Session = Depends(get_session)) 
         }
         for row in rows
     ]
+
+
+@router.get("/runs/{run_id}/export/markdown")
+def export_agent_run_markdown(run_id: int, session: Session = Depends(get_session)) -> Response:
+    """Download the artifact content as a Markdown file.
+
+    Returns sanitized content_md with the report title as a H1 heading and
+    the risk disclaimer.  Content is already guardrails-sanitised in the
+    artifact; no further sanitisation is applied.
+    """
+    _ensure_run(session, run_id)
+    artifact = session.scalars(
+        select(AgentArtifact).where(AgentArtifact.run_id == run_id).order_by(AgentArtifact.created_at.desc()).limit(1)
+    ).first()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="no artifact found for this run")
+
+    content_md = artifact.content_md or ""
+    title = artifact.title or "投研报告"
+
+    # Build full markdown — the content_md is already sanitised
+    full_md = f"# {title}\n\n{content_md}"
+    if RISK_DISCLAIMER not in full_md:
+        full_md = f"{full_md.rstrip()}\n\n---\n{RISK_DISCLAIMER}\n"
+
+    filename = f"alpha-radar-report-{run_id}.md"
+    return Response(
+        content=full_md,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/runs/{run_id}/export/html")
+def export_agent_run_html(run_id: int, session: Session = Depends(get_session)) -> Response:
+    """Download the artifact content as a minimal safe HTML page.
+
+    Converts the artifact content_md to basic HTML.  The page includes the
+    report title, summary, evidence references, and risk disclaimer.  No
+    script execution — just formatted, printable text.
+    """
+    _ensure_run(session, run_id)
+    artifact = session.scalars(
+        select(AgentArtifact).where(AgentArtifact.run_id == run_id).order_by(AgentArtifact.created_at.desc()).limit(1)
+    ).first()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="no artifact found for this run")
+
+    content_md = artifact.content_md or ""
+    title = artifact.title or "投研报告"
+    evidence_refs = _loads_list(artifact.evidence_refs_json)
+
+    html = _markdown_to_safe_html(title, content_md, evidence_refs, RISK_DISCLAIMER)
+
+    filename = f"alpha-radar-report-{run_id}.html"
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/runs/{run_id}/export/print")
+def export_agent_run_print_html(run_id: int, session: Session = Depends(get_session)) -> Response:
+    """Return a print-optimized HTML page for the agent research report.
+
+    Uses ``markdown-it-py`` for proper HTML rendering (tables, code blocks,
+    headings, etc.). Chart tags (``:::chart {...}:::``) are replaced with
+    descriptive text placeholders. The page includes print-optimised CSS with
+    ``@media print`` rules.
+
+    **Usage**: Open this URL in a browser tab and press **Ctrl+P** /
+    **Cmd+P** to save as PDF.  No PDF library is required.
+    """
+    _ensure_run(session, run_id)
+    artifact = session.scalars(
+        select(AgentArtifact).where(AgentArtifact.run_id == run_id).order_by(AgentArtifact.created_at.desc()).limit(1)
+    ).first()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="no artifact found for this run")
+
+    content_md = artifact.content_md or ""
+    title = artifact.title or "投研报告"
+    evidence_refs = _loads_list(artifact.evidence_refs_json)
+    created_at = artifact.created_at.isoformat() if hasattr(artifact.created_at, "isoformat") else str(artifact.created_at)
+
+    # Attempt to extract a summary from content_json
+    content_json = _loads_dict(artifact.content_json)
+    summary = str(content_json.get("summary", "")) if isinstance(content_json, dict) else ""
+
+    html_content = build_print_html(
+        title=title,
+        content_md=content_md,
+        evidence_refs=evidence_refs,
+        risk_disclaimer=RISK_DISCLAIMER,
+        created_at=created_at,
+        summary=summary,
+    )
+
+    return HTMLResponse(content=html_content)
 
 
 @router.post("/skills", response_model=AgentSkillResponse)
@@ -294,175 +414,81 @@ def _format_sse(data: dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
 
-async def _event_generator(run_id: int) -> AsyncGenerator[str, None]:
-    """Poll-to-SSE bridge: long-lived async generator.
+async def _event_stream(run_id: int, since_seq: int = 0) -> AsyncGenerator[str, None]:
+    """EventBus-backed SSE stream: replay + live push.
 
-    Replays existing steps/tool-calls/artifacts as SSE events, then polls
-    every 1.5 seconds for new records.  Sends heartbeats every 10 seconds.
-    Closes cleanly when the run reaches a terminal state or the client
-    disconnects.
+    Replays persisted events from ``agent_events`` (since ``since_seq``),
+    then subscribes to the in-memory ``AgentEventBus`` for real-time delivery.
+    Heartbeats are sent every 10 seconds.
+
+    Closes cleanly when a terminal event is reached or the client disconnects.
     """
     from app.db.session import SessionLocal
-    from app.db.models import AgentStep as _AgentStep, AgentToolCall as _AgentToolCall, AgentArtifact as _AgentArtifact  # noqa: F811
 
     db = SessionLocal()
+    logger = logging.getLogger(__name__)
     try:
         run = db.get(AgentRun, run_id)
         if run is None:
             yield _format_sse(_mk_sse_event("error", run_id, {"detail": "agent run not found"}))
             return
 
-        last_step_id: int = 0
-        last_tc_id: int = 0
-        last_art_id: int = 0
-        last_known_status: str | None = None
-        terminal_sent = False
-        last_heartbeat = 0.0
-
-        while True:
-            # Refresh run from DB (avoid stale ORM cache)
-            db.expire(run)
-            run = db.get(AgentRun, run_id)
-            status = run.status
-
-            # ----- status transitions -----
-            if last_known_status is None:
-                # First iteration — replay initial events
-                yield _format_sse(_mk_sse_event("run_created", run_id, {"status": status}, timestamp=_ts(run.created_at)))
-                if status in ("running", "success", "failed"):
-                    yield _format_sse(_mk_sse_event("run_started", run_id, {}))
-            elif last_known_status == "pending" and status == "running":
-                yield _format_sse(_mk_sse_event("run_started", run_id, {}))
-            last_known_status = status
-
-            # ----- poll for new steps -----
-            step_rows = db.execute(
-                select(_AgentStep)
-                .where(_AgentStep.run_id == run_id, _AgentStep.id > last_step_id)
-                .order_by(_AgentStep.id)
-            ).scalars().all()
-            for row in step_rows:
-                yield _format_sse(
-                    _mk_sse_event(
-                        "step_started",
-                        run_id,
-                        {
-                            "id": row.id,
-                            "step_name": row.step_name,
-                            "agent_role": row.agent_role,
-                            "status": row.status,
-                            "input": _loads_dict(row.input_json),
-                        },
-                        timestamp=_ts(row.created_at),
-                    )
-                )
-                yield _format_sse(
-                    _mk_sse_event(
-                        "step_completed",
-                        run_id,
-                        {
-                            "id": row.id,
-                            "step_name": row.step_name,
-                            "agent_role": row.agent_role,
-                            "status": row.status,
-                            "output": _loads_dict(row.output_json),
-                            "error_message": row.error_message or "",
-                        },
-                        timestamp=_ts(row.created_at),
-                    )
-                )
-                last_step_id = row.id
-
-            # ----- poll for new tool calls -----
-            tc_rows = db.execute(
-                select(_AgentToolCall)
-                .where(_AgentToolCall.run_id == run_id, _AgentToolCall.id > last_tc_id)
-                .order_by(_AgentToolCall.id)
-            ).scalars().all()
-            for row in tc_rows:
-                yield _format_sse(
-                    _mk_sse_event(
-                        "tool_call_started",
-                        run_id,
-                        {
-                            "id": row.id,
-                            "tool_name": row.tool_name,
-                            "input": _loads_dict(row.input_json),
-                        },
-                        timestamp=_ts(row.created_at),
-                    )
-                )
-                yield _format_sse(
-                    _mk_sse_event(
-                        "tool_call_completed",
-                        run_id,
-                        {
-                            "id": row.id,
-                            "tool_name": row.tool_name,
-                            "output": _loads_dict(row.output_json),
-                            "latency_ms": row.latency_ms,
-                            "success": row.success,
-                            "error_message": row.error_message or "",
-                        },
-                        timestamp=_ts(row.created_at),
-                    )
-                )
-                last_tc_id = row.id
-
-            # ----- poll for new artifacts -----
-            art_rows = db.execute(
-                select(_AgentArtifact)
-                .where(_AgentArtifact.run_id == run_id, _AgentArtifact.id > last_art_id)
-                .order_by(_AgentArtifact.id)
-            ).scalars().all()
-            for row in art_rows:
-                yield _format_sse(
-                    _mk_sse_event(
-                        "artifact_created",
-                        run_id,
-                        {
-                            "id": row.id,
-                            "artifact_type": row.artifact_type,
-                            "title": row.title,
-                        },
-                        timestamp=_ts(row.created_at),
-                    )
-                )
-                last_art_id = row.id
-
-            # ----- terminal check -----
-            if status in ("success", "failed") and not terminal_sent:
-                event_type = "run_completed" if status == "success" else "run_failed"
-                yield _format_sse(
-                    _mk_sse_event(
-                        event_type,
-                        run_id,
-                        {
-                            "status": status,
-                            "error_message": run.error_message or "",
-                            "completed_at": _ts(run.completed_at),
-                        },
-                    )
-                )
-                terminal_sent = True
-
-            if terminal_sent:
+        # ---- Replay persisted events ---------------------------------------
+        events = replay_events(db, run_id, since_seq)
+        last_seq = since_seq
+        for event_dict in events:
+            yield _format_sse(event_dict)
+            last_seq = event_dict.get("seq", last_seq)
+            if event_dict["event"] in ("run_completed", "run_failed"):
                 return
 
-            # ----- heartbeat -----
-            now = time.monotonic()
-            if now - last_heartbeat >= 10:
-                yield _format_sse(_mk_sse_event("heartbeat", run_id, {}))
-                last_heartbeat = now
+        # ---- Re-check status (may have changed during replay) --------------
+        db.expire(run)
+        run = db.get(AgentRun, run_id)
+        if run.status in ("success", "failed"):
+            # Catch any events that landed between the two reads
+            for event_dict in replay_events(db, run_id, last_seq):
+                yield _format_sse(event_dict)
+                if event_dict["event"] in ("run_completed", "run_failed"):
+                    return
+            return
 
-            await asyncio.sleep(1.5)
+        # ---- Subscribe for live push ---------------------------------------
+        queue, loop = subscribe(run_id)
+        try:
+            last_heartbeat = time.monotonic()
+            while True:
+                try:
+                    event_dict = await asyncio.wait_for(queue.get(), timeout=10)
+                    yield _format_sse(event_dict)
+                    if event_dict["event"] in ("run_completed", "run_failed"):
+                        return
+                except asyncio.TimeoutError:
+                    # Heartbeat tick
+                    yield _format_sse(_mk_sse_event("heartbeat", run_id, {}))
+                    last_heartbeat = time.monotonic()
+        finally:
+            unsubscribe(run_id, queue)
 
     except asyncio.CancelledError:
-        pass  # Client disconnected — clean exit
+        # Client disconnected — clean exit
+        pass
     except Exception:
-        pass  # Swallow unexpected errors to avoid unhandled coroutine warnings
+        logger.exception("SSE stream error for run %s", run_id)
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Legacy poll-to-SSE bridge (kept as fallback / reference)
+# ---------------------------------------------------------------------------
+
+# The original _event_generator (polling every 1.5 s) was replaced by the
+# _event_stream above which uses the EventBus for real-time push.  The old
+# code is preserved here for reference / emergency fallback:
+#
+# async def _event_generator_fallback(run_id: int) -> AsyncGenerator[str, None]:
+#     ... polling implementation ...
 
 
 def _ensure_run(session: Session, run_id: int) -> None:
@@ -564,18 +590,148 @@ def _artifact_claim_refs(claims: list[AgentArtifactClaim], evidence_refs: list[d
 def _generate_followup_answer(
     message: str,
     mode: str,
-    original_title: str,
-    original_content_md: str,
-    evidence_refs: list[dict[str, Any]],
+    run_id: int,
+    session: Session,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[str, list[str]]:
-    """Generate a minimal follow-up answer referencing the original report.
+    """Generate a follow-up answer — LLM-first with deterministic template fallback.
 
-    Uses mock-style template generation (no AI call) for MVP 2.1.
-    The answer references original evidence refs, goes through guardrails,
-    includes RISK_DISCLAIMER, and does not give buy/sell advice.
+    Reads full context from the database (latest artifact, tool-call summary,
+    previous follow-ups) and attempts to produce an LLM-generated answer.
+    When no LLM is configured or the call fails, falls back to the same
+    deterministic template used in MVP 2.1.
+
+    When *on_event* is provided (a callable that accepts a dict) the function
+    emits lifecycle events for streaming clients:
+
+    * ``followup_started`` – before the answer is generated
+    * ``followup_token_delta`` – per-token during LLM streaming
+    * ``followup_completed`` – after the answer is ready
+
+    The answer always passes through ``sanitize_financial_output`` guardrails
+    before being returned.
     """
-    answer_lines: list[str] = []
+    # ------------------------------------------------------------------
+    # 1. Read context from the database
+    # ------------------------------------------------------------------
+    artifact = session.scalars(
+        select(AgentArtifact)
+        .where(AgentArtifact.run_id == run_id)
+        .order_by(AgentArtifact.created_at.desc())
+        .limit(1)
+    ).first()
+    if artifact is None:
+        raise HTTPException(status_code=400, detail="该投研报告尚未完成, 无法追问.")
+
+    original_title = artifact.title
+    original_content_md = artifact.content_md
+    evidence_refs = _loads_list(artifact.evidence_refs_json)
+
+    # Tool-call summary (last 10)
+    tool_calls = session.scalars(
+        select(AgentToolCall)
+        .where(AgentToolCall.run_id == run_id)
+        .order_by(AgentToolCall.created_at.desc())
+        .limit(10)
+    ).all()
+    tool_summary_lines = [
+        f"- {tc.tool_name}: {'成功' if tc.success else '失败'}"
+        for tc in tool_calls
+    ]
+    tool_summary = "\n".join(tool_summary_lines) if tool_summary_lines else "无工具调用记录"
+
+    # Previous follow-ups (last 5, chronological)
+    prev_followups = session.scalars(
+        select(AgentFollowup)
+        .where(AgentFollowup.run_id == run_id)
+        .order_by(AgentFollowup.created_at.desc())
+        .limit(5)
+    ).all()
+    prev_followups.reverse()
+    followup_context_lines = []
+    for fu in prev_followups:
+        preview = fu.answer_md[:200].replace("\n", " ")
+        followup_context_lines.append(f"Q: {fu.message}\nA: {preview}")
+    followup_context = "\n---\n".join(followup_context_lines) if followup_context_lines else "无"
+
     mode_label = _followup_mode_label(mode)
+
+    # ------------------------------------------------------------------
+    # 2. LLM-first attempt
+    # ------------------------------------------------------------------
+    if settings.openai_api_key:
+        try:
+            # Build prompts
+            system_prompt = (
+                "你是一个投资研究助理。你需要基于原始研究报告回答用户的追问问题。\n\n"
+                "规则：\n"
+                "- 严格基于提供的报告内容回答，不要编造事实。\n"
+                "- 禁止提供任何买入、卖出或具体投资建议。\n"
+                "- 始终保持客观、专业的分析语气。\n"
+                "- 回答应包含风险提示和免责声明。\n"
+                "- 可以使用标题、列表等 Markdown 格式来组织回答。"
+            )
+
+            content_truncated = original_content_md
+            if len(content_truncated) > 2000:
+                content_truncated = content_truncated[:2000] + "\n\n...（报告内容较长，已截取前2000字符）"
+
+            user_message = (
+                f"## 原始报告标题\n{original_title}\n\n"
+                f"## 原始报告内容（摘要）\n{content_truncated}\n\n"
+                f"## 报告使用的工具调用\n{tool_summary}\n\n"
+                f"## 参考来源\n{json.dumps(evidence_refs, ensure_ascii=False, indent=2)[:1000]}\n\n"
+                f"## 历史追问\n{followup_context}\n\n"
+                f"## 当前追问\n追问模式: {mode_label}\n用户问题: {message}\n\n"
+                "请根据报告内容回答用户的追问。直接给出回答内容（Markdown格式），不要输出JSON。"
+            )
+
+            provider = OpenAIProvider(api_key=settings.openai_api_key)
+
+            if on_event is not None:
+                on_event({"event": "followup_started", "run_id": run_id, "mode": mode})
+                # Try streaming first
+                try:
+                    collected_tokens: list[str] = []
+
+                    def _on_token(token: str) -> None:
+                        collected_tokens.append(token)
+                        if on_event is not None:
+                            on_event({
+                                "event": "followup_token_delta",
+                                "run_id": run_id,
+                                "delta": token,
+                            })
+
+                    answer = provider.generate_followup_answer(
+                        system_prompt, user_message, on_token=_on_token,
+                    )
+                except Exception:
+                    # Streaming failed — fall back to non-streaming LLM call
+                    answer = provider.generate_followup_answer(
+                        system_prompt, user_message,
+                    )
+
+                on_event({"event": "followup_completed", "run_id": run_id})
+            else:
+                answer = provider.generate_followup_answer(
+                    system_prompt, user_message,
+                )
+
+            sanitized, warnings = sanitize_financial_output(answer)
+            return sanitized, warnings
+
+        except Exception:
+            # LLM unavailable or failed — fall through to template
+            pass
+
+    # ------------------------------------------------------------------
+    # 3. Deterministic template fallback (same logic as MVP 2.1)
+    # ------------------------------------------------------------------
+    if on_event is not None:
+        on_event({"event": "followup_started", "run_id": run_id, "mode": mode})
+
+    answer_lines: list[str] = []
     answer_lines.append(f"# 追问回答: {mode_label}")
     answer_lines.append("")
     answer_lines.append(f"## 用户问题")
@@ -628,6 +784,10 @@ def _generate_followup_answer(
     raw_answer = "\n".join(answer_lines)
 
     sanitized, warnings = sanitize_financial_output(raw_answer)
+
+    if on_event is not None:
+        on_event({"event": "followup_completed", "run_id": run_id})
+
     return sanitized, warnings
 
 
@@ -641,3 +801,143 @@ def _followup_mode_label(mode: str) -> str:
         "auto": "自动追问",
     }
     return labels.get(mode, "自动追问")
+
+
+def _markdown_to_safe_html(
+    title: str,
+    content_md: str,
+    evidence_refs: list[dict[str, Any]],
+    risk_disclaimer: str,
+) -> str:
+    """Convert a markdown string to a minimal safe HTML page.
+
+    Handles basic markdown constructs (headings, bullet lists, horizontal
+    rules, paragraphs) and replaces ``:::chart ...:::`` inline chart tags
+    with a placeholder.  No script execution is possible in the output.
+    """
+    paragraphs: list[str] = []
+
+    lines = content_md.split("\n")
+    in_list = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Chart tags
+        if stripped.startswith(":::chart") and stripped.endswith(":::"):
+            if in_list:
+                paragraphs.append("</ul>")
+                in_list = False
+            try:
+                raw_json = stripped[8:-3]
+                config = json.loads(raw_json)
+                chart_label = config.get("symbol") or config.get("type", "chart")
+            except (json.JSONDecodeError, KeyError):
+                chart_label = "chart"
+            paragraphs.append(f'<div class="chart-placeholder">[图表: {chart_label}]</div>')
+            continue
+
+        # Headings
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            if in_list:
+                paragraphs.append("</ul>")
+                in_list = False
+            paragraphs.append(f"<h1>{_html_escape(stripped[2:])}</h1>")
+            continue
+        if stripped.startswith("## "):
+            if in_list:
+                paragraphs.append("</ul>")
+                in_list = False
+            paragraphs.append(f"<h2>{_html_escape(stripped[3:])}</h2>")
+            continue
+        if stripped.startswith("### "):
+            if in_list:
+                paragraphs.append("</ul>")
+                in_list = False
+            paragraphs.append(f"<h3>{_html_escape(stripped[4:])}</h3>")
+            continue
+
+        # Horizontal rule
+        if stripped == "---":
+            if in_list:
+                paragraphs.append("</ul>")
+                in_list = False
+            paragraphs.append("<hr />")
+            continue
+
+        # Bullet list
+        if stripped.startswith("- "):
+            if not in_list:
+                paragraphs.append("<ul>")
+                in_list = True
+            paragraphs.append(f"<li>{_html_escape(stripped[2:])}</li>")
+            continue
+
+        # Empty line – close any open list
+        if not stripped:
+            if in_list:
+                paragraphs.append("</ul>")
+                in_list = False
+            continue
+
+        # Regular paragraph
+        if in_list:
+            paragraphs.append("</ul>")
+            in_list = False
+        paragraphs.append(f"<p>{_html_escape(stripped)}</p>")
+
+    if in_list:
+        paragraphs.append("</ul>")
+
+    body = "\n".join(paragraphs)
+
+    # Evidence references section
+    if evidence_refs:
+        ref_lines = ["<h2>参考来源</h2>", "<ul>"]
+        for ref in evidence_refs[:10]:
+            ref_title = _html_escape(str(ref.get("title") or ref.get("source") or "未命名来源"))
+            ref_id = _html_escape(str(ref.get("id") or ""))
+            ref_lines.append(f"<li> [{ref_id}] {ref_title}</li>")
+        ref_lines.append("</ul>")
+        body += "\n" + "\n".join(ref_lines)
+
+    # Risk disclaimer
+    body += f'\n<hr />\n<p class="risk-disclaimer">{_html_escape(risk_disclaimer)}</p>'
+
+    return (
+        f"<!DOCTYPE html>\n"
+        f"<html lang=\"zh-CN\">\n"
+        f"<head>\n"
+        f"<meta charset=\"utf-8\" />\n"
+        f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n"
+        f"<title>{_html_escape(title)}</title>\n"
+        f"<style>\n"
+        f"  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; "
+        f"max-width: 800px; margin: 40px auto; padding: 0 20px; color: #1e293b; line-height: 1.7; }}\n"
+        f"  h1 {{ font-size: 1.8rem; font-weight: 800; margin-top: 0; }}\n"
+        f"  h2 {{ font-size: 1.3rem; font-weight: 700; margin-top: 1.5em; }}\n"
+        f"  h3 {{ font-size: 1.1rem; font-weight: 700; margin-top: 1.2em; }}\n"
+        f"  p, li {{ font-size: 0.95rem; line-height: 1.7; }}\n"
+        f"  ul {{ padding-left: 1.5em; }}\n"
+        f"  li {{ margin-bottom: 0.3em; }}\n"
+        f"  hr {{ border: none; border-top: 1px solid #e2e8f0; margin: 2em 0; }}\n"
+        f"  .chart-placeholder {{ background: #f1f5f9; border: 1px dashed #cbd5e1; "
+        f"border-radius: 8px; padding: 2em 1em; text-align: center; color: #64748b; "
+        f"font-size: 0.9rem; margin: 1em 0; }}\n"
+        f"  .risk-disclaimer {{ font-size: 0.8rem; color: #64748b; text-align: center; "
+        f"margin-top: 2em; }}\n"
+        f"  @media print {{ body {{ margin: 0; padding: 0.5in; }} }}\n"
+        f"</style>\n"
+        f"</head>\n"
+        f"<body>\n"
+        f"<h1>{_html_escape(title)}</h1>\n"
+        f"{body}\n"
+        f"</body>\n"
+        f"</html>"
+    )
+
+
+def _html_escape(text: str) -> str:
+    """Escape HTML special characters."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+

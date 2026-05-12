@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from app.agent.schemas import AgentTaskType
@@ -26,6 +28,28 @@ class MockRuntimeAdapter(RuntimeAdapter):
         if task_type == AgentTaskType.DAILY_MARKET_BRIEF:
             return self._daily_brief(prompt, context, skill_template)
         return self._stock_report(prompt, context, skill_template)
+
+    async def stream_run(
+        self,
+        prompt: str,
+        context: dict[str, Any],
+        tools: dict[str, Any],
+        skill_template: str,
+        on_event: Callable[[str, dict[str, Any]], Any] | None = None,
+    ) -> AgentRuntimeResult:
+        result = self.run(prompt, context, tools, skill_template)
+
+        if on_event:
+            content = result.content_md
+            paragraphs = content.split("\n\n")
+            for para in paragraphs:
+                stripped = para.strip()
+                if not stripped:
+                    continue
+                on_event("token_delta", {"delta": stripped + "\n\n"})
+                await asyncio.sleep(0)
+
+        return result
 
     def _stock_report(self, prompt: str, context: dict[str, Any], _: str) -> AgentRuntimeResult:
         stock = _tool_data(context, "market.get_stock_basic")

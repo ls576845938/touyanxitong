@@ -1453,6 +1453,7 @@ export type AgentSkill = {
 export type AgentSSEEvent = {
   event: string;
   run_id: number;
+  seq?: number;
   timestamp: string;
   payload: Record<string, unknown>;
 };
@@ -1706,11 +1707,18 @@ export const api = {
     owner_user_id?: string | null;
     is_system?: boolean;
   }) => postJson<AgentSkill>("/api/agent/skills", payload),
-  agentRunEvents: (runId: number) => new EventSource(`${API_BASE_URL}/api/agent/runs/${runId}/events`),
+  agentRunEvents: (runId: number, sinceSeq?: number) => {
+    const params = sinceSeq != null ? `?since_seq=${sinceSeq}` : '';
+    return new EventSource(`${API_BASE_URL}/api/agent/runs/${runId}/events${params}`);
+  },
   agentRunFollowup: (runId: number, payload: AgentFollowupRequest) =>
     postJson<AgentFollowupResponse>(`/api/agent/runs/${runId}/followups`, payload),
   agentRunMessages: (runId: number) =>
     getJson<AgentMessage[]>(`/api/agent/runs/${runId}/messages`, { cacheMs: 0 }),
+  // Export URLs (not JSON endpoints -- direct download / open in tab)
+  agentRunExportMarkdownUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/markdown`,
+  agentRunExportHtmlUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/html`,
+  agentRunExportPrintUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/print`,
 };
 
 
