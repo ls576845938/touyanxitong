@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import Base, DataSourceRun, Industry, IndustryHeat, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal
+from app.db.models import Base, DataIngestionTask, DataSourceRun, Industry, IndustryHeat, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal, utcnow
 from app.db.session import get_session
 from app.data_sources.mock_data import MockMarketDataClient
 from app.main import app
@@ -561,6 +561,141 @@ def test_research_hot_terms_contract_and_source_status(tmp_path) -> None:
         assert invalid.status_code == 400
     finally:
         app.dependency_overrides.clear()
+
+
+def test_data_quality_backfill_plan_surfaces_segment_candidates_and_next_actions(tmp_path) -> None:
+    db_path = tmp_path / "backfill_plan.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}, future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add_all(
+            [
+                Stock(
+                    code="GOOD",
+                    name="Good Common Stock",
+                    market="US",
+                    board="nasdaq",
+                    exchange="NASDAQ",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=1000,
+                    float_market_cap=900,
+                ),
+                Stock(
+                    code="COOL",
+                    name="Cooldown Common Stock",
+                    market="US",
+                    board="nyse",
+                    exchange="NYSE",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=900,
+                    float_market_cap=800,
+                ),
+                Stock(
+                    code="00700.HK",
+                    name="腾讯控股",
+                    market="HK",
+                    board="hk_main",
+                    exchange="HKEX",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=1000,
+                    float_market_cap=900,
+                ),
+                Stock(
+                    code="835185",
+                    name="贝特瑞",
+                    market="A",
+                    board="bse",
+                    exchange="BSE",
+                    industry_level1="未分类",
+                    industry_level2="",
+                    asset_type="equity",
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=800,
+                    float_market_cap=700,
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                DataIngestionTask(
+                    task_key="cooldown-us",
+                    task_type="batch",
+                    market="US",
+                    board="all",
+                    source="mock",
+                    status="failed",
+                    error="failed_symbols=[COOL:no_usable_bars]",
+                    finished_at=utcnow(),
+                ),
+                DataIngestionTask(
+                    task_key="provider-hk",
+                    task_type="batch",
+                    market="HK",
+                    board="all",
+                    source="akshare",
+                    status="failed",
+                    error="failed_symbols=[00700.HK:hk_provider_failed]",
+                    finished_at=utcnow(),
+                ),
+                DataIngestionTask(
+                    task_key="provider-bse",
+                    task_type="batch",
+                    market="A",
+                    board="bse",
+                    source="akshare",
+                    status="failed",
+                    error="failed_symbols=[835185:bse_provider_failed]",
+                    finished_at=utcnow(),
+                ),
+            ]
+        )
+        session.commit()
+
+    def override_session():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_session] = override_session
+    client = TestClient(app)
+
+    response = client.get("/api/market/data-quality/backfill-plan?limit_per_segment=5&periods=60")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["focus"] == "US/HK/北交所优先回填"
+    assert [segment["market"] for segment in payload["segments"]] == ["US", "HK", "A"]
+    us_segment, hk_segment, bse_segment = payload["segments"]
+    assert [row["code"] for row in us_segment["candidates"]] == ["GOOD"]
+    assert us_segment["cooldown_blocked_codes"] == ["COOL"]
+    assert us_segment["next_action"]["kind"] == "queue_backfill"
+    assert hk_segment["provider_failed_codes"] == ["00700.HK"]
+    assert hk_segment["next_action"]["kind"] == "provider_check"
+    assert hk_segment["next_action"]["failed_codes"] == ["00700.HK"]
+    assert bse_segment["board"] == "bse"
+    assert bse_segment["provider_failed_codes"] == ["835185"]
+    assert bse_segment["next_action"]["kind"] == "provider_check"
+    assert bse_segment["next_action"]["failed_codes"] == ["835185"]
+
+    app.dependency_overrides.clear()
 
 
 def test_research_hot_terms_refresh_endpoint(monkeypatch, tmp_path) -> None:

@@ -539,9 +539,19 @@ def _quality_backfill_plan(session: Session, *, limit_per_segment: int, periods:
                 "stats": stats,
                 "candidate_count": len(candidates),
                 "candidates": candidates,
+                "cooldown_blocked_codes": _segment_cooldown_blocked_codes(session, market=market, board=board),
+                "provider_failed_codes": _segment_provider_failed_codes(session, market=market, board=board),
                 "queue_payload": queue_payload,
                 "queue_api": "/api/market/ingestion-tasks/backfill",
                 "queue_command": _queue_backfill_command(queue_payload),
+                "next_action": _quality_focus_next_action(
+                    session,
+                    market=market,
+                    board=board,
+                    status=status,
+                    candidates=candidates,
+                    queue_payload=queue_payload,
+                ),
             }
         )
     return {
@@ -645,6 +655,56 @@ def _quality_focus_reason(stats: dict[str, object]) -> str:
 def _queue_backfill_command(payload: dict[str, object]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False)
     return f"curl -X POST http://localhost:8000/api/market/ingestion-tasks/backfill -H 'Content-Type: application/json' -d '{encoded}'"
+
+
+def _quality_focus_next_action(
+    session: Session,
+    *,
+    market: str,
+    board: str,
+    status: str,
+    candidates: list[dict[str, object]],
+    queue_payload: dict[str, object],
+) -> dict[str, object]:
+    blocked_codes = _segment_cooldown_blocked_codes(session, market=market, board=board)
+    provider_failed_codes = _segment_provider_failed_codes(session, market=market, board=board)
+    board_name = board_label(board)
+    market_name = market_label(market)
+    if provider_failed_codes:
+        scope_name = board_name if board != "all" else market_name
+        return {
+            "kind": "provider_check",
+            "message": f"{scope_name} 最近存在 provider 失败；先验证数据源可用性，再对失败标的做单票重试，确认恢复后再执行批量回填。",
+            "failed_codes": provider_failed_codes,
+            "retry_api": "/api/market/ingestion-tasks",
+            "queue_api": "/api/market/ingestion-tasks/backfill",
+            "queue_payload": queue_payload,
+        }
+    if blocked_codes and not candidates:
+        return {
+            "kind": "wait_for_cooldown",
+            "message": f"{board_name if board != 'all' else market_name} 当前候选都被最近失败 cooldown 过滤；先检查失败标的，再等待或单票重试。",
+            "blocked_codes": blocked_codes,
+            "retry_api": "/api/market/ingestion-tasks",
+        }
+    if status == "FAIL":
+        return {
+            "kind": "queue_backfill",
+            "message": f"先按 {market_name}/{board_name} 小批次入队回填，执行后立即复查数据质量。",
+            "queue_api": "/api/market/ingestion-tasks/backfill",
+            "queue_payload": queue_payload,
+        }
+    if status == "WARN":
+        return {
+            "kind": "monitor",
+            "message": f"{market_name}/{board_name} 当前可继续补齐剩余候选，并持续复查覆盖率与真实源占比。",
+            "queue_api": "/api/market/ingestion-tasks/backfill",
+            "queue_payload": queue_payload,
+        }
+    return {
+        "kind": "monitor",
+        "message": f"{market_name}/{board_name} 当前无紧急缺口，保持日常巡检即可。",
+    }
 
 
 @router.get("/research-universe")
@@ -854,6 +914,39 @@ def _recent_unusable_symbols(session: Session, *, limit: int = 200) -> dict[str,
             for code, reason in re.findall(r"([A-Za-z0-9_.-]+):(no_usable_bars|unsupported_daily_bars)", value):
                 reasons.setdefault(code.upper(), reason)
     return reasons
+
+
+def _recent_provider_failed_symbols(session: Session, *, limit: int = 200) -> dict[str, str]:
+    rows = session.execute(
+        select(DataIngestionTask.error, DataIngestionTask.last_error)
+        .where(DataIngestionTask.status.in_(["success", "failed"]))
+        .order_by(DataIngestionTask.finished_at.desc(), DataIngestionTask.id.desc())
+        .limit(limit)
+    ).all()
+    reasons: dict[str, str] = {}
+    for error, last_error in rows:
+        for value in (error or "", last_error or ""):
+            for code, reason in re.findall(r"([A-Za-z0-9_.-]+):(hk_provider_failed|bse_provider_failed)", value):
+                reasons.setdefault(code.upper(), reason)
+    return reasons
+
+
+def _segment_cooldown_blocked_codes(session: Session, *, market: str, board: str) -> list[str]:
+    return _segment_codes_from_reason_map(session, market=market, board=board, reason_map=_recent_unusable_symbols(session))
+
+
+def _segment_provider_failed_codes(session: Session, *, market: str, board: str) -> list[str]:
+    return _segment_codes_from_reason_map(session, market=market, board=board, reason_map=_recent_provider_failed_symbols(session))
+
+
+def _segment_codes_from_reason_map(session: Session, *, market: str, board: str, reason_map: dict[str, str]) -> list[str]:
+    if not reason_map:
+        return []
+    query = select(Stock.code).where(Stock.market == market.upper())
+    if board.lower() != "all":
+        query = query.where(Stock.board == board.lower())
+    segment_codes = {code.upper() for code in session.scalars(query).all()}
+    return sorted(code for code in reason_map if code in segment_codes)
 
 
 def _instrument_payload(stock: Stock, bars_count: int | None = None, latest_trade_date: object | None = None) -> dict[str, object]:

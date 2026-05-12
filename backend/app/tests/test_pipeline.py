@@ -13,7 +13,7 @@ from app.pipeline.industry_mapping_job import run_industry_mapping_job
 from app.pipeline.daily_report_job import run_daily_report_job
 from app.pipeline.evidence_chain_job import run_evidence_chain_job
 from app.pipeline.industry_heat_job import run_industry_heat_job
-from app.pipeline.ingestion_task_service import claim_next_ingestion_task, create_ingestion_task, priority_candidates, run_ingestion_task, run_next_ingestion_task, task_payload
+from app.pipeline.ingestion_task_service import claim_next_ingestion_task, create_ingestion_task, enqueue_ingestion_backfill, priority_candidates, run_ingestion_task, run_next_ingestion_task, task_payload
 from app.pipeline.hot_terms_ingestion_job import run_hot_terms_ingestion_job
 from app.pipeline.market_data_job import run_market_data_job
 from app.pipeline.news_ingestion_job import run_news_ingestion_job
@@ -888,6 +888,171 @@ def test_ingestion_priority_skips_recent_unusable_symbols() -> None:
         candidates = priority_candidates(session, market="A", limit=5, periods=60)
 
         assert {item["code"] for item in candidates} == {"GOOD"}
+
+
+def test_us_priority_candidates_filter_noise_and_recent_failures() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add_all(
+            [
+                Stock(
+                    code="GOOD",
+                    name="Good Common Stock",
+                    market="US",
+                    board="nasdaq",
+                    exchange="NASDAQ",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=1000,
+                    float_market_cap=900,
+                ),
+                Stock(
+                    code="COOL",
+                    name="Cooldown Common Stock",
+                    market="US",
+                    board="nyse",
+                    exchange="NYSE",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=900,
+                    float_market_cap=800,
+                ),
+                Stock(
+                    code="ABCDW",
+                    name="Noise Warrant",
+                    market="US",
+                    board="nasdaq",
+                    exchange="NASDAQ",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=0,
+                    float_market_cap=0,
+                ),
+                Stock(
+                    code="LEVX",
+                    name="Direxion Daily AI Bull 2X Shares",
+                    market="US",
+                    board="amex",
+                    exchange="AMEX",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=1000,
+                    float_market_cap=1000,
+                ),
+            ]
+        )
+        task = create_ingestion_task(session, task_type="batch", market="US", source="mock")
+        task.status = "failed"
+        task.error = "failed_symbols=[COOL:no_usable_bars]"
+        task.finished_at = utcnow()
+        session.add(task)
+        session.commit()
+
+        candidates = priority_candidates(session, market="US", board="all", limit=10, periods=60)
+
+        assert [item["code"] for item in candidates] == ["GOOD"]
+
+
+def test_enqueue_ingestion_backfill_skips_when_pending_queue_is_sufficient() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        create_ingestion_task(session, task_type="batch", market="HK", source="mock")
+        create_ingestion_task(session, task_type="batch", market="HK", source="mock")
+
+        result = enqueue_ingestion_backfill(
+            session,
+            markets=("HK",),
+            source="mock",
+            batches_per_market=2,
+            batch_limit=5,
+            periods=60,
+        )
+
+        assert result["queued_count"] == 0
+        assert result["skipped_count"] == 1
+        assert result["skipped"] == [
+            {"market": "HK", "board": "all", "reason": "pending_queue_already_sufficient", "pending": 2}
+        ]
+
+
+def test_market_data_job_marks_hk_and_bse_provider_failures_with_stable_error_codes() -> None:
+    class ProviderFailureClient:
+        source = "fixture"
+
+        def fetch_stock_list(self, markets=None):
+            return []
+
+        def fetch_daily_bars(self, stock_code, market=None, end_date=None, periods=320):
+            raise RuntimeError("upstream timeout")
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add_all(
+            [
+                Stock(
+                    code="00700.HK",
+                    name="腾讯控股",
+                    market="HK",
+                    board="hk_main",
+                    exchange="HKEX",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=1000,
+                    float_market_cap=900,
+                ),
+                Stock(
+                    code="835185",
+                    name="贝特瑞",
+                    market="A",
+                    board="bse",
+                    exchange="BSE",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=800,
+                    float_market_cap=700,
+                ),
+            ]
+        )
+        session.commit()
+
+        result = run_market_data_job(
+            session,
+            markets=("HK", "A"),
+            max_stocks_per_market=1,
+            periods=60,
+            client=ProviderFailureClient(),
+        )
+
+        assert result["status"] == "failed"
+        assert {"code": "00700.HK", "market": "HK", "error": "hk_provider_failed"} in result["failed_symbols"]
+        assert {"code": "835185", "market": "A", "error": "bse_provider_failed"} in result["failed_symbols"]
 
 
 def test_market_data_job_upserts_duplicate_provider_rows() -> None:

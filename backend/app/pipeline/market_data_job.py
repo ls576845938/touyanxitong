@@ -66,7 +66,7 @@ def run_market_data_job(
                 rows = client.fetch_daily_bars(stock.code, market=stock.market, end_date=end_date, periods=bar_periods)
             except Exception as exc:
                 missing += 1
-                failed_symbols.append({"code": stock.code, "market": stock.market, "error": str(exc)})
+                failed_symbols.append({"code": stock.code, "market": stock.market, "error": _fetch_error_code(stock, exc)})
                 logger.warning("market data fetch failed for {}: {}", stock.code, exc)
                 continue
             if not rows:
@@ -210,6 +210,14 @@ def _dedupe_bar_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         key = (str(item["stock_code"]), item["trade_date"], str(item["source"]))
         keyed[key] = item
     return list(keyed.values())
+
+
+def _fetch_error_code(stock: Stock, exc: Exception) -> str:
+    if stock.market == "HK":
+        return "hk_provider_failed"
+    if stock.market == "A" and stock.board == "bse":
+        return "bse_provider_failed"
+    return str(exc)
 
 
 def _daily_bar_exists(session: Session, item: dict[str, Any]) -> bool:
