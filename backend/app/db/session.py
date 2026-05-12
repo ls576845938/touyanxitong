@@ -17,7 +17,7 @@ from app.db.models import Base
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SQLITE_PATH = BACKEND_DIR / "data" / "alpha_radar.db"
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 @dataclass(frozen=True)
@@ -204,6 +204,11 @@ def _migration_tenbagger_research_loop_schema(_: Engine) -> None:
     """Version marker for thesis and backtest tables created from SQLAlchemy metadata."""
 
 
+def _migration_tenbagger_sniper_schema(target_engine: Engine) -> None:
+    """Add structured tenbagger logic-sniper fields to existing local databases."""
+    _ensure_tenbagger_sniper_columns(target_engine)
+
+
 def _migration_api_performance_indexes(target_engine: Engine) -> None:
     """Add composite indexes for interactive dashboard/API reads."""
     _ensure_api_performance_indexes(target_engine)
@@ -274,6 +279,36 @@ def _ensure_stock_score_confidence_columns(target_engine: Engine) -> None:
         alters.append("ALTER TABLE stock_score ADD COLUMN confidence_level VARCHAR(24) DEFAULT 'unknown'")
     if "confidence_reasons" not in existing:
         alters.append("ALTER TABLE stock_score ADD COLUMN confidence_reasons TEXT DEFAULT '[]'")
+    if alters:
+        with target_engine.begin() as connection:
+            for statement in alters:
+                connection.execute(text(statement))
+
+
+def _ensure_tenbagger_sniper_columns(target_engine: Engine) -> None:
+    inspector = inspect(target_engine)
+    if not inspector.has_table("tenbagger_thesis"):
+        return
+    existing = {column["name"] for column in inspector.get_columns("tenbagger_thesis")}
+    alters: list[str] = []
+    if "anti_thesis_score" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN anti_thesis_score FLOAT DEFAULT 0")
+    if "logic_gate_score" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN logic_gate_score FLOAT DEFAULT 0")
+    if "logic_gate_status" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN logic_gate_status VARCHAR(16) DEFAULT 'WARN'")
+    if "logic_gates" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN logic_gates TEXT DEFAULT '[]'")
+    if "anti_thesis_items" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN anti_thesis_items TEXT DEFAULT '[]'")
+    if "alternative_data_signals" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN alternative_data_signals TEXT DEFAULT '[]'")
+    if "valuation_simulation" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN valuation_simulation TEXT DEFAULT '{}'")
+    if "contrarian_signal" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN contrarian_signal TEXT DEFAULT '{}'")
+    if "sniper_focus" not in existing:
+        alters.append("ALTER TABLE tenbagger_thesis ADD COLUMN sniper_focus TEXT DEFAULT '[]'")
     if alters:
         with target_engine.begin() as connection:
             for statement in alters:
@@ -727,6 +762,7 @@ SCHEMA_MIGRATIONS = [
     SchemaMigration(12, "retail_research_loop_schema", _migration_retail_research_loop_schema),
     SchemaMigration(13, "news_article_hot_terms_trace_columns", _ensure_news_article_hot_terms_trace_columns),
     SchemaMigration(14, "mark_mock_news_synthetic", _migration_mark_mock_news_synthetic),
+    SchemaMigration(15, "tenbagger_sniper_schema", _migration_tenbagger_sniper_schema),
 ]
 
 

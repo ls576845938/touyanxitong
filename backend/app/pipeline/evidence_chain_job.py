@@ -10,11 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.db.models import EvidenceChain, FundamentalMetric, Industry, IndustryHeat, NewsArticle, Stock, StockScore, TrendSignal
 from app.engines.evidence_chain_engine import build_evidence_chain
-from app.pipeline.utils import json_list, latest_trade_date
+from app.pipeline.utils import json_list, latest_available_date, latest_trade_date
 
 
-def run_evidence_chain_job(session: Session, trade_date: date | None = None) -> dict[str, int]:
-    target_date = trade_date or latest_trade_date(session)
+def run_evidence_chain_job(session: Session, trade_date: date | None = None) -> dict[str, int | str]:
+    requested_date = trade_date or latest_trade_date(session)
+    target_date = latest_available_date(session, StockScore.trade_date, requested_date) or requested_date
     scores = session.scalars(select(StockScore).where(StockScore.trade_date == target_date)).all()
     trends = session.scalars(select(TrendSignal).where(TrendSignal.trade_date == target_date)).all()
     industries = session.scalars(select(Industry)).all()
@@ -25,10 +26,10 @@ def run_evidence_chain_job(session: Session, trade_date: date | None = None) -> 
     trend_by_code = {item.stock_code: item for item in trends}
     evidence_codes = set(score_by_code) & set(trend_by_code)
     if not evidence_codes:
-        session.execute(delete(EvidenceChain).where(EvidenceChain.trade_date == target_date))
+        session.execute(delete(EvidenceChain).where(EvidenceChain.trade_date == requested_date))
         session.commit()
         logger.info("evidence chains generated: 0")
-        return {"evidence_chains": 0}
+        return {"evidence_chains": 0, "effective_date": target_date.isoformat()}
     stocks = session.scalars(select(Stock).where(Stock.is_active.is_(True), Stock.code.in_(evidence_codes))).all()
     articles = session.scalars(select(NewsArticle).where(NewsArticle.published_at <= _end_of_day(target_date))).all()
     articles_by_stock: dict[str, list[NewsArticle]] = defaultdict(list)
@@ -75,8 +76,8 @@ def run_evidence_chain_job(session: Session, trade_date: date | None = None) -> 
                 setattr(existing, key, value)
         count += 1
     session.commit()
-    logger.info("evidence chains generated: {}", count)
-    return {"evidence_chains": count}
+    logger.info("evidence chains generated: {} (requested={}, effective={})", count, requested_date, target_date)
+    return {"evidence_chains": count, "effective_date": target_date.isoformat()}
 
 
 def _end_of_day(value: date) -> datetime:

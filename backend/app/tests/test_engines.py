@@ -243,9 +243,84 @@ def test_tenbagger_thesis_identifies_missing_evidence_and_stage() -> None:
     assert thesis.thesis_score >= 70
     assert thesis.stage in {"verification", "candidate"}
     assert thesis.data_gate_status == "PASS"
+    assert thesis.logic_gate_status in {"PASS", "WARN"}
+    assert thesis.logic_gates
+    assert thesis.alternative_data_signals
+    assert thesis.valuation_simulation["valuation_ceiling_status"] in {"room", "balanced", "stretched", "insufficient"}
+    assert thesis.contrarian_signal["label"] in {"cold_asset_reversal_watch", "hot_momentum", "neutral"}
+    assert thesis.anti_thesis_score >= 0
+    assert thesis.sniper_focus
     assert "估值" in " ".join(thesis.missing_evidence)
     assert thesis.source_refs
     assert "十倍股假设分" in thesis.explanation
+    assert "逻辑门控" in thesis.explanation
+
+
+def test_tenbagger_thesis_builds_contrarian_logic_and_tam_ceiling() -> None:
+    stock = SimpleNamespace(
+        code="COLD",
+        name="冷资产样本",
+        asset_type="equity",
+        industry_level1="AI算力",
+        market_cap=520,
+        float_market_cap=430,
+        is_st=False,
+        is_active=True,
+    )
+    score = SimpleNamespace(
+        stock_code="COLD",
+        final_score=78,
+        trend_score=11,
+        risk_penalty=0.4,
+        source_confidence=0.93,
+        data_confidence=0.92,
+        fundamental_confidence=1.0,
+        news_confidence=0.9,
+        evidence_confidence=0.9,
+    )
+    trend = SimpleNamespace(
+        is_breakout_250d=False,
+        is_breakout_120d=False,
+        is_ma_bullish=False,
+        volume_expansion_ratio=0.9,
+        max_drawdown_60d=-0.12,
+    )
+    heat = SimpleNamespace(heat_score=22, heat_change_7d=-8.0, heat_change_30d=-10.0)
+    article = SimpleNamespace(
+        title="AI算力订单增长，客户交付与产能扩张继续验证",
+        summary="光模块和CPO链路出现供应链份额提升迹象",
+        source_url="https://example.com/cold",
+        source="rss",
+        source_kind="rss",
+    )
+    fundamental = SimpleNamespace(
+        revenue_growth_yoy=42.0,
+        profit_growth_yoy=48.0,
+        gross_margin=0.46,
+        roe=0.23,
+        debt_ratio=0.3,
+        cashflow_quality=1.18,
+        report_title="2026Q1",
+        source_url="https://example.com/report",
+        source="fixture",
+    )
+
+    thesis = build_tenbagger_thesis(
+        stock=stock,
+        score=score,
+        trend_signal=trend,
+        industry_heat=heat,
+        articles=[article],
+        trade_date=date(2026, 5, 7),
+        fundamental=fundamental,
+    )
+
+    assert thesis.contrarian_signal["reversal_watch"] is True
+    assert thesis.contrarian_signal["label"] == "cold_asset_reversal_watch"
+    assert thesis.valuation_simulation["tam_assumptions"]["penetration_stage"] in {"0_to_1_validation", "1_to_10_acceleration"}
+    assert thesis.valuation_simulation["scenarios"]
+    assert any(signal["id"] == "order_yield" for signal in thesis.alternative_data_signals)
+    assert all("买入" not in item for item in thesis.sniper_focus)
 
 
 def test_signal_backtest_uses_next_bar_and_groups_results() -> None:

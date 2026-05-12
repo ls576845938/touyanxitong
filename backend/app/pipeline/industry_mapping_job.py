@@ -10,6 +10,7 @@ from app.data_sources.market_classifier import normalize_markets
 from app.data_sources.mock_data import INDUSTRY_SEEDS
 from app.db.models import Industry, IndustryKeyword, Stock
 from app.engines.industry_mapping_engine import (
+    IndustryMappingMatch,
     build_mapping_rules,
     extract_mapping_metadata,
     is_unclassified,
@@ -35,6 +36,7 @@ def run_industry_mapping_job(
     stocks = list(session.scalars(query.order_by(Stock.market, Stock.code)).all())
 
     mapped = 0
+    fallback_mapped = 0
     unmapped = 0
     skipped_strong = 0
     below_confidence = 0
@@ -48,12 +50,20 @@ def run_industry_mapping_job(
                 continue
             match = map_stock_industry(stock, rules)
             if match is None:
+                match = _fallback_match(stock)
+                fallback_mapped += 1
+            elif match.confidence < min_confidence:
+                fallback = _fallback_match(stock)
+                if fallback is None:
+                    below_confidence += 1
+                    continue
+                match = fallback
+                fallback_mapped += 1
+            else:
+                mapped += 1
+            if match is None:
                 unmapped += 1
                 continue
-            if match.confidence < min_confidence:
-                below_confidence += 1
-                continue
-            mapped += 1
             by_industry[match.industry] = by_industry.get(match.industry, 0) + 1
             if len(samples) < 20:
                 samples.append(
@@ -79,7 +89,7 @@ def run_industry_mapping_job(
                 effective_source="rules-v1",
                 markets=market_scope,
                 status="success",
-                rows_updated=mapped,
+                rows_updated=mapped + fallback_mapped,
                 rows_total=len(stocks),
                 started_at=started_at,
             )
@@ -100,8 +110,9 @@ def run_industry_mapping_job(
 
     result = {
         "total_stocks": len(stocks),
-        "eligible_unclassified": mapped + unmapped + below_confidence,
+        "eligible_unclassified": mapped + fallback_mapped + unmapped + below_confidence,
         "mapped": mapped,
+        "fallback_mapped": fallback_mapped,
         "unmapped": unmapped,
         "below_confidence": below_confidence,
         "skipped_strong": skipped_strong,
@@ -178,3 +189,22 @@ def _ensure_industry(session: Session, industry_name: str) -> None:
     if session.scalar(select(Industry).where(Industry.name == industry_name)) is None:
         session.add(Industry(name=industry_name, description="由行业映射规则自动补充。"))
         session.flush()
+
+
+def _fallback_match(stock: Stock) -> IndustryMappingMatch:
+    market = str(stock.market or "").upper() or "UNKNOWN"
+    confidence = 0.18
+    reason = (
+        "低置信度兜底分类到综合行业：规则库、名称模式和概念字段均未给出可验证行业，"
+        "该标签仅用于避免页面进入未分类桶，不作为强行业判断。"
+    )
+    return IndustryMappingMatch(
+        industry="综合行业",
+        confidence=confidence,
+        reason=reason,
+        matched_keywords=("fallback_unclassified",),
+        evidence=(
+            {"field": "market", "keyword": market},
+            {"field": "name", "keyword": str(stock.name or "")[:32]},
+        ),
+    )

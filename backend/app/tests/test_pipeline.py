@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.data_sources.hot_terms_client import HOT_TERMS_SOURCE_MAP, HotTermsEndpoint, HotTermsSourceItem, HotTermsSourceResult, _parse_html_payload
 from app.data_sources.mock_data import MockMarketDataClient
-from app.db.models import Base, DailyBar, DailyReport, DataIngestionBatch, DataSourceRun, EvidenceChain, FundamentalMetric, Industry, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal, utcnow
+from app.db.models import Base, DailyBar, DailyReport, DataIngestionBatch, DataSourceRun, EvidenceChain, FundamentalMetric, Industry, IndustryKeyword, NewsArticle, Stock, StockScore, TenbaggerThesis, TrendSignal, utcnow
 from app.pipeline.industry_mapping_job import run_industry_mapping_job
 from app.pipeline.daily_report_job import run_daily_report_job
 from app.pipeline.evidence_chain_job import run_evidence_chain_job
@@ -21,6 +21,7 @@ from app.pipeline.retail_research_daily import retail_research_payload
 from app.pipeline.sector_industry_mapping_job import run_sector_industry_mapping_job
 from app.pipeline.stock_universe_job import run_stock_universe_job
 from app.pipeline.tenbagger_score_job import run_tenbagger_score_job
+from app.pipeline.tenbagger_thesis_job import run_tenbagger_thesis_job
 from app.pipeline.trend_signal_job import run_trend_signal_job
 
 
@@ -189,6 +190,7 @@ def test_daily_pipeline_jobs_are_idempotent() -> None:
         run_trend_signal_job(session)
         run_tenbagger_score_job(session)
         run_evidence_chain_job(session)
+        run_tenbagger_thesis_job(session)
         run_daily_report_job(session)
 
         stock_count = len(session.scalars(select(Stock)).all())
@@ -196,6 +198,7 @@ def test_daily_pipeline_jobs_are_idempotent() -> None:
         a_boards = {row.board for row in session.scalars(select(Stock).where(Stock.market == "A")).all()}
         trend_count = len(session.scalars(select(TrendSignal)).all())
         score_count = len(session.scalars(select(StockScore)).all())
+        thesis_count = len(session.scalars(select(TenbaggerThesis)).all())
         evidence_count = len(session.scalars(select(EvidenceChain)).all())
         fundamental_count = len(session.scalars(select(FundamentalMetric)).all())
         report_count = len(session.scalars(select(DailyReport)).all())
@@ -208,6 +211,7 @@ def test_daily_pipeline_jobs_are_idempotent() -> None:
         assert {"main", "chinext", "star", "bse"}.issubset(a_boards)
         assert trend_count == stock_count
         assert score_count == stock_count
+        assert thesis_count == stock_count
         assert evidence_count == stock_count
         assert fundamental_count == stock_count
         assert report_count == 1
@@ -225,10 +229,12 @@ def test_daily_pipeline_jobs_are_idempotent() -> None:
         run_trend_signal_job(session)
         run_tenbagger_score_job(session)
         run_evidence_chain_job(session)
+        run_tenbagger_thesis_job(session)
         run_daily_report_job(session)
 
         assert len(session.scalars(select(TrendSignal)).all()) == trend_count
         assert len(session.scalars(select(StockScore)).all()) == score_count
+        assert len(session.scalars(select(TenbaggerThesis)).all()) == thesis_count
         assert len(session.scalars(select(EvidenceChain)).all()) == evidence_count
         assert len(session.scalars(select(FundamentalMetric)).all()) == fundamental_count
         assert len(session.scalars(select(DailyReport)).all()) == report_count
@@ -238,6 +244,56 @@ def test_daily_pipeline_jobs_are_idempotent() -> None:
         assert limited["stocks_processed"] == 1
         assert limited["skipped_by_limit"] >= 1
         assert limited["periods"] == 10
+
+
+def test_downstream_jobs_fall_back_to_latest_available_signal_snapshot() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        run_stock_universe_job(session)
+        run_market_data_job(session, client=RealSourceMockMarketDataClient())
+        run_news_ingestion_job(session)
+        run_industry_heat_job(session)
+        run_trend_signal_job(session)
+
+        signal_date = session.scalars(select(TrendSignal.trade_date).order_by(TrendSignal.trade_date.desc()).limit(1)).first()
+        assert signal_date is not None
+        sparse_date = signal_date + timedelta(days=3)
+        stock = session.scalars(select(Stock).order_by(Stock.code).limit(1)).first()
+        assert stock is not None
+        session.add(
+            DailyBar(
+                stock_code=stock.code,
+                trade_date=sparse_date,
+                open=10,
+                high=11,
+                low=9,
+                close=10.5,
+                pre_close=10,
+                volume=1000,
+                amount=10_000,
+                pct_chg=5,
+                adj_factor=1,
+                source="sparse_fixture",
+                source_kind="mock",
+                source_confidence=0.2,
+            )
+        )
+        session.commit()
+
+        score_result = run_tenbagger_score_job(session)
+        evidence_result = run_evidence_chain_job(session)
+        thesis_result = run_tenbagger_thesis_job(session)
+        report_result = run_daily_report_job(session)
+
+        assert score_result["effective_date"] == signal_date.isoformat()
+        assert evidence_result["effective_date"] == signal_date.isoformat()
+        assert thesis_result["effective_date"] == signal_date.isoformat()
+        assert report_result["report_date"] == signal_date.isoformat()
+        assert session.scalar(select(StockScore).where(StockScore.trade_date == sparse_date)) is None
+        assert session.scalar(select(EvidenceChain).where(EvidenceChain.trade_date == sparse_date)) is None
 
 
 def test_news_ingestion_persists_source_metadata() -> None:

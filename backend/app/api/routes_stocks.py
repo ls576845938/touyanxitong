@@ -12,6 +12,7 @@ from app.db.session import get_session
 from app.engines.data_gate_engine import assess_research_data_gate
 from app.pipeline.ingestion_task_service import create_ingestion_task, run_ingestion_task, source_comparison, task_payload
 from app.pipeline.research_universe import eligible_stock_codes
+from app.services.stock_resolver import resolve_stock
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
 
@@ -91,12 +92,13 @@ def trend_pool(
 
 @router.get("/{code}/history")
 def stock_history(code: str, session: Session = Depends(get_session)) -> dict[str, object]:
-    stock = session.scalar(select(Stock).where(Stock.code == code))
+    stock = resolve_stock(session, code)
     if stock is None:
         raise HTTPException(status_code=404, detail="stock not found")
+    resolved_code = stock.code
 
     scores = list(
-        session.scalars(select(StockScore).where(StockScore.stock_code == code).order_by(StockScore.trade_date)).all()
+        session.scalars(select(StockScore).where(StockScore.stock_code == resolved_code).order_by(StockScore.trade_date)).all()
     )
     if not scores:
         return {
@@ -109,13 +111,13 @@ def stock_history(code: str, session: Session = Depends(get_session)) -> dict[st
     trends = {
         row.trade_date: row
         for row in session.scalars(
-            select(TrendSignal).where(TrendSignal.stock_code == code, TrendSignal.trade_date.in_(trade_dates))
+            select(TrendSignal).where(TrendSignal.stock_code == resolved_code, TrendSignal.trade_date.in_(trade_dates))
         ).all()
     }
     evidence_rows = {
         row.trade_date: row
         for row in session.scalars(
-            select(EvidenceChain).where(EvidenceChain.stock_code == code, EvidenceChain.trade_date.in_(trade_dates))
+            select(EvidenceChain).where(EvidenceChain.stock_code == resolved_code, EvidenceChain.trade_date.in_(trade_dates))
         ).all()
     }
 
@@ -165,27 +167,28 @@ def stock_history(code: str, session: Session = Depends(get_session)) -> dict[st
 
 @router.get("/{code}/evidence")
 def stock_evidence(code: str, session: Session = Depends(get_session)) -> dict[str, object]:
-    stock = session.scalar(select(Stock).where(Stock.code == code))
+    stock = resolve_stock(session, code)
     if stock is None:
         raise HTTPException(status_code=404, detail="stock not found")
+    resolved_code = stock.code
     evidence = session.scalars(
-        select(EvidenceChain).where(EvidenceChain.stock_code == code).order_by(EvidenceChain.trade_date.desc()).limit(1)
+        select(EvidenceChain).where(EvidenceChain.stock_code == resolved_code).order_by(EvidenceChain.trade_date.desc()).limit(1)
     ).first()
     score = session.scalars(
-        select(StockScore).where(StockScore.stock_code == code).order_by(StockScore.trade_date.desc()).limit(1)
+        select(StockScore).where(StockScore.stock_code == resolved_code).order_by(StockScore.trade_date.desc()).limit(1)
     ).first()
     trend = session.scalars(
-        select(TrendSignal).where(TrendSignal.stock_code == code).order_by(TrendSignal.trade_date.desc()).limit(1)
+        select(TrendSignal).where(TrendSignal.stock_code == resolved_code).order_by(TrendSignal.trade_date.desc()).limit(1)
     ).first()
     fundamental = None
     if score is not None:
         fundamental = session.scalars(
             select(FundamentalMetric)
-            .where(FundamentalMetric.stock_code == code, FundamentalMetric.report_date <= score.trade_date)
+            .where(FundamentalMetric.stock_code == resolved_code, FundamentalMetric.report_date <= score.trade_date)
             .order_by(FundamentalMetric.report_date.desc())
             .limit(1)
         ).first()
-    research_eligible = code in eligible_stock_codes(session, stocks=[stock])
+    research_eligible = resolved_code in eligible_stock_codes(session, stocks=[stock])
     return {
         "stock": _stock_payload(stock),
         "score": {
@@ -231,8 +234,10 @@ def stock_evidence(code: str, session: Session = Depends(get_session)) -> dict[s
 
 @router.get("/{code}/bars")
 def stock_bars(code: str, limit: int = Query(default=260, le=1000), session: Session = Depends(get_session)) -> list[dict[str, object]]:
+    stock = resolve_stock(session, code)
+    resolved_code = stock.code if stock else code
     rows = session.scalars(
-        select(DailyBar).where(DailyBar.stock_code == code).order_by(DailyBar.trade_date.desc()).limit(limit)
+        select(DailyBar).where(DailyBar.stock_code == resolved_code).order_by(DailyBar.trade_date.desc()).limit(limit)
     ).all()
     return [
         {
@@ -250,10 +255,10 @@ def stock_bars(code: str, limit: int = Query(default=260, le=1000), session: Ses
 
 @router.get("/{code}/source-comparison")
 def stock_source_comparison(code: str, session: Session = Depends(get_session)) -> dict[str, object]:
-    stock = session.scalar(select(Stock).where(Stock.code == code))
+    stock = resolve_stock(session, code)
     if stock is None:
         raise HTTPException(status_code=404, detail="stock not found")
-    payload = source_comparison(session, code)
+    payload = source_comparison(session, stock.code)
     payload["stock"] = _stock_payload(stock)
     return payload
 
@@ -265,7 +270,7 @@ def ingest_stock(
     periods: int = Query(default=320, ge=60, le=1000),
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
-    stock = session.scalar(select(Stock).where(Stock.code == code))
+    stock = resolve_stock(session, code)
     if stock is None:
         raise HTTPException(status_code=404, detail="stock not found")
     task = create_ingestion_task(

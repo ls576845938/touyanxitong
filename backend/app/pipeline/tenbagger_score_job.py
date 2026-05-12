@@ -10,19 +10,20 @@ from sqlalchemy.orm import Session
 
 from app.db.models import FundamentalMetric, Industry, IndustryHeat, NewsArticle, Stock, StockScore, TrendSignal
 from app.engines.tenbagger_score_engine import calculate_stock_scores
-from app.pipeline.utils import json_list, latest_trade_date
+from app.pipeline.utils import json_list, latest_available_date, latest_trade_date
 
 
-def run_tenbagger_score_job(session: Session, trade_date: date | None = None) -> dict[str, int]:
-    target_date = trade_date or latest_trade_date(session)
+def run_tenbagger_score_job(session: Session, trade_date: date | None = None) -> dict[str, int | str]:
+    requested_date = trade_date or latest_trade_date(session)
+    target_date = latest_available_date(session, TrendSignal.trade_date, requested_date) or requested_date
     trends = session.scalars(select(TrendSignal).where(TrendSignal.trade_date == target_date)).all()
     trend_by_code = {item.stock_code: item for item in trends}
     trend_codes = set(trend_by_code)
     if not trend_codes:
-        session.execute(delete(StockScore).where(StockScore.trade_date == target_date))
+        session.execute(delete(StockScore).where(StockScore.trade_date == requested_date))
         session.commit()
         logger.info("tenbagger early signal scores calculated: 0")
-        return {"stock_scores": 0}
+        return {"stock_scores": 0, "effective_date": target_date.isoformat()}
     stocks = session.scalars(select(Stock).where(Stock.is_active.is_(True), Stock.code.in_(trend_codes))).all()
     industries = session.scalars(select(Industry)).all()
     industry_name_by_id = {item.id: item.name for item in industries}
@@ -58,8 +59,13 @@ def run_tenbagger_score_job(session: Session, trade_date: date | None = None) ->
             for key, value in payload.items():
                 setattr(existing, key, value)
     session.commit()
-    logger.info("tenbagger early signal scores calculated: {}", len(metrics))
-    return {"stock_scores": len(metrics)}
+    logger.info(
+        "tenbagger early signal scores calculated: {} (requested={}, effective={})",
+        len(metrics),
+        requested_date,
+        target_date,
+    )
+    return {"stock_scores": len(metrics), "effective_date": target_date.isoformat()}
 
 
 def _end_of_day(value: date) -> datetime:

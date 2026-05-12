@@ -15,6 +15,13 @@ def latest_trade_date(session: Session) -> date:
     return value or date.today()
 
 
+def latest_available_date(session: Session, date_column: Any, target_date: date | None = None) -> date | None:
+    query = select(date_column).distinct()
+    if target_date is not None:
+        query = query.where(date_column <= target_date)
+    return session.scalars(query.order_by(date_column.desc()).limit(1)).first()
+
+
 def json_list(value: str | list[Any] | None) -> list[Any]:
     if value is None:
         return []

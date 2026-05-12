@@ -17,6 +17,7 @@ from app.pipeline.market_data_job import run_market_data_job
 from app.pipeline.news_ingestion_job import run_news_ingestion_job
 from app.pipeline.stock_universe_job import run_stock_universe_job
 from app.pipeline.tenbagger_score_job import run_tenbagger_score_job
+from app.pipeline.tenbagger_thesis_job import run_tenbagger_thesis_job
 from app.pipeline.trend_signal_job import run_trend_signal_job
 
 
@@ -46,6 +47,7 @@ def seed_app_database(Session: sessionmaker) -> None:
         run_trend_signal_job(session)
         run_tenbagger_score_job(session)
         run_evidence_chain_job(session)
+        run_tenbagger_thesis_job(session)
         run_daily_report_job(session)
 
 
@@ -102,6 +104,14 @@ def test_api_contracts_return_research_outputs(tmp_path) -> None:
     assert navigation.status_code == 200
     assert navigation.json()["current"]["code"] == "300308"
     assert navigation.json()["scope"]["board"] == "chinext"
+
+    alias_navigation = client.get("/api/market/instruments/英伟达/navigation")
+    assert alias_navigation.status_code == 200
+    assert alias_navigation.json()["current"]["code"] == "NVDA"
+
+    alias_evidence = client.get("/api/stocks/英伟达/evidence")
+    assert alias_evidence.status_code == 200
+    assert alias_evidence.json()["stock"]["code"] == "NVDA"
 
     ingestion_batches = client.get("/api/market/ingestion-batches")
     assert ingestion_batches.status_code == 200
@@ -288,6 +298,59 @@ def test_api_contracts_return_research_outputs(tmp_path) -> None:
     assert research_brief.json()["focus_industries"]
     assert "AlphaRadar 每日研究工作单" in research_brief.json()["markdown"]
     assert "交易指令" in research_brief.json()["markdown"]
+
+    theses = client.get("/api/research/thesis?limit=5")
+    assert theses.status_code == 200
+    thesis_payload = theses.json()
+    assert thesis_payload["rows"]
+    assert "average_logic_gate_score" in thesis_payload["summary"]
+    assert "average_anti_thesis_score" in thesis_payload["summary"]
+    assert "contrarian_count" in thesis_payload["summary"]
+    thesis_row = thesis_payload["rows"][0]
+    assert {
+        "logic_gate_score",
+        "logic_gate_status",
+        "logic_gates",
+        "alternative_data_signals",
+        "valuation_simulation",
+        "contrarian_signal",
+        "anti_thesis_items",
+        "sniper_focus",
+        "marginal_changes",
+    }.issubset(thesis_row)
+    assert thesis_row["logic_gates"]
+    assert thesis_row["alternative_data_signals"]
+    assert "valuation_ceiling_status" in thesis_row["valuation_simulation"]
+    assert "label" in thesis_row["contrarian_signal"]
+    assert thesis_row["marginal_changes"]
+    assert "买入" not in theses.text
+
+    logic_filtered = client.get(f"/api/research/thesis?logic_gate_status={thesis_row['logic_gate_status']}&limit=5")
+    assert logic_filtered.status_code == 200
+    assert logic_filtered.json()["rows"]
+    assert {row["logic_gate_status"] for row in logic_filtered.json()["rows"]} == {thesis_row["logic_gate_status"]}
+
+    contrarian = client.get("/api/research/thesis?contrarian_only=true&limit=20")
+    assert contrarian.status_code == 200
+    assert "contrarian_count" in contrarian.json()["summary"]
+    assert all(row["contrarian_signal"]["reversal_watch"] for row in contrarian.json()["rows"])
+
+    thesis_detail = client.get(f"/api/research/thesis/{thesis_row['stock_code']}")
+    assert thesis_detail.status_code == 200
+    assert thesis_detail.json()["latest"]["stock_code"] == thesis_row["stock_code"]
+    assert thesis_detail.json()["latest"]["logic_gates"]
+    assert thesis_detail.json()["history"]
+
+    missing_thesis = client.get("/api/research/thesis/NOT_A_CODE")
+    assert missing_thesis.status_code == 404
+
+    data_gate = client.get("/api/research/data-gate?limit=5")
+    assert data_gate.status_code == 200
+    assert "formal_ready_ratio" in data_gate.json()["summary"]
+
+    backtest_latest = client.get("/api/research/backtest/latest")
+    assert backtest_latest.status_code == 200
+    assert {"latest", "runs"}.issubset(backtest_latest.json())
 
     report = client.get("/api/reports/latest")
     assert report.status_code == 200

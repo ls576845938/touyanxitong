@@ -13,8 +13,16 @@ from app.pipeline.data_quality_summary import data_quality_payload
 from app.pipeline.research_universe import research_universe_payload
 
 
-def build_report_context(session: Session, target_date: date | None = None, *, include_universe_rows: bool = False) -> dict[str, Any]:
-    stocks = session.scalars(select(Stock).where(Stock.is_active.is_(True)).order_by(Stock.market, Stock.board, Stock.code)).all()
+def build_report_context(
+    session: Session,
+    target_date: date | None = None,
+    *,
+    include_universe_rows: bool = False,
+    stock_scope: list[Stock] | None = None,
+) -> dict[str, Any]:
+    stocks = stock_scope
+    if stocks is None:
+        stocks = session.scalars(select(Stock).where(Stock.is_active.is_(True)).order_by(Stock.market, Stock.board, Stock.code)).all()
     stocks_by_code = {stock.code: stock for stock in stocks}
     data_quality = _data_quality_context(session, stocks, target_date)
     research_universe = _research_universe_context(session, stocks, target_date, include_rows=include_universe_rows)

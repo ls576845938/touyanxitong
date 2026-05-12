@@ -187,9 +187,10 @@ def test_batch_job_maps_most_unclassified_cross_market_samples_and_preserves_met
         stocks = {stock.code: stock for stock in session.scalars(select(Stock)).all()}
 
         assert result["mapped"] >= 12
-        assert result["unmapped"] == 1
+        assert result["fallback_mapped"] == 1
+        assert result["unmapped"] == 0
         assert result["skipped_strong"] == 1
-        assert stocks["GENERIC"].industry_level1 == "未分类"
+        assert stocks["GENERIC"].industry_level1 == "综合行业"
         assert stocks["KEEP"].industry_level1 == "半导体"
         assert stocks["NVDA"].industry_level1 == "AI算力"
         assert stocks["MSFT"].industry_level1 == "软件服务"

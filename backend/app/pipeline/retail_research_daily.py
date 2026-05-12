@@ -16,11 +16,12 @@ from app.engines.retail_research_engine import (
     map_evidence_events_to_stocks,
     score_stock_pool_candidates,
 )
-from app.pipeline.utils import latest_trade_date
+from app.pipeline.utils import latest_available_date, latest_trade_date
 
 
 def retail_research_payload(session: Session, target_date: date | None = None) -> dict[str, Any]:
-    report_date = target_date or latest_trade_date(session)
+    requested_date = target_date or latest_trade_date(session)
+    report_date = latest_available_date(session, StockScore.trade_date, requested_date) or requested_date
     scores = session.scalars(select(StockScore).where(StockScore.trade_date == report_date)).all()
     score_by_code = {item.stock_code: item for item in scores}
     if not score_by_code:

@@ -68,7 +68,7 @@ def research_tasks(
     board: str | None = Query(default=None),
     priority: str | None = Query(default=None),
     task_type: str | None = Query(default=None),
-    watch_only: bool = Query(default=True),
+    watch_only: bool = Query(default=False),
     limit: int = Query(default=120, ge=1, le=500),
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
@@ -87,7 +87,7 @@ def research_tasks(
 def research_brief(
     market: str | None = Query(default=None),
     board: str | None = Query(default=None),
-    watch_only: bool = Query(default=True),
+    watch_only: bool = Query(default=False),
     limit: int = Query(default=80, ge=1, le=300),
     session: Session = Depends(get_session),
 ) -> dict[str, object]:

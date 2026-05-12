@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import DailyReport
+from app.db.models import DailyReport, Stock, StockScore
 from app.db.session import get_session
 from app.engines.report_context import build_report_context
 
@@ -16,7 +16,11 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 @router.get("/latest")
 def latest_report(session: Session = Depends(get_session)) -> dict[str, object]:
-    report = session.scalars(select(DailyReport).order_by(DailyReport.report_date.desc()).limit(1)).first()
+    latest_score_date = session.scalars(select(StockScore.trade_date).order_by(StockScore.trade_date.desc()).limit(1)).first()
+    query = select(DailyReport).order_by(DailyReport.report_date.desc()).limit(1)
+    if latest_score_date is not None:
+        query = query.where(DailyReport.report_date <= latest_score_date)
+    report = session.scalars(query).first()
     if report is None:
         raise HTTPException(status_code=404, detail="daily report not found; run daily pipeline first")
     return _report_payload(session, report)
@@ -24,7 +28,11 @@ def latest_report(session: Session = Depends(get_session)) -> dict[str, object]:
 
 @router.get("")
 def list_reports(session: Session = Depends(get_session)) -> list[dict[str, object]]:
-    reports = session.scalars(select(DailyReport).order_by(DailyReport.report_date.desc()).limit(60)).all()
+    latest_score_date = session.scalars(select(StockScore.trade_date).order_by(StockScore.trade_date.desc()).limit(1)).first()
+    query = select(DailyReport).order_by(DailyReport.report_date.desc()).limit(60)
+    if latest_score_date is not None:
+        query = query.where(DailyReport.report_date <= latest_score_date)
+    reports = session.scalars(query).all()
     return [_report_summary(row) for row in reports]
 
 
@@ -37,7 +45,11 @@ def report_by_date(report_date: date, session: Session = Depends(get_session)) -
 
 
 def _report_payload(session: Session, report: DailyReport) -> dict[str, object]:
-    context = build_report_context(session, report.report_date)
+    score_codes = session.scalars(select(StockScore.stock_code).where(StockScore.trade_date == report.report_date)).all()
+    scoped_stocks = []
+    if score_codes:
+        scoped_stocks = session.scalars(select(Stock).where(Stock.code.in_(score_codes)).order_by(Stock.market, Stock.board, Stock.code)).all()
+    context = build_report_context(session, report.report_date, stock_scope=scoped_stocks or None)
     top_trend_stocks = [_normalize_report_stock(row) for row in json.loads(report.top_trend_stocks)]
     new_watchlist_stocks = [_normalize_report_stock(row) for row in json.loads(report.new_watchlist_stocks)]
     return {

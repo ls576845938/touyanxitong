@@ -11,11 +11,12 @@ from app.db.models import DailyBar, DailyReport, EvidenceChain, IndustryHeat, St
 from app.engines.report_context import build_report_context
 from app.engines.report_engine import build_daily_report
 from app.engines.retail_research_engine import build_retail_daily_context
-from app.pipeline.utils import latest_trade_date
+from app.pipeline.utils import latest_available_date, latest_trade_date
 
 
-def run_daily_report_job(session: Session, report_date: date | None = None) -> dict[str, int]:
-    target_date = report_date or latest_trade_date(session)
+def run_daily_report_job(session: Session, report_date: date | None = None) -> dict[str, int | str]:
+    requested_date = report_date or latest_trade_date(session)
+    target_date = latest_available_date(session, StockScore.trade_date, requested_date) or requested_date
     stocks = session.scalars(select(Stock).where(Stock.is_active.is_(True))).all()
     stocks_by_code = {stock.code: stock for stock in stocks}
     scores = session.scalars(select(StockScore).where(StockScore.trade_date == target_date)).all()
@@ -65,5 +66,5 @@ def run_daily_report_job(session: Session, report_date: date | None = None) -> d
             setattr(existing, key, value)
         count = 0
     session.commit()
-    logger.info("daily report generated: {}", result.title)
+    logger.info("daily report generated: {} (requested={}, effective={})", result.title, requested_date, target_date)
     return {"daily_reports": count, "report_date": target_date.isoformat()}

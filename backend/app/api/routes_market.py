@@ -29,6 +29,7 @@ from app.pipeline.ingestion_task_service import (
     task_payload,
 )
 from app.pipeline.research_universe import research_universe_payload
+from app.services.stock_resolver import alias_code_for_identifier, resolve_stock
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
@@ -256,7 +257,11 @@ def instruments(
         filters.append(Stock.asset_type == asset_type.lower())
     if q:
         pattern = f"%{q.strip()}%"
-        filters.append((Stock.code.like(pattern)) | (Stock.name.like(pattern)))
+        alias_code = alias_code_for_identifier(q)
+        if alias_code:
+            filters.append((Stock.code.like(pattern)) | (Stock.name.like(pattern)) | (Stock.code == alias_code))
+        else:
+            filters.append((Stock.code.like(pattern)) | (Stock.name.like(pattern)))
     for item in filters:
         query = query.where(item)
         count_query = count_query.where(item)
@@ -272,7 +277,7 @@ def instruments(
 
 @router.get("/instruments/{code}/navigation")
 def instrument_navigation(code: str, session: Session = Depends(get_session)) -> dict[str, object]:
-    stock = session.scalar(select(Stock).where(Stock.code == code))
+    stock = resolve_stock(session, code)
     if stock is None:
         raise HTTPException(status_code=404, detail="stock not found")
     previous_stock = session.scalars(

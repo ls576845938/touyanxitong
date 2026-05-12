@@ -10,17 +10,18 @@ from sqlalchemy.orm import Session
 
 from app.db.models import FundamentalMetric, Industry, IndustryHeat, NewsArticle, Stock, StockScore, TenbaggerThesis, TrendSignal
 from app.engines.tenbagger_thesis_engine import build_tenbagger_thesis
-from app.pipeline.utils import json_list, latest_trade_date
+from app.pipeline.utils import json_list, latest_available_date, latest_trade_date
 
 
-def run_tenbagger_thesis_job(session: Session, trade_date: date | None = None) -> dict[str, int]:
-    target_date = trade_date or latest_trade_date(session)
+def run_tenbagger_thesis_job(session: Session, trade_date: date | None = None) -> dict[str, int | str]:
+    requested_date = trade_date or latest_trade_date(session)
+    target_date = latest_available_date(session, StockScore.trade_date, requested_date) or requested_date
     scores = session.scalars(select(StockScore).where(StockScore.trade_date == target_date)).all()
     if not scores:
-        session.execute(delete(TenbaggerThesis).where(TenbaggerThesis.trade_date == target_date))
+        session.execute(delete(TenbaggerThesis).where(TenbaggerThesis.trade_date == requested_date))
         session.commit()
         logger.info("tenbagger theses generated: 0")
-        return {"tenbagger_theses": 0}
+        return {"tenbagger_theses": 0, "effective_date": target_date.isoformat()}
 
     codes = {score.stock_code for score in scores}
     stocks = session.scalars(select(Stock).where(Stock.code.in_(codes))).all()
@@ -72,12 +73,21 @@ def run_tenbagger_thesis_job(session: Session, trade_date: date | None = None) -
             "evidence_score": result.evidence_score,
             "risk_score": result.risk_score,
             "readiness_score": result.readiness_score,
+            "anti_thesis_score": result.anti_thesis_score,
+            "logic_gate_score": result.logic_gate_score,
+            "logic_gate_status": result.logic_gate_status,
             "stage": result.stage,
             "data_gate_status": result.data_gate_status,
             "investment_thesis": result.investment_thesis,
             "base_case": result.base_case,
             "bull_case": result.bull_case,
             "bear_case": result.bear_case,
+            "logic_gates": json.dumps(result.logic_gates, ensure_ascii=False),
+            "anti_thesis_items": json.dumps(result.anti_thesis_items, ensure_ascii=False),
+            "alternative_data_signals": json.dumps(result.alternative_data_signals, ensure_ascii=False),
+            "valuation_simulation": json.dumps(result.valuation_simulation, ensure_ascii=False),
+            "contrarian_signal": json.dumps(result.contrarian_signal, ensure_ascii=False),
+            "sniper_focus": json.dumps(result.sniper_focus, ensure_ascii=False),
             "key_milestones": json.dumps(result.key_milestones, ensure_ascii=False),
             "disconfirming_evidence": json.dumps(result.disconfirming_evidence, ensure_ascii=False),
             "missing_evidence": json.dumps(result.missing_evidence, ensure_ascii=False),
@@ -95,8 +105,8 @@ def run_tenbagger_thesis_job(session: Session, trade_date: date | None = None) -
         count += 1
 
     session.commit()
-    logger.info("tenbagger theses generated: {}", count)
-    return {"tenbagger_theses": count}
+    logger.info("tenbagger theses generated: {} (requested={}, effective={})", count, requested_date, target_date)
+    return {"tenbagger_theses": count, "effective_date": target_date.isoformat()}
 
 
 def _end_of_day(value: date) -> datetime:
