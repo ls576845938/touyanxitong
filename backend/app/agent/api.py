@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.agent.guardrails import RISK_DISCLAIMER
 from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import (
+    AgentArtifactClaim,
+    AgentArtifactClaimRef,
     AgentArtifactResponse,
     AgentRunDetail,
     AgentRunRequest,
@@ -130,14 +132,22 @@ def _ensure_run(session: Session, run_id: int) -> None:
 
 
 def _artifact_payload(row: AgentArtifact) -> AgentArtifactResponse:
+    content_json = _loads_dict(row.content_json)
+    evidence_refs = [item for item in _loads_list(row.evidence_refs_json) if isinstance(item, dict)]
+    claims = _artifact_claims(content_json)
+    claim_refs = _artifact_claim_refs(claims, evidence_refs)
+    if claims:
+        content_json = {**content_json, "claims": [claim.model_dump() for claim in claims]}
     return AgentArtifactResponse(
         id=row.id,
         run_id=row.run_id,
         artifact_type=row.artifact_type,
         title=row.title,
         content_md=row.content_md,
-        content_json=_loads_dict(row.content_json),
-        evidence_refs=[item for item in _loads_list(row.evidence_refs_json) if isinstance(item, dict)],
+        content_json=content_json,
+        evidence_refs=evidence_refs,
+        claims=claims,
+        claim_refs=claim_refs,
         risk_disclaimer=RISK_DISCLAIMER,
         created_at=row.created_at.isoformat(),
     )
@@ -172,3 +182,41 @@ def _loads_dict(raw: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _artifact_claims(content_json: dict[str, Any]) -> list[AgentArtifactClaim]:
+    rows = content_json.get("claims")
+    if not isinstance(rows, list):
+        return []
+    claims: list[AgentArtifactClaim] = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        claims.append(
+            AgentArtifactClaim(
+                id=str(row.get("id") or f"C{index}"),
+                section=str(row.get("section") or "未命名章节"),
+                text=str(row.get("text") or ""),
+                evidence_ref_ids=[str(item) for item in row.get("evidence_ref_ids", []) if item],
+                source_tools=[str(item) for item in row.get("source_tools", []) if item],
+                confidence=str(row.get("confidence") or "low"),
+                uncertainty=str(row.get("uncertainty") or ""),
+                user_prompt=str(row.get("user_prompt") or ""),
+            )
+        )
+    return claims
+
+
+def _artifact_claim_refs(claims: list[AgentArtifactClaim], evidence_refs: list[dict[str, Any]]) -> list[AgentArtifactClaimRef]:
+    refs_by_id = {str(item.get("id")): item for item in evidence_refs if item.get("id")}
+    return [
+        AgentArtifactClaimRef(
+            claim_id=claim.id,
+            evidence_ref_ids=claim.evidence_ref_ids,
+            evidence_refs=[refs_by_id[ref_id] for ref_id in claim.evidence_ref_ids if ref_id in refs_by_id],
+            source_tools=claim.source_tools,
+            missing_evidence_ref_ids=[ref_id for ref_id in claim.evidence_ref_ids if ref_id not in refs_by_id],
+            has_evidence=bool(claim.evidence_ref_ids) and all(ref_id in refs_by_id for ref_id in claim.evidence_ref_ids),
+        )
+        for claim in claims
+    ]

@@ -9,7 +9,7 @@ from typing import Any, Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent.guardrails import RISK_DISCLAIMER, sanitize_financial_output
+from app.agent.guardrails import RISK_DISCLAIMER, sanitize_financial_output, sanitize_financial_text
 from app.agent.runtime.base import AgentRuntimeResult, RuntimeAdapter
 from app.agent.runtime.mock_adapter import MockRuntimeAdapter
 from app.agent.schemas import AgentRunRequest, AgentRunResponse, AgentTaskType
@@ -83,7 +83,8 @@ class AgentOrchestrator:
                 runtime_result.content_md,
                 data_quality_warnings=runtime_result.warnings,
             )
-            warnings = _dedupe(runtime_result.warnings + guardrail_warnings)
+            content_json, claim_warnings = _sanitize_runtime_content_json(runtime_result.content_json)
+            warnings = _dedupe(runtime_result.warnings + guardrail_warnings + claim_warnings)
             self._record_step(
                 run.id,
                 "guardrails",
@@ -98,7 +99,7 @@ class AgentOrchestrator:
                 artifact_type="research_report",
                 title=runtime_result.title,
                 content_md=content_md,
-                content_json=_json_dumps(runtime_result.content_json),
+                content_json=_json_dumps(content_json),
                 evidence_refs_json=_json_dumps(runtime_result.evidence_refs),
             )
             self.session.add(artifact)
@@ -380,6 +381,25 @@ def _safe_arg(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _safe_arg(item) for key, item in value.items()}
     return value.__class__.__name__
+
+
+def _sanitize_runtime_content_json(content_json: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    claims = content_json.get("claims")
+    if not isinstance(claims, list):
+        return {**content_json, "risk_disclaimer": RISK_DISCLAIMER}, []
+
+    warnings: list[str] = []
+    sanitized_claims: list[dict[str, Any]] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            sanitized_claims.append(claim)
+            continue
+        text, text_warnings = sanitize_financial_text(str(claim.get("text") or ""))
+        uncertainty, uncertainty_warnings = sanitize_financial_text(str(claim.get("uncertainty") or ""))
+        warnings.extend(text_warnings)
+        warnings.extend(uncertainty_warnings)
+        sanitized_claims.append({**claim, "text": text, "uncertainty": uncertainty})
+    return {**content_json, "claims": sanitized_claims, "risk_disclaimer": RISK_DISCLAIMER}, _dedupe(warnings)
 
 
 def _dedupe(items: list[str]) -> list[str]:

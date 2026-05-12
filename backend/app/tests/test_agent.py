@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.agent.guardrails import sanitize_financial_output
-from app.agent.orchestrator import AgentOrchestrator
+from app.agent.guardrails import RISK_DISCLAIMER, sanitize_financial_output
+from app.agent.orchestrator import AgentOrchestrator, _sanitize_runtime_content_json
 from app.agent.runtime.mock_adapter import MockRuntimeAdapter
 from app.agent.schemas import AgentRunRequest, AgentTaskType
 from app.db.models import AgentSkill, Base, DailyBar, DailyReport, EvidenceChain, Industry, IndustryHeat, IndustryKeyword, Stock, StockScore, TrendSignal
@@ -98,6 +98,7 @@ def test_mock_adapter_generates_stock_report() -> None:
     assert result.evidence_refs[0]["id"] == "S1"
     assert result.evidence_refs[0]["claim_ids"]
     assert result.content_json["claims"][0]["evidence_ref_ids"]
+    _assert_claim_evidence_integrity({"claims": result.content_json["claims"], "claim_refs": _claim_refs_from_runtime(result), "evidence_refs": result.evidence_refs})
 
 
 def test_agent_run_stock_smoke_and_audit_tables(tmp_path) -> None:
@@ -121,8 +122,36 @@ def test_agent_run_stock_smoke_and_audit_tables(tmp_path) -> None:
         assert "证据引用：S" in report
         assert "Claim 级证据索引" in report
         assert artifact["content_json"]["claims"]
+        assert artifact["claims"]
+        assert artifact["claim_refs"]
         assert artifact["evidence_refs"]
+        assert artifact["content_json"]["risk_disclaimer"] == RISK_DISCLAIMER
         assert "买入" not in report
+        _assert_claim_evidence_integrity(artifact)
+
+
+def test_claim_guardrails_preserve_claim_shape_and_disclaimer() -> None:
+    content_json, warnings = _sanitize_runtime_content_json(
+        {
+            "claims": [
+                {
+                    "id": "C1",
+                    "section": "核心结论",
+                    "text": "建议买入，目标价：123",
+                    "evidence_ref_ids": ["S1"],
+                    "source_tools": ["market.get_price_trend"],
+                    "uncertainty": "无风险",
+                }
+            ]
+        }
+    )
+    claim = content_json["claims"][0]
+    assert "买入" not in claim["text"]
+    assert "目标价" not in claim["text"]
+    assert "无风险" not in claim["uncertainty"]
+    assert RISK_DISCLAIMER not in claim["text"]
+    assert content_json["risk_disclaimer"] == RISK_DISCLAIMER
+    assert warnings
 
 
 def test_agent_skills_save_success(tmp_path) -> None:
@@ -258,3 +287,29 @@ def _seed_agent_data(session: Session) -> None:
         )
     )
     session.commit()
+
+
+def _assert_claim_evidence_integrity(artifact: dict) -> None:
+    evidence_ids = {row["id"] for row in artifact["evidence_refs"]}
+    assert evidence_ids
+    for claim in artifact["claims"]:
+        assert claim["evidence_ref_ids"]
+        assert set(claim["evidence_ref_ids"]) <= evidence_ids
+    for claim_ref in artifact["claim_refs"]:
+        assert claim_ref["has_evidence"] is True
+        assert not claim_ref["missing_evidence_ref_ids"]
+        assert set(claim_ref["evidence_ref_ids"]) <= evidence_ids
+
+
+def _claim_refs_from_runtime(result) -> list[dict]:
+    refs_by_id = {row["id"]: row for row in result.evidence_refs}
+    return [
+        {
+            "claim_id": claim["id"],
+            "evidence_ref_ids": claim["evidence_ref_ids"],
+            "evidence_refs": [refs_by_id[ref_id] for ref_id in claim["evidence_ref_ids"]],
+            "missing_evidence_ref_ids": [],
+            "has_evidence": True,
+        }
+        for claim in result.content_json["claims"]
+    ]

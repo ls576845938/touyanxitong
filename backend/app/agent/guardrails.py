@@ -17,16 +17,7 @@ FORBIDDEN_REPLACEMENTS: dict[str, str] = {
 
 
 def sanitize_financial_output(content: str, *, data_quality_warnings: list[str] | None = None) -> tuple[str, list[str]]:
-    warnings: list[str] = []
-    sanitized = content
-    for forbidden, replacement in FORBIDDEN_REPLACEMENTS.items():
-        if forbidden in sanitized:
-            sanitized = sanitized.replace(forbidden, replacement)
-            warnings.append(f"已替换不合规措辞：{forbidden}")
-
-    sanitized = re.sub(r"建议\s*加仓", "建议跟踪观察", sanitized)
-    sanitized = re.sub(r"建议\s*减仓", "建议复核风险暴露", sanitized)
-    sanitized = re.sub(r"目标价\s*[:：]?\s*[\d.]+", "估值情景需独立复核", sanitized)
+    sanitized, warnings = sanitize_financial_text(content)
 
     if data_quality_warnings:
         warning_block = "\n".join(f"- {item}" for item in data_quality_warnings)
@@ -37,6 +28,20 @@ def sanitize_financial_output(content: str, *, data_quality_warnings: list[str] 
     if RISK_DISCLAIMER not in sanitized:
         sanitized = f"{sanitized.rstrip()}\n\n---\n{RISK_DISCLAIMER}\n"
 
+    return sanitized, _dedupe(warnings)
+
+
+def sanitize_financial_text(content: str) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    sanitized = content
+    for forbidden, replacement in FORBIDDEN_REPLACEMENTS.items():
+        if forbidden in sanitized:
+            sanitized = sanitized.replace(forbidden, replacement)
+            warnings.append(f"已替换不合规措辞：{forbidden}")
+
+    sanitized = re.sub(r"建议\s*加仓", "建议跟踪观察", sanitized)
+    sanitized = re.sub(r"建议\s*减仓", "建议复核风险暴露", sanitized)
+    sanitized = re.sub(r"目标价\s*[:：]?\s*[\d.]+", "估值情景需独立复核", sanitized)
     return sanitized, _dedupe(warnings)
 
 

@@ -57,6 +57,8 @@ class AgentArtifact(BaseModel):
     content_md: str
     content_json: dict[str, Any] = Field(default_factory=dict)
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    claims: list["AgentArtifactClaim"] = Field(default_factory=list)
+    claim_refs: list["AgentArtifactClaimRef"] = Field(default_factory=list)
     risk_disclaimer: str
 
 
@@ -76,6 +78,26 @@ class AgentToolCallResponse(BaseModel):
     success: bool
     error_message: str
     created_at: str
+
+
+class AgentArtifactClaim(BaseModel):
+    id: str
+    section: str
+    text: str
+    evidence_ref_ids: list[str] = Field(default_factory=list)
+    source_tools: list[str] = Field(default_factory=list)
+    confidence: str = "low"
+    uncertainty: str = ""
+    user_prompt: str = ""
+
+
+class AgentArtifactClaimRef(BaseModel):
+    claim_id: str
+    evidence_ref_ids: list[str] = Field(default_factory=list)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    source_tools: list[str] = Field(default_factory=list)
+    missing_evidence_ref_ids: list[str] = Field(default_factory=list)
+    has_evidence: bool = False
 
 
 class AgentRunDetail(BaseModel):
