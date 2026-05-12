@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from loguru import logger
-from sqlalchemy import asc, case, desc, func, inspect, select, text
+from sqlalchemy import asc, case, desc, func, inspect, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -576,8 +576,9 @@ def _default_worker_id() -> str:
 def _failed_symbol_error(failed_symbols: list[dict[str, Any]]) -> str:
     if not failed_symbols:
         return ""
-    preview = ", ".join(f"{item.get('code', '')}:{item.get('error', '')}" for item in failed_symbols[:10])
-    suffix = f"; +{len(failed_symbols) - 10} more" if len(failed_symbols) > 10 else ""
+    preview_limit = 50
+    preview = ", ".join(f"{item.get('code', '')}:{item.get('error', '')}" for item in failed_symbols[:preview_limit])
+    suffix = f"; +{len(failed_symbols) - preview_limit} more" if len(failed_symbols) > preview_limit else ""
     return f"failed_symbols=[{preview}{suffix}]"
 
 
@@ -641,6 +642,8 @@ def _priority_query(session: Session, market: str, board: str, limit: int, perio
             ~Stock.name.like("%债%"),
             ~Stock.name.like("%优先%"),
             ~Stock.name.like("%权证%"),
+            ~Stock.name.like("%退市%"),
+            ~Stock.name.like("%退%"),
         )
     )
     if board.lower() != "all":
@@ -720,7 +723,7 @@ def _supports_daily_bars(stock: Stock) -> bool:
             return False
         if stock.code.startswith("81"):
             return False
-    if stock.market == "US" and not _is_supported_us_code(stock.code):
+    if stock.market == "US" and not _is_supported_us_stock(stock):
         return False
     return True
 
@@ -731,12 +734,66 @@ def _supported_us_code_filters() -> list[object]:
         ~Stock.code.like("%\\_%", escape="\\"),
     ]
     filters.extend(~Stock.code.like(f"%{digit}%") for digit in "0123456789")
+    filters.extend(
+        [
+            or_(Stock.market_cap > 0, ~Stock.code.like("%R")),
+            or_(Stock.market_cap > 0, ~Stock.code.like("%W")),
+            or_(Stock.market_cap > 0, ~Stock.code.like("%U")),
+            ~Stock.code.like("%WI"),
+            ~Stock.code.like("%WS"),
+            ~Stock.code.like("%WT"),
+        ]
+    )
+    filters.extend(_supported_us_name_filters())
     return filters
 
 
 def _is_supported_us_code(code: str) -> bool:
     normalized = code.upper()
     return "." not in normalized and "_" not in normalized and not any(char.isdigit() for char in normalized)
+
+
+def _is_supported_us_stock(stock: Stock) -> bool:
+    if not _is_supported_us_code(stock.code):
+        return False
+    upper = f"{stock.name} {stock.code}".upper()
+    return not any(token in upper for token in _UNSUPPORTED_US_SECURITY_TOKENS)
+
+
+_UNSUPPORTED_US_SECURITY_TOKENS = (
+    " ETF",
+    " ETN",
+    " FUND",
+    " WARRANT",
+    " WTS",
+    " WT",
+    " RIGHT",
+    " RT",
+    " UNIT",
+    " UNI",
+    " PREFERRED",
+    " NOTE",
+    " BOND",
+    " LEVERAGE",
+    " LEVERAGED",
+    " DAILY",
+    " YIELDMAX",
+    " GRANITESHARES",
+    " DIREXION",
+    " T-REX",
+    " ROUNDHILL",
+    "二倍",
+    "三倍",
+    "做多",
+    "做空",
+    "期权收益",
+    "收益策略",
+    "基金",
+)
+
+
+def _supported_us_name_filters() -> list[object]:
+    return [~Stock.name.ilike(f"%{token.strip()}%") for token in _UNSUPPORTED_US_SECURITY_TOKENS]
 
 
 def _default_priority(task_type: str, market: str, stock_code: str | None) -> float:

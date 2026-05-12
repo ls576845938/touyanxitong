@@ -65,6 +65,8 @@ class AKShareClient:
         end_text = end.strftime("%Y%m%d")
         if market_key == "A":
             frame = self.ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_text, end_date=end_text, adjust="qfq")
+            if (frame is None or len(frame) == 0) and infer_a_board(stock_code) == "bse":
+                frame = self.ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_text, end_date=end_text, adjust="")
         elif market_key == "HK":
             symbol = stock_code.upper().replace(".HK", "").zfill(5)
             frame = self.ak.stock_hk_hist(symbol=symbol, period="daily", start_date=start_text, end_date=end_text, adjust="qfq")

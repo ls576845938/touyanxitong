@@ -160,6 +160,47 @@ def _supported_us_code_filters() -> list[object]:
         ~Stock.code.like("%\\_%", escape="\\"),
     ]
     filters.extend(~Stock.code.like(f"%{digit}%") for digit in "0123456789")
+    filters.extend(
+        [
+            or_(Stock.market_cap > 0, ~Stock.code.like("%R")),
+            or_(Stock.market_cap > 0, ~Stock.code.like("%W")),
+            or_(Stock.market_cap > 0, ~Stock.code.like("%U")),
+            ~Stock.code.like("%WI"),
+            ~Stock.code.like("%WS"),
+            ~Stock.code.like("%WT"),
+        ]
+    )
+    for token in (
+        "ETF",
+        "ETN",
+        "Fund",
+        "Warrant",
+        "Wts",
+        "Wt",
+        "Right",
+        "Rt",
+        "Unit",
+        "Uni",
+        "Preferred",
+        "Note",
+        "Bond",
+        "Leverage",
+        "Leveraged",
+        "Daily",
+        "YieldMax",
+        "GraniteShares",
+        "Direxion",
+        "T-Rex",
+        "Roundhill",
+        "二倍",
+        "三倍",
+        "做多",
+        "做空",
+        "期权收益",
+        "收益策略",
+        "基金",
+    ):
+        filters.append(~Stock.name.ilike(f"%{token}%"))
     return filters
 
 
@@ -306,6 +347,7 @@ def _batch_error(status: str, processed: int, failed: int, failed_symbols: list[
 def _failed_symbol_summary(failed_symbols: list[dict[str, str]]) -> str:
     if not failed_symbols:
         return ""
-    preview = ", ".join(f"{item.get('code', '')}:{item.get('error', '')}" for item in failed_symbols[:10])
-    suffix = f"; +{len(failed_symbols) - 10} more" if len(failed_symbols) > 10 else ""
+    preview_limit = 50
+    preview = ", ".join(f"{item.get('code', '')}:{item.get('error', '')}" for item in failed_symbols[:preview_limit])
+    suffix = f"; +{len(failed_symbols) - preview_limit} more" if len(failed_symbols) > preview_limit else ""
     return f"failed_symbols=[{preview}{suffix}]"
