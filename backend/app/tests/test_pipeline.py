@@ -954,6 +954,34 @@ def test_us_priority_candidates_filter_noise_and_recent_failures() -> None:
                     market_cap=1000,
                     float_market_cap=1000,
                 ),
+                Stock(
+                    code="RREVU",
+                    name="RRE Ventures Acquisition Corp U",
+                    market="US",
+                    board="nasdaq",
+                    exchange="NASDAQ",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=3,
+                    float_market_cap=3,
+                ),
+                Stock(
+                    code="ANABV",
+                    name="AnaptysBio Inc WI",
+                    market="US",
+                    board="nasdaq",
+                    exchange="NASDAQ",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                    market_cap=12,
+                    float_market_cap=12,
+                ),
             ]
         )
         task = create_ingestion_task(session, task_type="batch", market="US", source="mock")
@@ -966,6 +994,95 @@ def test_us_priority_candidates_filter_noise_and_recent_failures() -> None:
         candidates = priority_candidates(session, market="US", board="all", limit=10, periods=60)
 
         assert [item["code"] for item in candidates] == ["GOOD"]
+
+
+def test_hk_priority_candidates_filter_bond_and_note_rows() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+
+    with Session() as session:
+        session.add_all(
+            [
+                Stock(
+                    code="00700.HK",
+                    name="腾讯控股",
+                    market="HK",
+                    board="hk_main",
+                    exchange="HKEX",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="04101.HK",
+                    name="EFN 3.19 2611",
+                    market="HK",
+                    board="hk_main",
+                    exchange="HKEX",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="04233.HK",
+                    name="HKGB SUKUK 2702",
+                    market="HK",
+                    board="hk_main",
+                    exchange="HKEX",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="04304.HK",
+                    name="ZJ XC INV B2701",
+                    market="HK",
+                    board="hk_main",
+                    exchange="HKEX",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="06003.HK",
+                    name="XIANPORT B2610B",
+                    market="HK",
+                    board="hk_main",
+                    exchange="HKEX",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+                Stock(
+                    code="06012.HK",
+                    name="PEAK RE PSGCSB",
+                    market="HK",
+                    board="hk_main",
+                    exchange="HKEX",
+                    industry_level1="未分类",
+                    asset_type="equity",
+                    is_etf=False,
+                    listing_status="listed",
+                    is_active=True,
+                ),
+            ]
+        )
+        session.commit()
+
+        candidates = priority_candidates(session, market="HK", board="all", limit=10, periods=60)
+
+        assert [item["code"] for item in candidates] == ["00700.HK"]
 
 
 def test_enqueue_ingestion_backfill_skips_when_pending_queue_is_sufficient() -> None:
@@ -1173,6 +1290,8 @@ def test_market_data_job_filters_unsupported_us_rows() -> None:
                     is_etf=False,
                     listing_status="listed",
                     is_active=True,
+                    market_cap=1000,
+                    float_market_cap=900,
                 ),
                 Stock(
                     code="105.AAPL22",

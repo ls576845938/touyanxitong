@@ -43,6 +43,8 @@ def run_market_data_job(
         query = query.where(Stock.code.in_(requested_codes))
     if "US" in requested_markets:
         query = query.where(or_(Stock.market != "US", and_(*_supported_us_code_filters())))
+    if "HK" in requested_markets:
+        query = query.where(or_(Stock.market != "HK", and_(*_supported_hk_code_filters())))
     stocks = session.scalars(query.order_by(Stock.market, desc(Stock.float_market_cap), Stock.code)).all()
     selected_stocks = _limit_stocks_by_market(list(stocks), batch_limit, batch_offset)
     batch_row = _start_batch(
@@ -158,16 +160,19 @@ def _supported_us_code_filters() -> list[object]:
     filters: list[object] = [
         ~Stock.code.like("%.%"),
         ~Stock.code.like("%\\_%", escape="\\"),
+        Stock.market_cap > 0,
     ]
     filters.extend(~Stock.code.like(f"%{digit}%") for digit in "0123456789")
     filters.extend(
         [
             or_(Stock.market_cap > 0, ~Stock.code.like("%R")),
             or_(Stock.market_cap > 0, ~Stock.code.like("%W")),
-            or_(Stock.market_cap > 0, ~Stock.code.like("%U")),
+            or_(Stock.market_cap > 50, ~Stock.code.like("%U")),
             ~Stock.code.like("%WI"),
             ~Stock.code.like("%WS"),
             ~Stock.code.like("%WT"),
+            ~Stock.name.ilike("% WI"),
+            ~Stock.name.ilike("% When Issued%"),
         ]
     )
     for token in (
@@ -199,6 +204,71 @@ def _supported_us_code_filters() -> list[object]:
         "期权收益",
         "收益策略",
         "基金",
+        "iShares",
+        "Pacer",
+        "Innovator",
+        "abrdn",
+        "QRAFT",
+        "Hedged",
+        "Multi-Asset",
+        "Income ET",
+        "Adopters ET",
+        "ActivePassive",
+        "AllianzIM",
+        "TrueShares",
+        "FT Vest",
+        "Buffer",
+        "Structured Outcome",
+        "Equity Max",
+        "Acquisition",
+        "Acquisi",
+        "SPAC",
+    ):
+        filters.append(~Stock.name.ilike(f"%{token}%"))
+    return filters
+
+
+def _supported_hk_code_filters() -> list[object]:
+    filters: list[object] = [
+        ~Stock.code.like("04%"),
+        ~Stock.code.like("05%"),
+    ]
+    for token in (
+        "EFN",
+        "HKGB",
+        "SUKUK",
+        "Bond",
+        "Note",
+        "Notes",
+        " N",
+        "FRN",
+        "PRC",
+        "PTT",
+        "CNOOC F",
+        " B27",
+        " B28",
+        " B32",
+        "SPCSC",
+        "STOCK ",
+        "INV B",
+        "CB B",
+        "SFIC B",
+        "SOAI B",
+        "SDS",
+        "SDCS",
+        "SPCS",
+        "PREF",
+        "UGPS",
+        "SGPS",
+        " B29",
+        " B2",
+        " B3",
+        " B4",
+        " B5",
+        " B48",
+        "PSGCS",
+        "金兑",
+        "债",
     ):
         filters.append(~Stock.name.ilike(f"%{token}%"))
     return filters

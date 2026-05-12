@@ -650,6 +650,8 @@ def _priority_query(session: Session, market: str, board: str, limit: int, perio
         query = query.where(Stock.board == board.lower())
     if market.upper() == "US":
         query = query.where(*_supported_us_code_filters())
+    if market.upper() == "HK":
+        query = query.where(*_supported_hk_code_filters())
     if failed_cooldown_codes:
         query = query.where(~Stock.code.in_(failed_cooldown_codes))
     return session.execute(query.order_by(bars_count, desc(Stock.float_market_cap), desc(Stock.market_cap), Stock.code).limit(max(1, limit))).all()
@@ -725,6 +727,8 @@ def _supports_daily_bars(stock: Stock) -> bool:
             return False
     if stock.market == "US" and not _is_supported_us_stock(stock):
         return False
+    if stock.market == "HK" and not _is_supported_hk_stock(stock):
+        return False
     return True
 
 
@@ -732,16 +736,19 @@ def _supported_us_code_filters() -> list[object]:
     filters: list[object] = [
         ~Stock.code.like("%.%"),
         ~Stock.code.like("%\\_%", escape="\\"),
+        Stock.market_cap > 0,
     ]
     filters.extend(~Stock.code.like(f"%{digit}%") for digit in "0123456789")
     filters.extend(
         [
             or_(Stock.market_cap > 0, ~Stock.code.like("%R")),
             or_(Stock.market_cap > 0, ~Stock.code.like("%W")),
-            or_(Stock.market_cap > 0, ~Stock.code.like("%U")),
+            or_(Stock.market_cap > 50, ~Stock.code.like("%U")),
             ~Stock.code.like("%WI"),
             ~Stock.code.like("%WS"),
             ~Stock.code.like("%WT"),
+            ~Stock.name.ilike("% WI"),
+            ~Stock.name.ilike("% When Issued%"),
         ]
     )
     filters.extend(_supported_us_name_filters())
@@ -754,9 +761,16 @@ def _is_supported_us_code(code: str) -> bool:
 
 
 def _is_supported_us_stock(stock: Stock) -> bool:
+    if not stock.market_cap or stock.market_cap <= 0:
+        return False
     if not _is_supported_us_code(stock.code):
         return False
-    upper = f"{stock.name} {stock.code}".upper()
+    if stock.code.endswith("U") and stock.market_cap <= 50:
+        return False
+    upper_name = stock.name.upper()
+    upper = f"{upper_name} {stock.code}".upper()
+    if upper_name.endswith(" WI") or " WHEN ISSUED" in upper:
+        return False
     return not any(token in upper for token in _UNSUPPORTED_US_SECURITY_TOKENS)
 
 
@@ -789,11 +803,85 @@ _UNSUPPORTED_US_SECURITY_TOKENS = (
     "期权收益",
     "收益策略",
     "基金",
+    " ISHARES",
+    " PACER",
+    " INNOVATOR",
+    " ABRDN",
+    " QRAFT",
+    " HEDGED",
+    " MULTI-ASSET",
+    " INCOME ET",
+    " ADOPTERS ET",
+    " ACTIVEPASSIVE",
+    " ALLIANZIM",
+    " TRUESHARES",
+    " FT VEST",
+    " BUFFER",
+    " STRUCTURED OUTCOME",
+    " EQUITY MAX",
+    " ACQUISITION",
+    " ACQUISI",
+    " SPAC",
 )
 
 
 def _supported_us_name_filters() -> list[object]:
     return [~Stock.name.ilike(f"%{token.strip()}%") for token in _UNSUPPORTED_US_SECURITY_TOKENS]
+
+
+def _supported_hk_code_filters() -> list[object]:
+    filters: list[object] = [
+        ~Stock.code.like("04%"),
+        ~Stock.code.like("05%"),
+    ]
+    filters.extend(~Stock.name.ilike(f"%{token}%") for token in _UNSUPPORTED_HK_SECURITY_TOKENS)
+    return filters
+
+
+def _is_supported_hk_stock(stock: Stock) -> bool:
+    if stock.code.startswith(("04", "05")):
+        return False
+    upper = f"{stock.name} {stock.code}".upper()
+    return not any(token in upper for token in _UNSUPPORTED_HK_SECURITY_TOKENS)
+
+
+_UNSUPPORTED_HK_SECURITY_TOKENS = (
+    "EFN",
+    "HKGB",
+    "SUKUK",
+    "BOND",
+    "NOTE",
+    "NOTES",
+    " N",
+    "FRN",
+    "PRC",
+    "PTT",
+    "CNOOC F",
+    " B27",
+    " B28",
+    " B32",
+    "SPCSC",
+    "STOCK ",
+    "INV B",
+    "CB B",
+    "SFIC B",
+    "SOAI B",
+    "SDS",
+    "SDCS",
+    "SPCS",
+    "PREF",
+    "UGPS",
+    "SGPS",
+    " B29",
+    " B2",
+    " B3",
+    " B4",
+    " B5",
+    " B48",
+    "PSGCS",
+    "金兑",
+    "债",
+)
 
 
 def _default_priority(task_type: str, market: str, stock_code: str | None) -> float:
