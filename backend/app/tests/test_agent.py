@@ -93,8 +93,11 @@ def test_mock_adapter_generates_stock_report() -> None:
     assert "风险提示" in result.content_md
     assert "证据链" in result.content_md
     assert "证据引用：S" in result.content_md
+    assert "Claim 级证据索引" in result.content_md
     assert result.evidence_refs
     assert result.evidence_refs[0]["id"] == "S1"
+    assert result.evidence_refs[0]["claim_ids"]
+    assert result.content_json["claims"][0]["evidence_ref_ids"]
 
 
 def test_agent_run_stock_smoke_and_audit_tables(tmp_path) -> None:
@@ -116,6 +119,8 @@ def test_agent_run_stock_smoke_and_audit_tables(tmp_path) -> None:
         assert "风险提示" in report
         assert "不构成投资建议" in report
         assert "证据引用：S" in report
+        assert "Claim 级证据索引" in report
+        assert artifact["content_json"]["claims"]
         assert artifact["evidence_refs"]
         assert "买入" not in report
 

@@ -49,6 +49,8 @@ class MockRuntimeAdapter(RuntimeAdapter):
             ],
         )
         warnings = _warnings_from_context(context)
+        claims = _stock_claims(prompt, stock, trend, score, mapping, evidence, risks, refs, warnings)
+        refs = _attach_claim_ids(refs, claims)
 
         md = f"""# {title}
 ## 1. 核心结论
@@ -115,12 +117,14 @@ class MockRuntimeAdapter(RuntimeAdapter):
 - 当前报告是基于平台已有结构化数据的自动整理，不构成投资建议。
 - 若行情、基本面、新闻或产业映射数据缺失，结论只能作为待验证观察线索。
 - 证据引用：{_ref_ids(refs, "market.get_stock_basic", "market.get_price_trend", "scoring.get_score_breakdown", "evidence.get_stock_evidence")}
+
+{_claim_index(claims)}
 """
         return AgentRuntimeResult(
             title=title,
             summary=_strip_md_bullets(_stock_conclusion(stock, trend, score)),
             content_md=md,
-            content_json={"task_type": "stock_deep_research", "stock": stock, "trend": trend, "score": score, "evidence": evidence, "source_refs": refs},
+            content_json={"task_type": "stock_deep_research", "stock": stock, "trend": trend, "score": score, "evidence": evidence, "source_refs": refs, "claims": claims},
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -145,6 +149,8 @@ class MockRuntimeAdapter(RuntimeAdapter):
             ],
         )
         warnings = _warnings_from_context(context)
+        claims = _industry_claims(prompt, keyword, chain, heatmap, stock_rows, evidence, refs, warnings)
+        refs = _attach_claim_ids(refs, claims)
         md = f"""# {title}
 ## 1. 今日产业链热度
 - 用户问题：{prompt}
@@ -185,12 +191,14 @@ class MockRuntimeAdapter(RuntimeAdapter):
 - 跟踪核心节点是否出现新增真实来源证据。
 - 跟踪相关股票评分和趋势分是否同步改善。
 - 证据引用：{_ref_ids(refs, "industry.get_industry_chain", "industry.get_industry_heatmap", "industry.get_related_stocks_by_industry", "evidence.get_industry_evidence")}
+
+{_claim_index(claims)}
 """
         return AgentRuntimeResult(
             title=title,
             summary=f"{keyword} 已完成产业链热度、节点、相关股票和证据链整理。",
             content_md=md,
-            content_json={"task_type": "industry_chain_radar", "keyword": keyword, "chain": chain, "heatmap": heatmap, "stocks": stocks, "evidence": evidence, "source_refs": refs},
+            content_json={"task_type": "industry_chain_radar", "keyword": keyword, "chain": chain, "heatmap": heatmap, "stocks": stocks, "evidence": evidence, "source_refs": refs, "claims": claims},
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -202,6 +210,8 @@ class MockRuntimeAdapter(RuntimeAdapter):
         warnings = _warnings_from_context(context)
         title = "趋势股票池扫描"
         refs = _source_refs(context, ["market.get_momentum_rank", "scoring.get_top_scored_stocks", "market.get_market_coverage_status"])
+        claims = _trend_pool_claims(prompt, rows, refs, warnings)
+        refs = _attach_claim_ids(refs, claims)
         md = f"""# {title}
 ## 1. 筛选条件
 - 用户问题：{prompt}
@@ -235,12 +245,14 @@ class MockRuntimeAdapter(RuntimeAdapter):
 - 行业热度是否能解释趋势扩散。
 - 是否存在财报、监管、流动性或估值反证。
 - 证据引用：{_ref_ids(refs, "scoring.get_top_scored_stocks", "market.get_momentum_rank", "market.get_market_coverage_status")}
+
+{_claim_index(claims)}
 """
         return AgentRuntimeResult(
             title=title,
             summary=f"已整理 {len(rows)} 个趋势观察候选，需继续做证据和风险复核。",
             content_md=md,
-            content_json={"task_type": "trend_pool_scan", "rows": rows, "source_refs": refs},
+            content_json={"task_type": "trend_pool_scan", "rows": rows, "source_refs": refs, "claims": claims},
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -251,6 +263,8 @@ class MockRuntimeAdapter(RuntimeAdapter):
         warnings = _warnings_from_context(context)
         title = "十倍股早期特征候选"
         refs = _source_refs(context, ["scoring.get_top_scored_stocks", "market.get_momentum_rank", "market.get_market_coverage_status"])
+        claims = _tenbagger_claims(prompt, rows, refs, warnings)
+        refs = _attach_claim_ids(refs, claims)
         md = f"""# {title}
 ## 1. 筛选逻辑
 - 用户问题：{prompt}
@@ -285,12 +299,14 @@ class MockRuntimeAdapter(RuntimeAdapter):
 ## 8. 证据缺口
 - 补齐公告、财报、订单、产业数据和反证信息后再调整候选等级。
 - 证据引用：{_ref_ids(refs, "scoring.get_top_scored_stocks", "market.get_momentum_rank", "market.get_market_coverage_status")}
+
+{_claim_index(claims)}
 """
         return AgentRuntimeResult(
             title=title,
             summary=f"已生成 {len(rows)} 个早期特征候选的观察清单。",
             content_md=md,
-            content_json={"task_type": "tenbagger_candidate", "rows": rows, "source_refs": refs},
+            content_json={"task_type": "tenbagger_candidate", "rows": rows, "source_refs": refs, "claims": claims},
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -302,6 +318,8 @@ class MockRuntimeAdapter(RuntimeAdapter):
         warnings = _warnings_from_context(context)
         title = "每日市场简报"
         refs = _source_refs(context, ["report.get_latest_daily_report", "industry.get_industry_heatmap", "market.get_momentum_rank"])
+        claims = _daily_claims(prompt, daily, heatmap, momentum, refs, warnings)
+        refs = _attach_claim_ids(refs, claims)
         md = f"""# {title}
 ## 1. 今日最强产业链
 - 用户问题：{prompt}
@@ -327,12 +345,14 @@ class MockRuntimeAdapter(RuntimeAdapter):
 - 复核高动量股票的证据链和风险标签。
 - 关注低置信度数据源对结论的影响。
 - 证据引用：{_ref_ids(refs, "report.get_latest_daily_report", "industry.get_industry_heatmap", "market.get_momentum_rank")}
+
+{_claim_index(claims)}
 """
         return AgentRuntimeResult(
             title=title,
             summary="已生成市场简报、强产业链、高动量股票和风险预警整理。",
             content_md=md,
-            content_json={"task_type": "daily_market_brief", "daily": daily, "heatmap": heatmap, "momentum": momentum, "source_refs": refs},
+            content_json={"task_type": "daily_market_brief", "daily": daily, "heatmap": heatmap, "momentum": momentum, "source_refs": refs, "claims": claims},
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -365,6 +385,114 @@ def _stock_conclusion(stock: dict[str, Any], trend: dict[str, Any], score: dict[
     if trend_score >= 55 or final_score >= 60:
         return "存在一定观察价值，关键在于趋势延续和证据质量能否继续确认。"
     return "当前信号偏弱或数据不足，适合放入跟踪清单等待进一步确认。"
+
+
+def _stock_claims(
+    prompt: str,
+    stock: dict[str, Any],
+    trend: dict[str, Any],
+    score: dict[str, Any],
+    mapping: dict[str, Any],
+    evidence: dict[str, Any],
+    risks: dict[str, Any],
+    refs: list[dict[str, Any]],
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    stock_name = stock.get("name") or stock.get("code") or "未识别标的"
+    return [
+        _claim("C1", "核心结论", f"{stock_name} 的当前观察结论：{_stock_conclusion(stock, trend, score)}", refs, "market.get_stock_basic", "market.get_price_trend", "scoring.get_score_breakdown", "evidence.get_stock_evidence", prompt=prompt),
+        _claim("C2", "公司与业务画像", f"{stock_name} 的业务画像来自证券基础信息、行业字段和概念标签。", refs, "market.get_stock_basic"),
+        _claim("C3", "产业链位置", f"{stock_name} 当前映射到 {mapping.get('industry', stock.get('industry_level1', 'unavailable'))}，映射状态为 {mapping.get('status', 'unavailable')}。", refs, "industry.get_industry_mapping", "evidence.get_stock_evidence"),
+        _claim("C4", "趋势状态", f"趋势分为 {_fmt_num(trend.get('trend_score'))}，均线结构为 {'多头排列' if trend.get('is_ma_bullish') else '未确认多头排列'}。", refs, "market.get_price_trend"),
+        _claim("C5", "评分拆解", f"综合评分为 {_fmt_num(score.get('final_score'))}，评级为 {score.get('rating', 'unavailable')}。", refs, "scoring.get_score_breakdown"),
+        _claim("C6", "证据链", f"证据链摘要：{evidence.get('summary', '当前证据不足。')}", refs, "evidence.get_stock_evidence"),
+        _claim("C7", "风险提示", f"风险项：{_join(risks.get('flags'))}；{risks.get('explanation', evidence.get('risk_summary', '仍需复核数据完整性和证据真实性。'))}", refs, "scoring.get_risk_flags", "evidence.get_stock_evidence", uncertainty=_join(warnings) if warnings else ""),
+    ]
+
+
+def _industry_claims(
+    prompt: str,
+    keyword: str,
+    chain: dict[str, Any],
+    heatmap: dict[str, Any],
+    stock_rows: list[Any],
+    evidence: dict[str, Any],
+    refs: list[dict[str, Any]],
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    return [
+        _claim("C1", "产业链热度", f"{keyword} 热度状态为 {heatmap.get('status', 'unavailable')}，最高热度节点为 {_top_names(heatmap.get('rows') or [], 'name') }。", refs, "industry.get_industry_heatmap", "evidence.get_industry_evidence", prompt=prompt),
+        _claim("C2", "链条结构", f"{keyword} 当前识别到 {len(chain.get('nodes') or [])} 个产业链节点。", refs, "industry.get_industry_mapping", "industry.get_industry_chain"),
+        _claim("C3", "核心股票", f"相关股票池为：{_top_stock_names(stock_rows)}。", refs, "industry.get_related_stocks_by_industry", "industry.get_industry_heatmap"),
+        _claim("C4", "动量扩散", _industry_momentum_text(stock_rows), refs, "industry.get_related_stocks_by_industry", "industry.get_industry_heatmap"),
+        _claim("C5", "催化证据", f"证据摘要：{evidence.get('summary', '当前证据不足。')}", refs, "evidence.get_industry_evidence"),
+        _claim("C6", "风险反证", "热度来源、相关股票数量和趋势分化需要作为反证持续复核。", refs, "industry.get_industry_heatmap", "industry.get_related_stocks_by_industry", "evidence.get_industry_evidence", uncertainty=_join(warnings) if warnings else ""),
+    ]
+
+
+def _trend_pool_claims(prompt: str, rows: list[Any], refs: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
+    return [
+        _claim("C1", "筛选逻辑", "趋势池按综合评分、趋势分、相对强度、突破状态和风险扣分生成。", refs, "market.get_momentum_rank", "scoring.get_top_scored_stocks", "market.get_market_coverage_status", prompt=prompt),
+        _claim("C2", "候选池", f"本次整理 {len(rows)} 个趋势观察候选。", refs, "scoring.get_top_scored_stocks", "market.get_momentum_rank"),
+        _claim("C3", "风险提示", "趋势强度不能替代证据链、成交额、拥挤度和数据质量复核。", refs, "market.get_market_coverage_status", "market.get_momentum_rank", uncertainty=_join(warnings) if warnings else ""),
+    ]
+
+
+def _tenbagger_claims(prompt: str, rows: list[Any], refs: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
+    return [
+        _claim("C1", "筛选逻辑", "十倍股候选按产业空间、公司质量、趋势确认、催化证据和风险扣分共同筛选。", refs, "scoring.get_top_scored_stocks", "market.get_momentum_rank", "market.get_market_coverage_status", prompt=prompt),
+        _claim("C2", "候选列表", f"本次生成 {len(rows)} 个早期特征候选。", refs, "scoring.get_top_scored_stocks"),
+        _claim("C3", "证据缺口", "候选需要补齐公告、财报、订单、产业数据和反证信息后再调整等级。", refs, "scoring.get_top_scored_stocks", "market.get_momentum_rank", "market.get_market_coverage_status", uncertainty=_join(warnings) if warnings else ""),
+    ]
+
+
+def _daily_claims(prompt: str, daily: dict[str, Any], heatmap: dict[str, Any], momentum: dict[str, Any], refs: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
+    return [
+        _claim("C1", "最强产业链", f"今日行业热度观察：{_top_names(heatmap.get('rows') or [], 'name', limit=5)}。", refs, "industry.get_industry_heatmap", prompt=prompt),
+        _claim("C2", "市场简报", f"最新日报：{daily.get('title', 'unavailable')}；摘要：{daily.get('market_summary', '当前日报数据不足。')}", refs, "report.get_latest_daily_report"),
+        _claim("C3", "高动量股票", f"高动量观察：{_top_stock_names(momentum.get('stocks') or [])}", refs, "market.get_momentum_rank"),
+        _claim("C4", "风险预警", f"风险预警：{_join(daily.get('risk_alerts')) if daily.get('risk_alerts') else '当前风险预警数据不足，需要查看数据质量门。'}", refs, "report.get_latest_daily_report", "market.get_momentum_rank", uncertainty=_join(warnings) if warnings else ""),
+    ]
+
+
+def _claim(
+    claim_id: str,
+    section: str,
+    text: str,
+    refs: list[dict[str, Any]],
+    *tool_names: str,
+    prompt: str = "",
+    uncertainty: str = "",
+) -> dict[str, Any]:
+    evidence_ref_ids = _ref_id_list(refs, *tool_names)
+    return {
+        "id": claim_id,
+        "section": section,
+        "text": text,
+        "evidence_ref_ids": evidence_ref_ids,
+        "source_tools": list(tool_names),
+        "confidence": "medium" if evidence_ref_ids else "low",
+        "uncertainty": uncertainty or "自动生成结论需结合原始数据、数据质量门和人工复核。",
+        "user_prompt": prompt,
+    }
+
+
+def _claim_index(claims: list[dict[str, Any]]) -> str:
+    if not claims:
+        return ""
+    rows = ["## Claim 级证据索引"]
+    for claim in claims:
+        ref_ids = _join(claim.get("evidence_ref_ids"))
+        rows.append(f"- [{claim['id']}] {claim['section']}：{claim['text']} 来源：{ref_ids}；置信度：{claim['confidence']}；不确定性：{claim['uncertainty']}")
+    return "\n".join(rows)
+
+
+def _attach_claim_ids(refs: list[dict[str, Any]], claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    claim_ids_by_ref: dict[str, list[str]] = {}
+    for claim in claims:
+        for ref_id in claim.get("evidence_ref_ids", []):
+            claim_ids_by_ref.setdefault(str(ref_id), []).append(str(claim["id"]))
+    return [{**ref, "claim_ids": claim_ids_by_ref.get(str(ref.get("id")), [])} for ref in refs]
 
 
 def _source_refs(context: dict[str, Any], tool_names: list[str]) -> list[dict[str, Any]]:
@@ -476,8 +604,12 @@ def _refs_for(refs: list[dict[str, Any]], *tool_names: str) -> list[dict[str, An
 
 
 def _ref_ids(refs: list[dict[str, Any]], *tool_names: str) -> str:
-    ids = [str(item.get("id")) for item in _refs_for(refs, *tool_names) if item.get("id")]
+    ids = _ref_id_list(refs, *tool_names)
     return "、".join(ids) if ids else "当前暂无来源引用。"
+
+
+def _ref_id_list(refs: list[dict[str, Any]], *tool_names: str) -> list[str]:
+    return [str(item.get("id")) for item in _refs_for(refs, *tool_names) if item.get("id")]
 
 
 def _evidence_refs(evidence: dict[str, Any]) -> list[dict[str, Any]]:

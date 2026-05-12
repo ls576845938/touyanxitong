@@ -300,6 +300,9 @@ function ResearchReportViewer({ loading, run, artifact }: { loading: boolean; ru
 
 function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run: AgentRunResponse | null }) {
   const refs = artifact?.evidence_refs ?? [];
+  const claims = Array.isArray(artifact?.content_json?.claims)
+    ? (artifact.content_json.claims as Record<string, unknown>[])
+    : [];
   const warnings = run?.warnings ?? [];
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -319,6 +322,17 @@ function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run:
                 {String(ref.source ?? "alpha_radar_tool")} · {String(ref.tool_name ?? ref.kind ?? "source")}
               </div>
               {typeof ref.url === "string" && ref.url && <div className="mt-1 break-all text-slate-400">{ref.url}</div>}
+            </div>
+          ))}
+        </InfoBlock>
+        <InfoBlock label="Claim 引用" empty="暂无 Claim 级引用">
+          {claims.map((claim, index) => (
+            <div key={String(claim.id ?? index)} className="rounded-lg bg-slate-50 p-3 text-xs font-medium leading-5 text-slate-600">
+              <div className="font-black text-slate-800">[{String(claim.id ?? `C${index + 1}`)}] {String(claim.section ?? "结论")}</div>
+              <div className="mt-1">{String(claim.text ?? "")}</div>
+              <div className="mt-2 text-[11px] font-black text-slate-400">
+                来源：{Array.isArray(claim.evidence_ref_ids) ? claim.evidence_ref_ids.join("、") : "unavailable"}
+              </div>
             </div>
           ))}
         </InfoBlock>
