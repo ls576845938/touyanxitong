@@ -20,8 +20,8 @@ import { motion } from "framer-motion";
 import { StockSearch } from "@/components/StockSearch";
 
 const navItems = [
-  { href: "/", label: "总览", icon: Gauge },
   { href: "/agent", label: "Agent", icon: Bot },
+  { href: "/dashboard", label: "总览", icon: Gauge },
   { href: "/research/ai-big-graph", label: "AI大图谱", icon: Share2 },
   { href: "/trend", label: "趋势雷达", icon: BarChart3 },
   { href: "/research/thesis", label: "逻辑狙击", icon: Crosshair },
