@@ -15,7 +15,8 @@ class OpenClawRuntimeAdapter(RuntimeAdapter):
         tools: dict[str, Any],
         skill_template: str,
     ) -> AgentRuntimeResult:
-        # TODO: Future version can use OpenClaw as a multi-channel Gateway that
-        # forwards requests into Alpha Radar Agent API. No OpenClaw dependency
-        # is installed or imported in this MVP.
+        # Future version can use OpenClaw as a Gateway that forwards requests to
+        # the Alpha Radar Agent API.  The MCP manifest at GET /api/agent/tools/mcp-manifest
+        # allows OpenClaw to discover available tools and route tool calls to the
+        # corresponding endpoints.  No OpenClaw dependency is imported here.
         raise NotImplementedError("OpenClaw runtime adapter is reserved but not enabled in this MVP.")

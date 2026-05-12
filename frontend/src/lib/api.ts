@@ -1376,6 +1376,21 @@ export type AgentRunResponse = {
   warnings: string[];
 };
 
+export type AgentRunDetail = {
+  id: number;
+  user_id: string | null;
+  task_type: AgentTaskType;
+  user_prompt: string;
+  runtime_provider: string;
+  status: string;
+  selected_symbols: string[];
+  selected_industries: string[];
+  created_at: string;
+  completed_at: string | null;
+  error_message: string;
+  latest_artifact: AgentArtifact | null;
+};
+
 export type AgentStep = {
   id: number;
   run_id: number;
@@ -1433,6 +1448,40 @@ export type AgentSkill = {
   is_system: boolean;
   created_at: string | null;
   updated_at: string | null;
+};
+
+export type AgentSSEEvent = {
+  event: string;
+  run_id: number;
+  timestamp: string;
+  payload: Record<string, unknown>;
+};
+
+export type AgentFollowupRequest = {
+  message: string;
+  mode?: "explain" | "expand_risk" | "evidence_drilldown" | "compare" | "generate_checklist" | "auto";
+  save_as_artifact?: boolean;
+};
+
+export type AgentFollowupResponse = {
+  run_id: number;
+  followup_id: number;
+  message: string;
+  mode: string;
+  answer_md: string;
+  evidence_refs: Record<string, unknown>[];
+  warnings: string[];
+  saved_artifact_id: number | null;
+  created_at: string;
+};
+
+export type AgentMessage = {
+  id?: number;
+  role: string;
+  content: string;
+  followup_id?: number | null;
+  mode?: string;
+  created_at: string;
 };
 
 async function getJson<T>(path: string, options?: { cacheMs?: number }): Promise<T> {
@@ -1643,7 +1692,7 @@ export const api = {
   sourceComparison: (code: string) => getJson<SourceComparison>(`/api/stocks/${code}/source-comparison`),
   ingestStock: (code: string, source = "akshare") => postJson<IngestionTask>(`/api/stocks/${code}/ingest?source=${encodeURIComponent(source)}`, {}),
   agentRun: (payload: AgentRunRequest) => postJson<AgentRunResponse>("/api/agent/runs", payload),
-  agentRunDetail: (runId: number) => getJson<AgentRunResponse & { latest_artifact?: AgentArtifact | null }>(`/api/agent/runs/${runId}`, { cacheMs: 0 }),
+  agentRunDetail: (runId: number) => getJson<AgentRunDetail>(`/api/agent/runs/${runId}`, { cacheMs: 0 }),
   agentRunSteps: (runId: number) => getJson<AgentStep[]>(`/api/agent/runs/${runId}/steps`, { cacheMs: 0 }),
   agentRunArtifacts: (runId: number) => getJson<AgentArtifact[]>(`/api/agent/runs/${runId}/artifacts`, { cacheMs: 0 }),
   agentSkills: () => getJson<AgentSkill[]>("/api/agent/skills", { cacheMs: 0 }),
@@ -1656,8 +1705,14 @@ export const api = {
     skill_config?: Record<string, unknown>;
     owner_user_id?: string | null;
     is_system?: boolean;
-  }) => postJson<AgentSkill>("/api/agent/skills", payload)
+  }) => postJson<AgentSkill>("/api/agent/skills", payload),
+  agentRunEvents: (runId: number) => new EventSource(`${API_BASE_URL}/api/agent/runs/${runId}/events`),
+  agentRunFollowup: (runId: number, payload: AgentFollowupRequest) =>
+    postJson<AgentFollowupResponse>(`/api/agent/runs/${runId}/followups`, payload),
+  agentRunMessages: (runId: number) =>
+    getJson<AgentMessage[]>(`/api/agent/runs/${runId}/messages`, { cacheMs: 0 }),
 };
+
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
   getCache.clear();

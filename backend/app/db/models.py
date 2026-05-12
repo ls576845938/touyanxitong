@@ -789,6 +789,21 @@ class AgentSkill(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class AgentFollowup(Base):
+    __tablename__ = "agent_followups"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("agent_runs.id"), index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    mode: Mapped[str] = mapped_column(String(32), default="auto")
+    answer_md: Mapped[str] = mapped_column(Text, default="")
+    evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    saved_artifact_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 def _normalized_confidence(value: int | float | None) -> float:
     try:
         numeric = float(value or 0.0)

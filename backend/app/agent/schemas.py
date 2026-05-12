@@ -80,6 +80,15 @@ class AgentToolCallResponse(BaseModel):
     created_at: str
 
 
+class AgentEventSSE(BaseModel):
+    """SSE event payload for the /events streaming endpoint."""
+
+    event: str
+    run_id: int
+    timestamp: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentArtifactClaim(BaseModel):
     id: str
     section: str
@@ -113,6 +122,32 @@ class AgentRunDetail(BaseModel):
     completed_at: str | None = None
     error_message: str = ""
     latest_artifact: AgentArtifactResponse | None = None
+
+
+class FollowupMode(StrEnum):
+    EXPLAIN = "explain"
+    EXPAND_RISK = "expand_risk"
+    EVIDENCE_DRILLDOWN = "evidence_drilldown"
+    COMPARE = "compare"
+    GENERATE_CHECKLIST = "generate_checklist"
+    AUTO = "auto"
+
+
+class AgentFollowupRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    mode: FollowupMode = FollowupMode.AUTO
+    save_as_artifact: bool = False
+
+
+class AgentFollowupResponse(BaseModel):
+    run_id: int
+    followup_id: int
+    mode: str
+    answer_md: str
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    saved_artifact_id: int | None = None
+    created_at: str
 
 
 class AgentSkillCreate(BaseModel):

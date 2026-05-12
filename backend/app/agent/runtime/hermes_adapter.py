@@ -15,6 +15,9 @@ class HermesRuntimeAdapter(RuntimeAdapter):
         tools: dict[str, Any],
         skill_template: str,
     ) -> AgentRuntimeResult:
-        # TODO: Future version can connect to a Hermes sidecar through MCP/HTTP
-        # tools. Keep Alpha Radar business code behind this adapter boundary.
+        # Future version can connect to a Hermes sidecar via MCP/HTTP tools using
+        # the ToolSpec registry (app.agent.tools.registry).  The MCP manifest is
+        # available at GET /api/agent/tools/mcp-manifest so the sidecar can
+        # discover and invoke Alpha Radar data tools without importing any Hermes
+        # dependency in this codebase.
         raise NotImplementedError("Hermes runtime adapter is reserved but not enabled in this MVP.")

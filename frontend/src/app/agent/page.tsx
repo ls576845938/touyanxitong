@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Bot, CheckCircle2, FileText, Loader2, Play, Save, ShieldAlert, Sparkles, XCircle } from "lucide-react";
-import { api, type AgentArtifact, type AgentRunResponse, type AgentSkill, type AgentStep, type AgentTaskType } from "@/lib/api";
+import { Bot, CheckCircle2, FileText, Loader2, MessageSquare, Play, Radio, Save, ShieldAlert, Sparkles, Wrench, XCircle } from "lucide-react";
+import { api, type AgentArtifact, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow } from "@/lib/api";
 
 const FALLBACK_SKILLS: AgentSkill[] = [
   { id: "system:stock_deep_research", name: "个股深度投研", description: "趋势、评分、产业链和证据链报告。", skill_type: "stock_deep_research", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
@@ -45,11 +45,25 @@ export default function AgentPage() {
   const [artifact, setArtifact] = useState<AgentArtifact | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [sseStatus, setSseStatus] = useState<"idle" | "connecting" | "connected" | "failed">("idle");
+  const sseRef = useRef<EventSource | null>(null);
+  const completedRef = useRef(false);
+  const [followupMessages, setFollowupMessages] = useState<AgentMessage[]>([]);
+  const [followupInput, setFollowupInput] = useState("");
+  const [followupMode, setFollowupMode] = useState<string>("auto");
+  const [sendingFollowup, setSendingFollowup] = useState(false);
 
   useEffect(() => {
     api.agentSkills()
       .then((rows) => setSkills(rows.filter((row) => row.is_system).slice(0, 5)))
       .catch(() => setSkills(FALLBACK_SKILLS));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      sseRef.current?.close();
+      sseRef.current = null;
+    };
   }, []);
 
   const selectedSkill = useMemo(
@@ -63,11 +77,17 @@ export default function AgentPage() {
       setError("请输入一个投研问题。");
       return;
     }
+    sseRef.current?.close();
+    sseRef.current = null;
+    completedRef.current = false;
     setLoading(true);
     setError("");
     setRun(null);
     setSteps([]);
     setArtifact(null);
+    setSseStatus("idle");
+    setFollowupMessages([]);
+    setFollowupInput("");
     try {
       const response = await api.agentRun({
         user_prompt: cleaned,
@@ -76,9 +96,11 @@ export default function AgentPage() {
         save_as_skill: false
       });
       setRun(response);
-      
-      // Start polling for results
-      pollRunStatus(response.run_id);
+
+      // Try SSE first, fall back to polling
+      if (!connectSSE(response.run_id)) {
+        pollRunStatus(response.run_id);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Agent 投研请求发送失败");
       setLoading(false);
@@ -125,6 +147,151 @@ export default function AgentPage() {
     }, 1000);
   }
 
+  function connectSSE(runId: number): boolean {
+    setSseStatus("connecting");
+    let es: EventSource;
+    try {
+      es = api.agentRunEvents(runId);
+    } catch {
+      setSseStatus("failed");
+      return false;
+    }
+    sseRef.current = es;
+
+    function handleSSEEvent(data: AgentSSEEvent) {
+      const { event, payload } = data;
+      switch (event) {
+        case "run_started":
+          setRun((prev) => prev ? { ...prev, status: "running" } : prev);
+          break;
+        case "step_started": {
+          const step = payload as unknown as AgentStep;
+          if (step?.step_name) {
+            setSteps((prev) => [...prev, step]);
+          }
+          break;
+        }
+        case "tool_call_started": {
+          const toolName = String(payload?.tool_name ?? payload?.name ?? "工具调用");
+          setSteps((prev) => [
+            ...prev,
+            {
+              id: -(Date.now() * 1000 + Math.floor(Math.random() * 1000)),
+              run_id: runId,
+              step_name: toolName,
+              agent_role: "tool",
+              status: "running",
+              input_json: payload as Record<string, unknown>,
+              output_json: {},
+              error_message: "",
+              created_at: data.timestamp
+            } as AgentStep
+          ]);
+          break;
+        }
+        case "tool_call_completed": {
+          setSteps((prev) => {
+            const copy = [...prev];
+            for (let i = copy.length - 1; i >= 0; i--) {
+              if (copy[i].agent_role === "tool" && copy[i].status === "running") {
+                copy[i] = { ...copy[i], status: "success", output_json: payload as Record<string, unknown> };
+                break;
+              }
+            }
+            return copy;
+          });
+          break;
+        }
+        case "step_completed": {
+          const stepUpd = payload as unknown as AgentStep;
+          if (stepUpd?.id) {
+            setSteps((prev) => prev.map((s) => s.id === stepUpd.id ? { ...s, ...stepUpd } : s));
+          }
+          break;
+        }
+        case "artifact_created":
+          api.agentRunArtifacts(runId).then((arts) => {
+            if (arts.length > 0) setArtifact(arts[arts.length - 1]);
+          }).catch(() => {});
+          break;
+        case "run_completed":
+          completedRef.current = true;
+          setLoading(false);
+          setRun((prev) => prev ? { ...prev, status: "success" } : prev);
+          setSseStatus("idle");
+          es.close();
+          sseRef.current = null;
+          api.agentRunArtifacts(runId).then((arts) => {
+            if (arts.length > 0) setArtifact(arts[arts.length - 1]);
+          }).catch(() => {});
+          loadFollowupMessages(runId);
+          break;
+        case "run_failed":
+          completedRef.current = true;
+          setLoading(false);
+          setRun((prev) => prev ? { ...prev, status: "failed" } : prev);
+          setSseStatus("idle");
+          es.close();
+          sseRef.current = null;
+          setError(typeof payload?.error === "string" ? payload.error : "Agent 运行失败");
+          break;
+        case "heartbeat":
+          break;
+      }
+    }
+
+    const sseEventTypes = ["run_started", "step_started", "tool_call_started", "tool_call_completed", "step_completed", "artifact_created", "run_completed", "run_failed", "heartbeat"];
+    for (const evt of sseEventTypes) {
+      es.addEventListener(evt, ((msg: MessageEvent) => {
+        try { handleSSEEvent(JSON.parse(msg.data) as AgentSSEEvent); }
+        catch (e) { console.error(`SSE "${evt}" parse error:`, e); }
+      }) as EventListener);
+    }
+
+    es.addEventListener("open", () => setSseStatus("connected"));
+
+    es.onerror = () => {
+      if (completedRef.current) return;
+      es.close();
+      sseRef.current = null;
+      setSseStatus("failed");
+      pollRunStatus(runId);
+    };
+
+    return true;
+  }
+
+  function loadFollowupMessages(runId: number) {
+    api.agentRunMessages(runId).then(setFollowupMessages).catch(() => {});
+  }
+
+  async function sendFollowup() {
+    const msg = followupInput.trim();
+    if (!msg || !run) return;
+    setSendingFollowup(true);
+    const userMsg: AgentMessage = { role: "user", content: msg, created_at: new Date().toISOString() };
+    setFollowupMessages((prev) => [...prev, userMsg]);
+    setFollowupInput("");
+    try {
+      const response = await api.agentRunFollowup(run.run_id, {
+        message: msg,
+        mode: followupMode as AgentFollowupRequest["mode"]
+      });
+      const assistantMsg: AgentMessage = {
+        role: "assistant",
+        content: response.answer_md,
+        followup_id: response.followup_id,
+        mode: response.mode,
+        created_at: response.created_at
+      };
+      setFollowupMessages((prev) => [...prev, assistantMsg]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "追问发送失败");
+    } finally {
+      setSendingFollowup(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 px-6 py-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -163,10 +330,23 @@ export default function AgentPage() {
             />
 
             <ResearchReportViewer loading={loading} run={run} artifact={artifact} error={error} />
+
+            <FollowUpSection
+              run={run}
+              artifact={artifact}
+              followupMessages={followupMessages}
+              followupInput={followupInput}
+              followupMode={followupMode}
+              sendingFollowup={sendingFollowup}
+              show={!!(run && artifact && run.status === "success")}
+              onInputChange={setFollowupInput}
+              onModeChange={setFollowupMode}
+              onSubmit={sendFollowup}
+            />
           </main>
 
           <aside className="space-y-6">
-            <AgentRunTimeline loading={loading} steps={steps} run={run} />
+            <AgentRunTimeline loading={loading} steps={steps} run={run} sseStatus={sseStatus} />
             <EvidencePanel artifact={artifact} run={run} />
             <SkillBuilderPanel prompt={prompt} run={run} artifact={artifact} />
           </aside>
@@ -289,13 +469,32 @@ function SkillTemplatePicker({
   );
 }
 
-function AgentRunTimeline({ loading, steps, run }: { loading: boolean; steps: AgentStep[]; run: AgentRunResponse | null }) {
+function AgentRunTimeline({ loading, steps, run, sseStatus }: { loading: boolean; steps: AgentStep[]; run: AgentRunResponse | null; sseStatus: "idle" | "connecting" | "connected" | "failed" }) {
   const failedSteps = steps.filter((step) => step.status !== "success");
 
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
-        <div className="text-xs font-black uppercase tracking-widest text-slate-500">Run Timeline</div>
+        <div className="flex items-center gap-2">
+          <div className="text-xs font-black uppercase tracking-widest text-slate-500">Run Timeline</div>
+          {sseStatus === "connected" && (
+            <span className="flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-600">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              SSE
+            </span>
+          )}
+          {sseStatus === "connecting" && (
+            <span className="flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-600">
+              <Radio size={10} />
+              Conn
+            </span>
+          )}
+          {sseStatus === "failed" && (
+            <span className="flex items-center gap-1 rounded-md bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-600">
+              Polling
+            </span>
+          )}
+        </div>
         {run && <span className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-black uppercase text-slate-500">#{run.run_id}</span>}
       </div>
       {run && <RunSummaryCard loading={loading} run={run} />}
@@ -319,7 +518,13 @@ function AgentRunTimeline({ loading, steps, run }: { loading: boolean; steps: Ag
         {steps.map((step) => (
           <div key={step.id} className="flex gap-3">
             <div className="mt-0.5">
-              {step.status === "success" ? <CheckCircle2 size={16} className="text-emerald-600" /> : <XCircle size={16} className="text-rose-600" />}
+              {step.agent_role === "tool" ? (
+                <Wrench size={16} className={step.status === "success" ? "text-indigo-500" : "text-amber-500 animate-pulse"} />
+              ) : step.status === "success" ? (
+                <CheckCircle2 size={16} className="text-emerald-600" />
+              ) : (
+                <XCircle size={16} className="text-rose-600" />
+              )}
             </div>
             <div>
               <div className="text-sm font-black text-slate-800">{step.step_name}</div>
@@ -658,9 +863,98 @@ function IndustryHeatMount() {
             正在生成热力图...
           </div>
         ) : (
-          <IndustryHeatChart data={data || []} />
+          <IndustryHeatChart rows={data || []} />
         )}
       </div>
     </div>
+  );
+}
+
+function FollowUpSection({
+  run,
+  artifact,
+  followupMessages,
+  followupInput,
+  followupMode,
+  sendingFollowup,
+  show,
+  onInputChange,
+  onModeChange,
+  onSubmit
+}: {
+  run: AgentRunResponse | null;
+  artifact: AgentArtifact | null;
+  followupMessages: AgentMessage[];
+  followupInput: string;
+  followupMode: string;
+  sendingFollowup: boolean;
+  show: boolean;
+  onInputChange: (value: string) => void;
+  onModeChange: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  if (!show) return null;
+
+  const modes = [
+    { key: "auto", label: "Auto" },
+    { key: "expand_risk", label: "展开风险" },
+    { key: "evidence_drilldown", label: "证据深挖" },
+    { key: "explain", label: "展开说说" }
+  ];
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+        <MessageSquare size={16} className="text-indigo-600" />
+        追问
+      </div>
+
+      {followupMessages.length > 0 && (
+        <div className="mb-4 max-h-80 space-y-3 overflow-y-auto">
+          {followupMessages.map((msg, i) => (
+            <div key={msg.followup_id ?? msg.id ?? i} className={`rounded-lg p-3 ${msg.role === "user" ? "border border-indigo-100 bg-indigo-50" : "bg-slate-50"}`}>
+              <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                {msg.role === "user" ? "我的提问" : `Agent${msg.mode ? ` · ${msg.mode}` : ""}`}
+              </div>
+              <div className="text-sm font-medium leading-6 text-slate-700">{msg.content}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mb-3 flex flex-wrap gap-2">
+        {modes.map((m) => (
+          <button
+            key={m.key}
+            type="button"
+            onClick={() => onModeChange(m.key)}
+            className={`rounded-lg border px-3 py-1.5 text-xs font-bold ${
+              followupMode === m.key ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-500 hover:border-slate-300"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={followupInput}
+          onChange={(e) => onInputChange(e.target.value)}
+          placeholder="追问：展开说说风险因素"
+          className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-800 outline-none focus:border-indigo-400 focus:bg-white"
+        />
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={sendingFollowup || !followupInput.trim()}
+          className="inline-flex h-10 items-center gap-2 rounded-lg bg-indigo-600 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          {sendingFollowup ? <Loader2 size={16} className="animate-spin" /> : <MessageSquare size={16} />}
+          发送
+        </button>
+      </div>
+    </section>
   );
 }

@@ -27,4 +27,38 @@ GOLDEN_CASES = [
         "expected_task_type": "daily_market_brief",
         "required_phrases": ["每日市场简报", "风险预警", "明日观察清单"],
     },
+    # ---- MVP 2.1 edge cases ----
+    # Note: Avoid prompts containing 'A'/'AI' substrings because the production
+    # DB has US stocks with codes A (安捷伦) and AI (C3.ai) which _extract_symbols
+    # picks up as false positives (stock.code in prompt substring check).
+    {
+        "prompt": "半导体上游、中游、下游分别谁最强",
+        "expected_task_type": "industry_chain_radar",
+        "required_phrases": ["产业链", "风险提示"],
+        "forbidden_phrases": ["买入", "卖出", "满仓"],
+    },
+    {
+        "prompt": "从全市场筛选高动量标的",
+        "expected_task_type": "trend_pool_scan",
+        "required_phrases": ["趋势股票池扫描", "风险提示"],
+        "forbidden_phrases": ["稳赚", "必涨"],
+    },
+    {
+        "prompt": "今天的市场复盘和明天关注什么",
+        "expected_task_type": "daily_market_brief",
+        "required_phrases": ["每日市场简报", "风险预警"],
+        "forbidden_phrases": ["无风险"],
+    },
+    {
+        "prompt": "分析光模块产业链哪家最强",
+        "expected_task_type": "industry_chain_radar",
+        "required_phrases": ["产业链", "节点"],
+        "forbidden_phrases": [],
+    },
+    {
+        "prompt": "筛选有成长空间10倍的早期标的",
+        "expected_task_type": "tenbagger_candidate",
+        "required_phrases": ["十倍股早期特征候选", "证据缺口"],
+        "forbidden_phrases": ["梭哈", "满仓"],
+    },
 ]

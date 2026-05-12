@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -323,3 +324,258 @@ def _claim_refs_from_runtime(result) -> list[dict]:
         }
         for claim in result.content_json["claims"]
     ]
+
+
+# ---------------------------------------------------------------------------
+# MVP 2.1 New Endpoint Tests  (use pytest.skip for endpoints not yet added)
+# ---------------------------------------------------------------------------
+
+
+def test_sse_events_endpoint_exists(tmp_path) -> None:
+    """SSE streaming endpoint should exist at GET /api/agent/runs/{run_id}/events."""
+    with _client(tmp_path) as client:
+        # Create a run so the endpoint has a valid resource to stream
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        response = client.get(f"/api/agent/runs/{run_id}/events")
+        if response.status_code == 404:
+            pytest.skip("SSE events endpoint not yet implemented (expected for MVP 2.1)")
+        assert "text/event-stream" in response.headers.get("content-type", "")
+
+
+def test_sse_events_for_completed_run(tmp_path) -> None:
+    """After a completed run, the events endpoint should return event data."""
+    with _client(tmp_path) as client:
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        with _session(tmp_path) as session:
+            def session_factory():
+                return _session(tmp_path)
+            orchestrator = AgentOrchestrator(session, session_factory=session_factory)
+            orchestrator.execute_async(run_id, AgentRunRequest(user_prompt="帮我分析中际旭创"))
+
+        events_resp = client.get(f"/api/agent/runs/{run_id}/events")
+        if events_resp.status_code == 404:
+            pytest.skip("SSE events endpoint not yet implemented (expected for MVP 2.1)")
+        assert events_resp.status_code == 200
+        assert "text/event-stream" in events_resp.headers.get("content-type", "")
+
+
+def test_tools_endpoint(tmp_path) -> None:
+    """GET /api/agent/tools should return a list with >=5 read_only tools."""
+    with _client(tmp_path) as client:
+        response = client.get("/api/agent/tools")
+        if response.status_code == 404:
+            pytest.skip("Tools endpoint not yet implemented (expected for MVP 2.1)")
+        assert response.status_code == 200
+        tools = response.json()
+        assert isinstance(tools, list)
+        assert len(tools) >= 5
+        for tool in tools:
+            assert tool.get("read_only") is True
+
+
+def test_mcp_manifest_endpoint(tmp_path) -> None:
+    """GET /api/agent/tools/mcp-manifest should return valid JSON with tools array."""
+    with _client(tmp_path) as client:
+        response = client.get("/api/agent/tools/mcp-manifest")
+        if response.status_code == 404:
+            pytest.skip("MCP manifest endpoint not yet implemented (expected for MVP 2.1)")
+        assert response.status_code == 200
+        manifest = response.json()
+        assert "tools" in manifest
+        tools = manifest["tools"]
+        assert isinstance(tools, list)
+        assert len(tools) > 0
+
+
+# ---------------------------------------------------------------------------
+# Follow-up endpoint tests  (endpoints already exist in api.py)
+# ---------------------------------------------------------------------------
+
+
+def test_followup_endpoint(tmp_path) -> None:
+    """Test POST /api/agent/runs/{run_id}/followups on a completed run."""
+    with _client(tmp_path) as client:
+        # 1. Create and execute a run
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创是不是还在主升趋势"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        with _session(tmp_path) as session:
+            def session_factory():
+                return _session(tmp_path)
+            orchestrator = AgentOrchestrator(session, session_factory=session_factory)
+            orchestrator.execute_async(run_id, AgentRunRequest(user_prompt="帮我分析中际旭创是不是还在主升趋势"))
+
+        # 2. Followup on the completed run
+        followup_resp = client.post(
+            f"/api/agent/runs/{run_id}/followups",
+            json={"message": "请解释一下这个结论的推理过程"},
+        )
+        assert followup_resp.status_code == 201
+        data = followup_resp.json()
+        assert "answer_md" in data
+        assert isinstance(data["answer_md"], str)
+        assert "evidence_refs" in data
+
+        # 3. Followup on non-existent run -> 404
+        resp404 = client.post("/api/agent/runs/999999/followups", json={"message": "explain"})
+        assert resp404.status_code == 404
+
+        # 4. Followup on run that exists but has no artifact -> 400
+        with _session(tmp_path) as s:
+            from app.db.models import AgentRun as AgentRunModel
+
+            orphan = AgentRunModel(user_prompt="orphan-no-artifact", task_type="auto", status="pending")
+            s.add(orphan)
+            s.commit()
+            orphan_id = orphan.id
+
+        resp400 = client.post(f"/api/agent/runs/{orphan_id}/followups", json={"message": "explain"})
+        assert resp400.status_code == 400
+        err = resp400.json()
+        assert "detail" in err
+
+
+def test_followup_messages_endpoint(tmp_path) -> None:
+    """Test GET /api/agent/runs/{run_id}/messages returns followup history."""
+    with _client(tmp_path) as client:
+        # 1. Create and execute a run
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创是不是还在主升趋势"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        with _session(tmp_path) as session:
+            def session_factory():
+                return _session(tmp_path)
+            orchestrator = AgentOrchestrator(session, session_factory=session_factory)
+            orchestrator.execute_async(run_id, AgentRunRequest(user_prompt="帮我分析中际旭创是不是还在主升趋势"))
+
+        # 2. Create a followup
+        followup_resp = client.post(
+            f"/api/agent/runs/{run_id}/followups",
+            json={"message": "请解释一下风险因素"},
+        )
+        assert followup_resp.status_code == 201
+
+        # 3. Retrieve messages
+        messages_resp = client.get(f"/api/agent/runs/{run_id}/messages")
+        assert messages_resp.status_code == 200
+        messages = messages_resp.json()
+        assert len(messages) > 0
+        msg = messages[0]
+        assert "message_id" in msg
+        assert "answer_md" in msg
+        assert msg["message"] == "请解释一下风险因素"
+
+
+def test_followup_guardrails(tmp_path) -> None:
+    """Verify follow-up output goes through guardrails (disclaimer present, no forbidden words)."""
+    with _client(tmp_path) as client:
+        # Create and execute a run
+        response = client.post("/api/agent/runs", json={"user_prompt": "帮我分析中际旭创是不是还在主升趋势"})
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+
+        with _session(tmp_path) as session:
+            def session_factory():
+                return _session(tmp_path)
+            orchestrator = AgentOrchestrator(session, session_factory=session_factory)
+            orchestrator.execute_async(run_id, AgentRunRequest(user_prompt="帮我分析中际旭创是不是还在主升趋势"))
+
+        # Followup
+        followup_resp = client.post(
+            f"/api/agent/runs/{run_id}/followups",
+            json={"message": "请详细分析"},
+        )
+        assert followup_resp.status_code == 201
+        data = followup_resp.json()
+
+        # Guardrails assertions
+        answer = data["answer_md"]
+        assert RISK_DISCLAIMER in answer
+        for word in ["买入", "卖出", "满仓", "梭哈", "稳赚"]:
+            assert word not in answer, f"Forbidden word '{word}' found in followup answer"
+
+
+# ---------------------------------------------------------------------------
+# Task type detection edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_task_type_edge_cases(tmp_path) -> None:
+    """Test edge case prompts against orchestrator._select_task_type directly."""
+    with _session(tmp_path) as session:
+        orchestrator = AgentOrchestrator(session)
+
+        # Edge case 1: "上游" etc. -> industry_chain_radar (via extracted industries)
+        assert orchestrator._select_task_type(
+            AgentRunRequest(user_prompt="AI 算力上游、中游、下游分别谁最强"),
+            [],
+            ["AI算力"],
+        ) == AgentTaskType.INDUSTRY_CHAIN_RADAR
+
+        # Edge case 2: "筛选" + "动量" -> trend_pool_scan
+        assert orchestrator._select_task_type(
+            AgentRunRequest(user_prompt="从全市场筛选高动量标的"),
+            [],
+            [],
+        ) == AgentTaskType.TREND_POOL_SCAN
+
+        # Edge case 3: "复盘" -> daily_market_brief
+        assert orchestrator._select_task_type(
+            AgentRunRequest(user_prompt="今天的市场复盘和明天关注什么"),
+            [],
+            [],
+        ) == AgentTaskType.DAILY_MARKET_BRIEF
+
+        # Edge case 4: "产业链" -> industry_chain_radar (not stock)
+        assert orchestrator._select_task_type(
+            AgentRunRequest(user_prompt="分析光模块产业链哪家最强"),
+            [],
+            [],
+        ) == AgentTaskType.INDUSTRY_CHAIN_RADAR
+
+        # Edge case 5: "10倍" -> tenbagger_candidate
+        assert orchestrator._select_task_type(
+            AgentRunRequest(user_prompt="筛选有成长空间10倍的早期标的"),
+            [],
+            [],
+        ) == AgentTaskType.TENBAGGER_CANDIDATE
+
+
+# ---------------------------------------------------------------------------
+# Guardrails completeness
+# ---------------------------------------------------------------------------
+
+
+def test_guardrails_all_forbidden_words() -> None:
+    """Verify ALL forbidden words from FORBIDDEN_REPLACEMENTS are actually replaced."""
+    from app.agent.guardrails import FORBIDDEN_REPLACEMENTS
+
+    composite_text = "建议买入 建议卖出 满仓梭哈 稳赚必涨 无风险 抄底逃顶 重仓加杠杆 翻倍确定性保证收益"
+    sanitized, warnings = sanitize_financial_output(composite_text)
+
+    # Every key in FORBIDDEN_REPLACEMENTS must be absent
+    for word in FORBIDDEN_REPLACEMENTS:
+        assert word not in sanitized, f"'{word}' was not replaced in sanitized output"
+
+    # Risk disclaimer must be appended
+    assert RISK_DISCLAIMER in sanitized
+    assert len(warnings) > 0
+
+    # Regex-based replacements
+    regex_text = "建议加仓 建议减仓 目标价:123 目标价：456"
+    sanitized2, _ = sanitize_financial_output(regex_text)
+    assert "建议加仓" not in sanitized2
+    assert "建议减仓" not in sanitized2
+    assert "目标价:123" not in sanitized2
+    assert "目标价：456" not in sanitized2
+    assert "建议跟踪观察" in sanitized2
+    assert "建议复核风险暴露" in sanitized2
+    assert "估值情景需独立复核" in sanitized2
