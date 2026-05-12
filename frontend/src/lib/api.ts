@@ -1396,8 +1396,30 @@ export type AgentArtifact = {
   content_md: string;
   content_json: Record<string, unknown>;
   evidence_refs: Record<string, unknown>[];
+  claims: AgentArtifactClaim[];
+  claim_refs: AgentArtifactClaimRef[];
   risk_disclaimer: string;
   created_at: string;
+};
+
+export type AgentArtifactClaim = {
+  id: string;
+  section: string;
+  text: string;
+  evidence_ref_ids: string[];
+  source_tools: string[];
+  confidence: string;
+  uncertainty: string;
+  user_prompt: string;
+};
+
+export type AgentArtifactClaimRef = {
+  claim_id: string;
+  evidence_ref_ids: string[];
+  evidence_refs: Record<string, unknown>[];
+  source_tools: string[];
+  missing_evidence_ref_ids: string[];
+  has_evidence: boolean;
 };
 
 export type AgentSkill = {

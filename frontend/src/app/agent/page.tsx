@@ -19,6 +19,23 @@ const EXAMPLES = [
   "帮我筛出当前最有十倍股早期特征的股票池。"
 ];
 
+function readString(value: unknown, fallback = "未提供") {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function readIdList(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" || typeof item === "number" ? String(item) : ""))
+    .filter(Boolean);
+}
+
+function readConfidence(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return `${Math.round(value * 100)}%`;
+  if (typeof value === "string" && value.trim()) return value;
+  return "未提供";
+}
+
 export default function AgentPage() {
   const [prompt, setPrompt] = useState(EXAMPLES[0]);
   const [taskType, setTaskType] = useState<AgentTaskType>("auto");
@@ -109,7 +126,7 @@ export default function AgentPage() {
               onChange={setTaskType}
             />
 
-            <ResearchReportViewer loading={loading} run={run} artifact={artifact} />
+            <ResearchReportViewer loading={loading} run={run} artifact={artifact} error={error} />
           </main>
 
           <aside className="space-y-6">
@@ -237,22 +254,32 @@ function SkillTemplatePicker({
 }
 
 function AgentRunTimeline({ loading, steps, run }: { loading: boolean; steps: AgentStep[]; run: AgentRunResponse | null }) {
+  const failedSteps = steps.filter((step) => step.status !== "success");
+
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
         <div className="text-xs font-black uppercase tracking-widest text-slate-500">Run Timeline</div>
         {run && <span className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-black uppercase text-slate-500">#{run.run_id}</span>}
       </div>
+      {run && <RunSummaryCard loading={loading} run={run} />}
       {loading && steps.length === 0 && (
-        <div className="flex items-center gap-2 text-sm font-bold text-slate-500">
+        <div className="mt-4 flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-3 text-sm font-bold text-indigo-700">
           <Loader2 size={16} className="animate-spin" />
-          正在执行投研工作流
+          正在执行投研工作流，步骤和报告会在本次运行完成后刷新。
         </div>
       )}
       {!loading && steps.length === 0 && (
-        <div className="text-sm font-medium leading-6 text-slate-500">执行后会展示任务识别、工具调用、报告生成和合规检查步骤。</div>
+        <div className="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium leading-6 text-slate-500">
+          {run ? "本次运行还没有返回步骤明细。可以先查看摘要、报告区和证据面板。" : "执行后会展示任务识别、工具调用、报告生成和合规检查步骤。"}
+        </div>
       )}
-      <div className="space-y-3">
+      {failedSteps.length > 0 && (
+        <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold leading-5 text-rose-700">
+          {failedSteps.length} 个步骤未成功，请优先检查带红色提示的节点。
+        </div>
+      )}
+      <div className="mt-4 space-y-3">
         {steps.map((step) => (
           <div key={step.id} className="flex gap-3">
             <div className="mt-0.5">
@@ -270,7 +297,54 @@ function AgentRunTimeline({ loading, steps, run }: { loading: boolean; steps: Ag
   );
 }
 
-function ResearchReportViewer({ loading, run, artifact }: { loading: boolean; run: AgentRunResponse | null; artifact: AgentArtifact | null }) {
+function RunSummaryCard({ loading, run }: { loading: boolean; run: AgentRunResponse }) {
+  const statusTone =
+    run.status === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : run.status === "failed" || run.status === "error"
+        ? "border-rose-200 bg-rose-50 text-rose-700"
+        : "border-indigo-200 bg-indigo-50 text-indigo-700";
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm font-black text-slate-900">{run.report_title || "未命名运行"}</div>
+        <span className={`rounded-lg border px-2 py-1 text-[10px] font-black uppercase ${statusTone}`}>
+          {loading ? "running" : run.status}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <SummaryMetric label="Task Type" value={run.selected_task_type} />
+        <SummaryMetric label="Artifact ID" value={run.artifact_id === null ? "待生成" : String(run.artifact_id)} />
+        <SummaryMetric label="Run ID" value={`#${run.run_id}`} />
+      </div>
+      <div className="mt-3 rounded-lg bg-white px-3 py-3 text-sm font-medium leading-6 text-slate-600">
+        {run.summary || "本次运行暂未返回摘要。"}
+      </div>
+    </div>
+  );
+}
+
+function SummaryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-white px-3 py-2">
+      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</div>
+      <div className="mt-1 text-sm font-bold text-slate-700">{value}</div>
+    </div>
+  );
+}
+
+function ResearchReportViewer({
+  loading,
+  run,
+  artifact,
+  error
+}: {
+  loading: boolean;
+  run: AgentRunResponse | null;
+  artifact: AgentArtifact | null;
+  error: string;
+}) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
@@ -287,7 +361,18 @@ function ResearchReportViewer({ loading, run, artifact }: { loading: boolean; ru
             正在生成结构化报告
           </div>
         )}
-        {!loading && !artifact && (
+        {!loading && error && !artifact && (
+          <div className="flex min-h-80 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 px-6 text-sm font-bold leading-6 text-rose-700">
+            运行未完成，暂时没有可展示的报告。请先处理上方错误后重新执行。
+          </div>
+        )}
+        {!loading && run && !error && !artifact && (
+          <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-dashed border-amber-200 bg-amber-50 px-6 text-center text-sm font-medium leading-6 text-amber-800">
+            <div className="font-black">本次运行已返回摘要，但还没有生成最终报告。</div>
+            <div className="mt-2 max-w-xl">{run.summary || "请查看右侧时间线和证据面板，确认是否有失败步骤或缺失输出。"}</div>
+          </div>
+        )}
+        {!loading && !run && !artifact && (
           <div className="flex min-h-80 items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 text-sm font-medium text-slate-500">
             输入投研问题后，这里会显示 Markdown 报告。
           </div>
@@ -300,7 +385,9 @@ function ResearchReportViewer({ loading, run, artifact }: { loading: boolean; ru
 
 function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run: AgentRunResponse | null }) {
   const refs = artifact?.evidence_refs ?? [];
-  const claims = Array.isArray(artifact?.content_json?.claims)
+  const claims = artifact?.claims?.length
+    ? artifact.claims
+    : Array.isArray(artifact?.content_json?.claims)
     ? (artifact.content_json.claims as Record<string, unknown>[])
     : [];
   const warnings = run?.warnings ?? [];
@@ -311,7 +398,7 @@ function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run:
         Evidence & Risk
       </div>
       <div className="space-y-4">
-        <InfoBlock label="证据来源" empty="暂无证据引用">
+        <InfoBlock label="证据来源" empty={run ? "本次运行未返回证据来源。" : "运行后会展示证据来源。"}>
           {refs.map((ref, index) => (
             <div key={index} className="rounded-lg bg-slate-50 p-3 text-xs font-medium leading-5 text-slate-600">
               <div className="flex items-start gap-2">
@@ -325,18 +412,33 @@ function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run:
             </div>
           ))}
         </InfoBlock>
-        <InfoBlock label="Claim 引用" empty="暂无 Claim 级引用">
-          {claims.map((claim, index) => (
-            <div key={String(claim.id ?? index)} className="rounded-lg bg-slate-50 p-3 text-xs font-medium leading-5 text-slate-600">
-              <div className="font-black text-slate-800">[{String(claim.id ?? `C${index + 1}`)}] {String(claim.section ?? "结论")}</div>
-              <div className="mt-1">{String(claim.text ?? "")}</div>
-              <div className="mt-2 text-[11px] font-black text-slate-400">
-                来源：{Array.isArray(claim.evidence_ref_ids) ? claim.evidence_ref_ids.join("、") : "unavailable"}
+        <InfoBlock label="Claim 引用" empty={run ? "本次运行未返回 Claim 级引用。" : "运行后会展示 Claim 级引用。"}>
+          {claims.map((claim, index) => {
+            const claimRow = claim as Record<string, unknown>;
+            const claimId = readString(claimRow.id, `C${index + 1}`);
+            const section = readString(claimRow.section, "结论");
+            const text = readString(claimRow.text, "该 Claim 未返回正文。");
+            const sourceIds = readIdList(claimRow.evidence_ref_ids ?? claimRow.source_ids ?? claimRow.sources);
+            const confidence = readConfidence(claimRow.confidence);
+            const uncertainty = readString(claimRow.uncertainty, readString(claimRow.uncertainty_note, "未说明"));
+
+            return (
+              <div key={claimId} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs font-medium leading-5 text-slate-600">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-md bg-slate-900 px-1.5 py-0.5 text-[10px] font-black text-white">{claimId}</span>
+                  <div className="font-black text-slate-800">{section}</div>
+                </div>
+                <div className="mt-2 text-sm leading-6 text-slate-700">{text}</div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                  <ClaimMeta label="来源 ID" value={sourceIds.length > 0 ? sourceIds.join("、") : "未提供"} />
+                  <ClaimMeta label="置信度" value={confidence} />
+                  <ClaimMeta label="不确定性" value={uncertainty} />
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </InfoBlock>
-        <InfoBlock label="风险提示" empty="执行后展示风险提示">
+        <InfoBlock label="风险提示" empty={run ? "本次运行没有返回额外风险提示。" : "执行后展示风险提示。"}>
           {warnings.map((item) => (
             <div key={item} className="rounded-lg bg-amber-50 p-3 text-xs font-bold leading-5 text-amber-800">{item}</div>
           ))}
@@ -348,6 +450,15 @@ function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run:
         )}
       </div>
     </section>
+  );
+}
+
+function ClaimMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-white px-3 py-2">
+      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</div>
+      <div className="mt-1 text-xs font-bold text-slate-700">{value}</div>
+    </div>
   );
 }
 
@@ -395,6 +506,8 @@ function SkillBuilderPanel({ prompt, run, artifact }: { prompt: string; run: Age
         {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
         保存为我的 Skill
       </button>
+      {!run && <div className="mt-3 rounded-lg bg-slate-50 p-3 text-xs font-bold text-slate-500">运行完成并生成报告后，才能保存为 Skill。</div>}
+      {run && !artifact && <div className="mt-3 rounded-lg bg-slate-50 p-3 text-xs font-bold text-slate-500">本次运行还没有可复用的报告产物，暂不能保存。</div>}
       {saved && <div className="mt-3 rounded-lg bg-emerald-50 p-3 text-xs font-black text-emerald-700">已保存：{saved.name}</div>}
       {error && <div className="mt-3 rounded-lg bg-rose-50 p-3 text-xs font-black text-rose-700">{error}</div>}
     </section>
