@@ -311,7 +311,13 @@ function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run:
         <InfoBlock label="证据来源" empty="暂无证据引用">
           {refs.map((ref, index) => (
             <div key={index} className="rounded-lg bg-slate-50 p-3 text-xs font-medium leading-5 text-slate-600">
-              <div className="font-black text-slate-800">{String(ref.title ?? ref.source ?? `证据 ${index + 1}`)}</div>
+              <div className="flex items-start gap-2">
+                <span className="rounded-md bg-slate-900 px-1.5 py-0.5 text-[10px] font-black text-white">{String(ref.id ?? `S${index + 1}`)}</span>
+                <div className="font-black text-slate-800">{String(ref.title ?? ref.source ?? `证据 ${index + 1}`)}</div>
+              </div>
+              <div className="mt-1 text-[11px] font-bold text-slate-400">
+                {String(ref.source ?? "alpha_radar_tool")} · {String(ref.tool_name ?? ref.kind ?? "source")}
+              </div>
               {typeof ref.url === "string" && ref.url && <div className="mt-1 break-all text-slate-400">{ref.url}</div>}
             </div>
           ))}

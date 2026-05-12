@@ -92,6 +92,9 @@ def test_mock_adapter_generates_stock_report() -> None:
     assert result.title == "个股深度投研：中际旭创"
     assert "风险提示" in result.content_md
     assert "证据链" in result.content_md
+    assert "证据引用：S" in result.content_md
+    assert result.evidence_refs
+    assert result.evidence_refs[0]["id"] == "S1"
 
 
 def test_agent_run_stock_smoke_and_audit_tables(tmp_path) -> None:
@@ -108,9 +111,12 @@ def test_agent_run_stock_smoke_and_audit_tables(tmp_path) -> None:
 
         artifacts = client.get(f"/api/agent/runs/{payload['run_id']}/artifacts")
         assert artifacts.status_code == 200
-        report = artifacts.json()[0]["content_md"]
+        artifact = artifacts.json()[0]
+        report = artifact["content_md"]
         assert "风险提示" in report
         assert "不构成投资建议" in report
+        assert "证据引用：S" in report
+        assert artifact["evidence_refs"]
         assert "买入" not in report
 
 
