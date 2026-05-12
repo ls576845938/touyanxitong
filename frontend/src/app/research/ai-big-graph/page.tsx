@@ -416,7 +416,7 @@ export default function AiBigGraphPage() {
 
               <div className="space-y-14">
                 <p className="text-slate-600 text-xl font-bold italic leading-relaxed border-l-[16px] border-slate-100 pl-10 py-2">
-                   "{selectedNode.summary}"
+                   &quot;{selectedNode.summary}&quot;
                 </p>
 
                 {/* Investment Logic Section */}
