@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16
+    command: postgres -c shared_buffers=1GB -c work_mem=64MB -c maintenance_work_mem=256MB -c random_page_cost=1.1 -c effective_cache_size=4GB
     environment:
       POSTGRES_DB: alpha_radar
       POSTGRES_USER: alpha

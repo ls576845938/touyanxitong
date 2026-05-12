@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from dotenv import load_dotenv
+
+# Load .env from backend directory or parent directory
+load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 
 def _int_env(name: str, default: int) -> int:

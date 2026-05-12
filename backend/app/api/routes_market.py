@@ -33,7 +33,7 @@ from app.services.stock_resolver import alias_code_for_identifier, resolve_stock
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
-_CACHE_TTL_SECONDS = 120.0
+_CACHE_TTL_SECONDS = 600.0
 _payload_cache: dict[str, tuple[float, Any]] = {}
 QUALITY_BACKFILL_FOCUS: tuple[tuple[str, str], ...] = (("US", "all"), ("HK", "all"), ("A", "bse"))
 
@@ -70,6 +70,10 @@ class IngestionBackfillCreate(BaseModel):
 
 @router.get("/summary")
 def market_summary(session: Session = Depends(get_session)) -> dict[str, object]:
+    return _cached_payload("market-summary", lambda: _market_summary_payload(session), ttl=120.0)
+
+
+def _market_summary_payload(session: Session) -> dict[str, object]:
     stock_count = session.scalar(select(func.count()).select_from(Stock)) or 0
     latest_date = session.scalars(select(DailyBar.trade_date).order_by(DailyBar.trade_date.desc()).limit(1)).first()
     latest_score_date = session.scalars(select(StockScore.trade_date).order_by(StockScore.trade_date.desc()).limit(1)).first()

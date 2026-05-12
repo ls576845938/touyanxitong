@@ -508,7 +508,7 @@ def _ensure_stock_asset_classification(target_engine: Engine) -> None:
         """,
         """
         UPDATE stock
-        SET asset_type = 'etf', is_etf = 1
+        SET asset_type = 'etf', is_etf = TRUE
         WHERE market = 'A'
           AND asset_type = 'equity'
           AND (name LIKE '%ETF%' OR name LIKE '%LOF%' OR name LIKE '%基金%')
@@ -539,7 +539,7 @@ def _ensure_stock_asset_classification(target_engine: Engine) -> None:
         """,
         """
         UPDATE stock
-        SET asset_type = 'etf', is_etf = 1
+        SET asset_type = 'etf', is_etf = TRUE
         WHERE market = 'US'
           AND asset_type = 'equity'
           AND (

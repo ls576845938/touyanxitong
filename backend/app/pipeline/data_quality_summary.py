@@ -127,7 +127,7 @@ def data_quality_payload(
     }
 
 
-def _bar_summary(session: Session, stock_codes: list[str], target_date: date | None) -> dict[str, dict[str, Any]]:
+def _bar_summary(session: Session, stock_codes: list[str] | None, target_date: date | None) -> dict[str, dict[str, Any]]:
     bad_ohlc = case(
         (
             or_(
@@ -154,7 +154,19 @@ def _bar_summary(session: Session, stock_codes: list[str], target_date: date | N
         func.sum(bad_ohlc),
         func.sum(zero_liquidity),
         func.sum(real_bar),
-    ).where(DailyBar.stock_code.in_(stock_codes))
+    )
+    
+    if stock_codes is not None:
+        if len(stock_codes) > 1000:
+            # For large lists (like full market), use a subquery for better PG performance
+            active_codes_subquery = select(Stock.code).where(Stock.is_active.is_(True))
+            query = query.where(DailyBar.stock_code.in_(active_codes_subquery))
+        else:
+            query = query.where(DailyBar.stock_code.in_(stock_codes))
+    else:
+        # Implicitly for all active stocks if we join with Stock
+        query = query.join(Stock, Stock.code == DailyBar.stock_code).where(Stock.is_active.is_(True))
+
     if target_date is not None:
         query = query.where(DailyBar.trade_date <= target_date)
     rows = session.execute(query.group_by(DailyBar.stock_code)).all()
@@ -171,10 +183,21 @@ def _bar_summary(session: Session, stock_codes: list[str], target_date: date | N
     }
 
 
-def _source_kind_summary(session: Session, stock_codes: list[str], target_date: date | None) -> dict[str, dict[str, int]]:
-    query = select(DailyBar.stock_code, DailyBar.source_kind, func.count(DailyBar.id)).where(DailyBar.stock_code.in_(stock_codes))
+def _source_kind_summary(session: Session, stock_codes: list[str] | None, target_date: date | None) -> dict[str, dict[str, int]]:
+    query = select(DailyBar.stock_code, DailyBar.source_kind, func.count(DailyBar.id))
+    
+    if stock_codes is not None:
+        if len(stock_codes) > 1000:
+            active_codes_subquery = select(Stock.code).where(Stock.is_active.is_(True))
+            query = query.where(DailyBar.stock_code.in_(active_codes_subquery))
+        else:
+            query = query.where(DailyBar.stock_code.in_(stock_codes))
+    else:
+        query = query.join(Stock, Stock.code == DailyBar.stock_code).where(Stock.is_active.is_(True))
+        
     if target_date is not None:
         query = query.where(DailyBar.trade_date <= target_date)
+        
     rows = session.execute(query.group_by(DailyBar.stock_code, DailyBar.source_kind)).all()
     result: dict[str, dict[str, int]] = defaultdict(dict)
     for stock_code, source_kind, count in rows:
