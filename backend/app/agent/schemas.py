@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class AgentTaskType(StrEnum):
+    STOCK_DEEP_RESEARCH = "stock_deep_research"
+    INDUSTRY_CHAIN_RADAR = "industry_chain_radar"
+    TREND_POOL_SCAN = "trend_pool_scan"
+    TENBAGGER_CANDIDATE = "tenbagger_candidate"
+    DAILY_MARKET_BRIEF = "daily_market_brief"
+    AUTO = "auto"
+
+
+class AgentRunRequest(BaseModel):
+    user_prompt: str = Field(min_length=1, max_length=4000)
+    task_type: AgentTaskType | None = AgentTaskType.AUTO
+    symbols: list[str] | None = None
+    industry_keywords: list[str] | None = None
+    risk_preference: str | None = None
+    time_window: str | None = None
+    save_as_skill: bool = False
+    user_id: str | None = None
+
+
+class AgentRunResponse(BaseModel):
+    run_id: int
+    status: str
+    selected_task_type: AgentTaskType
+    report_title: str
+    summary: str
+    artifact_id: int | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AgentStep(BaseModel):
+    step_name: str
+    agent_role: str
+    status: str
+    input_json: dict[str, Any] = Field(default_factory=dict)
+    output_json: dict[str, Any] = Field(default_factory=dict)
+    error_message: str = ""
+
+
+class AgentStepResponse(AgentStep):
+    id: int
+    run_id: int
+    created_at: str
+
+
+class AgentArtifact(BaseModel):
+    artifact_type: str
+    title: str
+    content_md: str
+    content_json: dict[str, Any] = Field(default_factory=dict)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    risk_disclaimer: str
+
+
+class AgentArtifactResponse(AgentArtifact):
+    id: int
+    run_id: int
+    created_at: str
+
+
+class AgentToolCallResponse(BaseModel):
+    id: int
+    run_id: int
+    tool_name: str
+    input_json: dict[str, Any] = Field(default_factory=dict)
+    output_json: dict[str, Any] = Field(default_factory=dict)
+    latency_ms: int
+    success: bool
+    error_message: str
+    created_at: str
+
+
+class AgentRunDetail(BaseModel):
+    id: int
+    user_id: str | None = None
+    task_type: AgentTaskType
+    user_prompt: str
+    runtime_provider: str
+    status: str
+    selected_symbols: list[str] = Field(default_factory=list)
+    selected_industries: list[str] = Field(default_factory=list)
+    created_at: str
+    completed_at: str | None = None
+    error_message: str = ""
+    latest_artifact: AgentArtifactResponse | None = None
+
+
+class AgentSkillCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    description: str = ""
+    skill_type: AgentTaskType | str = AgentTaskType.AUTO
+    skill_md: str = ""
+    skill_config: dict[str, Any] = Field(default_factory=dict)
+    owner_user_id: str | None = None
+    is_system: bool = False
+
+
+class AgentSkillResponse(BaseModel):
+    id: int | str
+    name: str
+    description: str
+    skill_type: str
+    skill_md: str
+    skill_config: dict[str, Any] = Field(default_factory=dict)
+    owner_user_id: str | None = None
+    is_system: bool
+    created_at: str | None = None
+    updated_at: str | None = None

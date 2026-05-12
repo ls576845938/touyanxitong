@@ -17,7 +17,7 @@ from app.db.models import Base
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SQLITE_PATH = BACKEND_DIR / "data" / "alpha_radar.db"
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 @dataclass(frozen=True)
@@ -207,6 +207,11 @@ def _migration_tenbagger_research_loop_schema(_: Engine) -> None:
 def _migration_tenbagger_sniper_schema(target_engine: Engine) -> None:
     """Add structured tenbagger logic-sniper fields to existing local databases."""
     _ensure_tenbagger_sniper_columns(target_engine)
+
+
+def _migration_agent_orchestrator_schema(target_engine: Engine) -> None:
+    """Version marker plus indexes for Agent one-click research tables."""
+    _ensure_agent_orchestrator_indexes(target_engine)
 
 
 def _migration_api_performance_indexes(target_engine: Engine) -> None:
@@ -732,6 +737,40 @@ def _ensure_retail_research_indexes(target_engine: Engine) -> None:
                 connection.execute(text(statement))
 
 
+def _ensure_agent_orchestrator_indexes(target_engine: Engine) -> None:
+    statements = [
+        (
+            "agent_runs",
+            {"status", "created_at"},
+            "CREATE INDEX IF NOT EXISTS ix_agent_runs_status_created ON agent_runs (status, created_at)",
+        ),
+        (
+            "agent_steps",
+            {"run_id", "created_at"},
+            "CREATE INDEX IF NOT EXISTS ix_agent_steps_run_created ON agent_steps (run_id, created_at)",
+        ),
+        (
+            "agent_tool_calls",
+            {"run_id", "created_at"},
+            "CREATE INDEX IF NOT EXISTS ix_agent_tool_calls_run_created ON agent_tool_calls (run_id, created_at)",
+        ),
+        (
+            "agent_artifacts",
+            {"run_id", "created_at"},
+            "CREATE INDEX IF NOT EXISTS ix_agent_artifacts_run_created ON agent_artifacts (run_id, created_at)",
+        ),
+        (
+            "agent_skills",
+            {"skill_type", "is_system", "created_at"},
+            "CREATE INDEX IF NOT EXISTS ix_agent_skills_type_system_created ON agent_skills (skill_type, is_system, created_at)",
+        ),
+    ]
+    with target_engine.begin() as connection:
+        for table, columns, statement in statements:
+            if _table_has_columns(target_engine, table, columns):
+                connection.execute(text(statement))
+
+
 def _table_has_columns(target_engine: Engine, table_name: str, columns: set[str]) -> bool:
     inspector = inspect(target_engine)
     if not inspector.has_table(table_name):
@@ -763,6 +802,7 @@ SCHEMA_MIGRATIONS = [
     SchemaMigration(13, "news_article_hot_terms_trace_columns", _ensure_news_article_hot_terms_trace_columns),
     SchemaMigration(14, "mark_mock_news_synthetic", _migration_mark_mock_news_synthetic),
     SchemaMigration(15, "tenbagger_sniper_schema", _migration_tenbagger_sniper_schema),
+    SchemaMigration(16, "agent_orchestrator_schema", _migration_agent_orchestrator_schema),
 ]
 
 

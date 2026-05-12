@@ -712,6 +712,83 @@ class TradeReview(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    task_type: Mapped[str] = mapped_column(String(64), default="auto", index=True)
+    user_prompt: Mapped[str] = mapped_column(Text, default="")
+    runtime_provider: Mapped[str] = mapped_column(String(32), default="mock", index=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    selected_symbols_json: Mapped[str] = mapped_column(Text, default="[]")
+    selected_industries_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+
+
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("agent_runs.id"), index=True)
+    agent_role: Mapped[str] = mapped_column(String(64), default="orchestrator", index=True)
+    step_name: Mapped[str] = mapped_column(String(96), default="", index=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    input_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class AgentToolCall(Base):
+    __tablename__ = "agent_tool_calls"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("agent_runs.id"), index=True)
+    tool_name: Mapped[str] = mapped_column(String(96), default="", index=True)
+    input_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_json: Mapped[str] = mapped_column(Text, default="{}")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    success: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class AgentArtifact(Base):
+    __tablename__ = "agent_artifacts"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("agent_runs.id"), index=True)
+    artifact_type: Mapped[str] = mapped_column(String(64), default="research_report", index=True)
+    title: Mapped[str] = mapped_column(Text, default="")
+    content_md: Mapped[str] = mapped_column(Text, default="")
+    content_json: Mapped[str] = mapped_column(Text, default="{}")
+    evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class AgentSkill(Base):
+    __tablename__ = "agent_skills"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    skill_type: Mapped[str] = mapped_column(String(64), default="custom", index=True)
+    skill_md: Mapped[str] = mapped_column(Text, default="")
+    skill_config_json: Mapped[str] = mapped_column(Text, default="{}")
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 def _normalized_confidence(value: int | float | None) -> float:
     try:
         numeric = float(value or 0.0)

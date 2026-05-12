@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+from app.agent.api import router as agent_router
 from app.api.routes_chain import router as chain_router
 from app.api.routes_industry import router as industry_router
 from app.api.routes_market import router as market_router
@@ -72,3 +73,4 @@ app.include_router(watchlist_router)
 app.include_router(research_router)
 app.include_router(tenbagger_router)
 app.include_router(retail_router)
+app.include_router(agent_router)
