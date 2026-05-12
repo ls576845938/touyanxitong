@@ -1073,12 +1073,22 @@ export type TenbaggerThesisRow = {
   evidence_score: number;
   risk_score: number;
   readiness_score: number;
+  anti_thesis_score: number;
+  logic_gate_score: number;
+  logic_gate_status: string;
   stage: string;
   data_gate_status: string;
   investment_thesis: string;
   base_case: string;
   bull_case: string;
   bear_case: string;
+  logic_gates: TenbaggerLogicGate[];
+  anti_thesis_items: TenbaggerAntiThesisItem[];
+  alternative_data_signals: TenbaggerAlternativeSignal[];
+  valuation_simulation: TenbaggerValuationSimulation;
+  contrarian_signal: TenbaggerContrarianSignal;
+  sniper_focus: string[];
+  marginal_changes?: string[];
   key_milestones: string[];
   disconfirming_evidence: string[];
   missing_evidence: string[];
@@ -1112,16 +1122,82 @@ export type TenbaggerThesisRow = {
   };
 };
 
+export type TenbaggerLogicGate = {
+  id: string;
+  title: string;
+  metric: string;
+  status: "pass" | "watch" | "pending" | "fail" | string;
+  due_date: string;
+  source: string;
+  evidence: string[];
+};
+
+export type TenbaggerAntiThesisItem = {
+  type: string;
+  severity: "low" | "medium" | "high" | string;
+  title: string;
+  action: string;
+};
+
+export type TenbaggerAlternativeSignal = {
+  id: string;
+  label: string;
+  score: number;
+  direction: "positive" | "neutral" | "watch" | string;
+  coverage_status: "proxy_active" | "pending_connector" | string;
+  source: string;
+  generated_at: string;
+};
+
+export type TenbaggerValuationSimulation = {
+  valuation_ceiling_status?: "room" | "balanced" | "stretched" | "insufficient" | string;
+  market_cap_unit?: string;
+  current_market_cap?: number | null;
+  tam_assumptions?: {
+    tam_growth_3y?: number;
+    penetration_stage?: string;
+    market_share_assumption?: number;
+    terminal_multiple?: number;
+    data_confidence?: number;
+    source?: string;
+  };
+  scenarios?: {
+    scenario: "bear" | "base" | "bull" | string;
+    probability: number;
+    tam_growth_3y: number;
+    market_share_assumption: number;
+    terminal_multiple: number;
+    room_multiple: number;
+    model_ceiling_market_cap: number | null;
+  }[];
+  summary?: string;
+};
+
+export type TenbaggerContrarianSignal = {
+  label?: "cold_asset_reversal_watch" | "hot_momentum" | "neutral" | string;
+  importance_score?: number;
+  fear_score?: number;
+  reversal_watch?: boolean;
+  heat_change_7d?: number;
+  heat_change_30d?: number;
+  max_drawdown_60d?: number;
+  explanation?: string;
+};
+
 export type TenbaggerThesisList = {
   latest_date: string | null;
   summary: {
     count: number;
     average_thesis_score: number;
+    average_logic_gate_score?: number;
+    average_anti_thesis_score?: number;
     candidate_count: number;
     verification_count: number;
     blocked_count: number;
+    contrarian_count?: number;
     stage_counts: Record<string, number>;
     gate_counts: Record<string, number>;
+    logic_gate_counts?: Record<string, number>;
   };
   rows: TenbaggerThesisRow[];
 };
@@ -1330,7 +1406,7 @@ export const api = {
     if (filters?.board && filters.board !== "all") params.set("board", filters.board);
     if (filters?.priority && filters.priority !== "all") params.set("priority", filters.priority);
     if (filters?.taskType && filters.taskType !== "all") params.set("task_type", filters.taskType);
-    if (filters?.watchOnly === false) params.set("watch_only", "false");
+    if (typeof filters?.watchOnly === "boolean") params.set("watch_only", String(filters.watchOnly));
     if (filters?.limit) params.set("limit", String(filters.limit));
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return getJson<ResearchTasks>(`/api/research/tasks${suffix}`);
@@ -1339,7 +1415,7 @@ export const api = {
     const params = new URLSearchParams();
     if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
     if (filters?.board && filters.board !== "all") params.set("board", filters.board);
-    if (filters?.watchOnly === false) params.set("watch_only", "false");
+    if (typeof filters?.watchOnly === "boolean") params.set("watch_only", String(filters.watchOnly));
     if (filters?.limit) params.set("limit", String(filters.limit));
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return getJson<ResearchBrief>(`/api/research/brief${suffix}`);
@@ -1367,12 +1443,14 @@ export const api = {
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return getJson<ResearchHotTerms>(`/api/research/hot-terms${suffix}`);
   },
-  tenbaggerTheses: (filters?: { market?: string; board?: string; stage?: string; dataGateStatus?: string; limit?: number; offset?: number }) => {
+  tenbaggerTheses: (filters?: { market?: string; board?: string; stage?: string; dataGateStatus?: string; logicGateStatus?: string; contrarianOnly?: boolean; limit?: number; offset?: number }) => {
     const params = new URLSearchParams();
     if (filters?.market && filters.market !== "ALL") params.set("market", filters.market);
     if (filters?.board && filters.board !== "all") params.set("board", filters.board);
     if (filters?.stage && filters.stage !== "all") params.set("stage", filters.stage);
     if (filters?.dataGateStatus && filters.dataGateStatus !== "ALL") params.set("data_gate_status", filters.dataGateStatus);
+    if (filters?.logicGateStatus && filters.logicGateStatus !== "ALL") params.set("logic_gate_status", filters.logicGateStatus);
+    if (filters?.contrarianOnly) params.set("contrarian_only", "true");
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.offset) params.set("offset", String(filters.offset));
     const suffix = params.toString() ? `?${params.toString()}` : "";

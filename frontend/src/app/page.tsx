@@ -8,10 +8,12 @@ import {
   ArrowUpRight,
   BarChart3, 
   ClipboardCheck, 
+  Crosshair,
   FileText, 
   FlaskConical,
-  Layers3, 
+  Radar,
   Repeat2, 
+  Share2,
   ShieldCheck,
   Target,
   TrendingUp
@@ -203,12 +205,12 @@ export default function DashboardPage() {
 
       {/* Quick Nav */}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-        <PanelLink icon={<Layers3 size={20} />} title="产业雷达" href="/industry" text="热度评分与7日变化" />
-        <PanelLink icon={<BarChart3 size={20} />} title="趋势股票池" href="/trend" text="量价评分与最终评级" />
-        <PanelLink icon={<Repeat2 size={20} />} title="观察池复盘" href="/watchlist" text="追踪新进与分数跃迁" />
-        <PanelLink icon={<FlaskConical size={20} />} title="十倍股假设" href="/research/thesis" text="空间、成长、质量、估值拆解" />
+        <PanelLink icon={<Share2 size={20} />} title="AI大图谱" href="/research/ai-big-graph" text="看产业空间与链路结构" />
+        <PanelLink icon={<Radar size={20} />} title="趋势雷达" href="/trend" text="看趋势、强度与买点线索" />
+        <PanelLink icon={<Crosshair size={20} />} title="逻辑狙击" href="/research/thesis" text="门控、反证与TAM模拟" />
         <PanelLink icon={<ClipboardCheck size={20} />} title="研究任务" href="/research" text="每日待验证事项清单" />
-        <PanelLink icon={<Target size={20} />} title="全市场分区" href="/universe" text="证券分布与覆盖概览" />
+        <PanelLink icon={<ShieldCheck size={20} />} title="数据门控" href="/research/data-quality" text="正式研究准入状态" />
+        <PanelLink icon={<FileText size={20} />} title="投研简报" href="/report" text="日报与关键变化回看" />
       </section>
 
       {/* Main Grid Content */}

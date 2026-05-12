@@ -26,7 +26,7 @@ export default function ResearchBriefPage() {
   const [brief, setBrief] = useState<ResearchBrief | null>(null);
   const [market, setMarket] = useState("ALL");
   const [board, setBoard] = useState("all");
-  const [watchOnly, setWatchOnly] = useState(true);
+  const [watchOnly, setWatchOnly] = useState(false);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");

@@ -202,6 +202,11 @@ export default function AiBigGraphPage() {
     link.click();
   };
 
+  const currentChartZoom = () => {
+    const option = chartInstance.current?.getOption() as { series?: Array<{ zoom?: number }> } | undefined;
+    return option?.series?.[0]?.zoom ?? 1;
+  };
+
   return (
     <div className="flex h-screen bg-[#fafafa] text-slate-900 overflow-hidden font-sans select-none">
       {/* Sidebar */}
@@ -291,20 +296,20 @@ export default function AiBigGraphPage() {
            <div className="h-0.5 bg-slate-100 mx-2" />
            <div className="flex flex-col bg-white/90 backdrop-blur-xl border border-slate-100 rounded-[24px] shadow-2xl shadow-slate-200/40">
              <button 
-               onClick={() => {
-                 if (!chartInstance.current) return;
-                 const zoom = chartInstance.current.getOption().series[0].zoom || 1;
-                 chartInstance.current.setOption({ series: [{ zoom: zoom * 1.2 }] });
-               }}
+	               onClick={() => {
+	                 if (!chartInstance.current) return;
+	                 const zoom = currentChartZoom();
+	                 chartInstance.current.setOption({ series: [{ zoom: zoom * 1.2 }] });
+	               }}
                className="p-4 hover:bg-slate-50 rounded-t-[24px] border-b border-slate-50"
              >
                <Plus size={20} className="text-slate-500" />
              </button>
-             <button onClick={() => {
-                 if (!chartInstance.current) return;
-                 const zoom = chartInstance.current.getOption().series[0].zoom || 1;
-                 chartInstance.current.setOption({ series: [{ zoom: zoom / 1.2 }] });
-               }}
+	           <button onClick={() => {
+	                 if (!chartInstance.current) return;
+	                 const zoom = currentChartZoom();
+	                 chartInstance.current.setOption({ series: [{ zoom: zoom / 1.2 }] });
+	               }}
                className="p-4 hover:bg-slate-50 rounded-b-[24px]"
              >
                <Minus size={20} className="text-slate-500" />

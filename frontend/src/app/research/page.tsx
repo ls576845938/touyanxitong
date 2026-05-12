@@ -43,7 +43,7 @@ export default function ResearchPage() {
   const [board, setBoard] = useState("all");
   const [priority, setPriority] = useState("all");
   const [taskType, setTaskType] = useState("all");
-  const [watchOnly, setWatchOnly] = useState(true);
+  const [watchOnly, setWatchOnly] = useState(false);
   const [thesisSnapshot, setThesisSnapshot] = useState<TenbaggerThesisList | null>(null);
   const [researchGate, setResearchGate] = useState<ResearchDataGate | null>(null);
   const [backtestSnapshot, setBacktestSnapshot] = useState<SignalBacktestLatest | null>(null);
