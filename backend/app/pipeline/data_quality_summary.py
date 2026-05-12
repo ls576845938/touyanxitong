@@ -83,50 +83,30 @@ def data_quality_payload(
             "real_bars_count": real_bars_count,
         }
         if bars_count == 0:
-            issues.append({**stock_ref, "severity": "FAIL", "issue_type": "no_bars", "message": "没有可用日线，不能进入趋势和评分计算。"})
+            issues.append(_issue_payload(stock_ref, "FAIL", "no_bars", "没有可用日线，不能进入趋势和评分计算。"))
         elif bars_count < min_required_bars:
             issues.append(
-                {
-                    **stock_ref,
-                    "severity": "FAIL",
-                    "issue_type": "insufficient_history",
-                    "message": f"历史K线少于 {min_required_bars} 根，趋势指标不可信。",
-                }
+                _issue_payload(stock_ref, "FAIL", "insufficient_history", f"历史K线少于 {min_required_bars} 根，趋势指标不可信。")
             )
         elif bars_count < preferred_bars:
             issues.append(
-                {
-                    **stock_ref,
-                    "severity": "WARN",
-                    "issue_type": "short_history",
-                    "message": f"历史K线少于 {preferred_bars} 根，250日新高和长期相对强度需要谨慎。",
-                }
+                _issue_payload(stock_ref, "WARN", "short_history", f"历史K线少于 {preferred_bars} 根，250日新高和长期相对强度需要谨慎。")
             )
         if bars_count > 0 and real_bars_count == 0:
             issues.append(
-                {
-                    **stock_ref,
-                    "severity": "FAIL",
-                    "issue_type": "non_real_bars",
-                    "message": "当前日线全部来自 mock/fallback/unknown，不能作为正式研究数据。",
-                }
+                _issue_payload(stock_ref, "FAIL", "non_real_bars", "当前日线全部来自 mock/fallback/unknown，不能作为正式研究数据。")
             )
         segment_max_date = segment_latest.get(key)
         if latest and segment_max_date and latest < segment_max_date:
             issues.append(
-                {
-                    **stock_ref,
-                    "severity": "WARN",
-                    "issue_type": "stale_bars",
-                    "message": f"最新K线早于同板块最新日期 {segment_max_date.isoformat()}，可能存在停牌、缺失或数据延迟。",
-                }
+                _issue_payload(stock_ref, "WARN", "stale_bars", f"最新K线早于同板块最新日期 {segment_max_date.isoformat()}，可能存在停牌、缺失或数据延迟。")
             )
         if source_count > 1:
-            issues.append({**stock_ref, "severity": "WARN", "issue_type": "mixed_sources", "message": "同一股票存在多个行情 source，计算前必须确认使用同一数据源口径。"})
+            issues.append(_issue_payload(stock_ref, "WARN", "mixed_sources", "同一股票存在多个行情 source，计算前必须确认使用同一数据源口径。"))
         if bad_ohlc_count:
-            issues.append({**stock_ref, "severity": "FAIL", "issue_type": "bad_ohlc", "message": f"发现 {bad_ohlc_count} 根 OHLC 异常K线。"})
+            issues.append(_issue_payload(stock_ref, "FAIL", "bad_ohlc", f"发现 {bad_ohlc_count} 根 OHLC 异常K线。"))
         if zero_liquidity_count:
-            issues.append({**stock_ref, "severity": "WARN", "issue_type": "zero_liquidity", "message": f"发现 {zero_liquidity_count} 根成交量或成交额为零的K线。"})
+            issues.append(_issue_payload(stock_ref, "WARN", "zero_liquidity", f"发现 {zero_liquidity_count} 根成交量或成交额为零的K线。"))
 
     segments = [_segment_payload(stats, min_required_bars, preferred_bars) for _, stats in sorted(segment_stats.items())]
     fail_count = sum(1 for item in issues if item["severity"] == "FAIL")
@@ -213,12 +193,22 @@ def _segment_payload(stats: dict[str, Any], min_required_bars: int, preferred_ba
         status = "FAIL"
     elif coverage_ratio < 1.0 or preferred_ratio < 0.8:
         status = "WARN"
+    blocking_reasons = _segment_blocking_reasons(
+        coverage_ratio=coverage_ratio,
+        real_coverage_ratio=real_coverage_ratio,
+        required_ratio=required_ratio,
+        preferred_ratio=preferred_ratio,
+    )
     return {
         "market": stats["market"],
         "market_label": market_label(stats["market"]),
         "board": stats["board"],
         "board_label": board_label(stats["board"]),
         "status": status,
+        "formal_research_allowed": status != "FAIL",
+        "backfill_priority": _segment_backfill_priority(status, stats["market"], stats["board"]),
+        "recommended_action": _segment_recommended_action(status, stats["market"], stats["board"], blocking_reasons),
+        "blocking_reasons": blocking_reasons,
         "stock_count": stock_count,
         "stocks_with_bars": int(stats["stocks_with_bars"]),
         "stocks_with_real_bars": int(stats["stocks_with_real_bars"]),
@@ -272,6 +262,82 @@ def _empty_payload(min_required_bars: int, preferred_bars: int) -> dict[str, Any
         "segments": [],
         "issues": [],
     }
+
+
+def _issue_payload(stock_ref: dict[str, Any], severity: str, issue_type: str, message: str) -> dict[str, Any]:
+    return {
+        **stock_ref,
+        "severity": severity,
+        "issue_type": issue_type,
+        "message": message,
+        "remediation": _issue_remediation(stock_ref, issue_type),
+    }
+
+
+def _issue_remediation(stock_ref: dict[str, Any], issue_type: str) -> dict[str, Any]:
+    market = str(stock_ref.get("market") or "").upper()
+    board = str(stock_ref.get("board") or "all").lower()
+    code = str(stock_ref.get("code") or "")
+    if issue_type in {"no_bars", "insufficient_history", "short_history", "non_real_bars", "stale_bars"}:
+        return {
+            "action": "queue_backfill",
+            "api": "/api/market/ingestion-tasks",
+            "payload": {
+                "task_type": "single",
+                "market": market,
+                "board": board,
+                "stock_code": code,
+                "periods": 320,
+            },
+        }
+    if issue_type in {"bad_ohlc", "zero_liquidity", "mixed_sources"}:
+        return {
+            "action": "inspect_and_reingest",
+            "api": "/api/market/ingestion-tasks",
+            "payload": {
+                "task_type": "single",
+                "market": market,
+                "board": board,
+                "stock_code": code,
+                "periods": 320,
+            },
+        }
+    return {"action": "manual_review"}
+
+
+def _segment_blocking_reasons(
+    *,
+    coverage_ratio: float,
+    real_coverage_ratio: float,
+    required_ratio: float,
+    preferred_ratio: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if coverage_ratio < 0.95:
+        reasons.append("日线覆盖率低于 95%")
+    if real_coverage_ratio < 0.95:
+        reasons.append("真实数据覆盖率低于 95%")
+    if required_ratio < 0.95:
+        reasons.append("满足最小历史长度的股票低于 95%")
+    if preferred_ratio < 0.8:
+        reasons.append("满足长期观察窗口的股票低于 80%")
+    return reasons
+
+
+def _segment_backfill_priority(status: str, market: str, board: str) -> str:
+    if status == "PASS":
+        return "low"
+    if market == "US" or market == "HK" or (market == "A" and board == "bse"):
+        return "high"
+    return "medium" if status == "FAIL" else "low"
+
+
+def _segment_recommended_action(status: str, market: str, board: str, blocking_reasons: list[str]) -> str:
+    if status == "PASS":
+        return "可进入正式研究，继续监控数据新鲜度。"
+    target = f"{market_label(market)} / {board_label(board)}"
+    reason = "；".join(blocking_reasons) if blocking_reasons else "存在数据质量缺口"
+    return f"优先回填 {target}：{reason}。质量门为 FAIL 时，Agent 报告只能输出观察线索。"
 
 
 def _max_date(left: date | None, right: date | None) -> date | None:

@@ -5,12 +5,15 @@ import { useEffect, useState } from "react";
 import { Database, ShieldCheck } from "lucide-react";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
-import { api, type DataQuality, type DataStatus, type ResearchDataGate } from "@/lib/api";
+import { api, type DataQuality, type DataStatus, type QualityBackfillPlan, type ResearchDataGate } from "@/lib/api";
 
 export default function ResearchDataQualityPage() {
   const [quality, setQuality] = useState<DataQuality | null>(null);
   const [status, setStatus] = useState<DataStatus | null>(null);
   const [gate, setGate] = useState<ResearchDataGate | null>(null);
+  const [backfillPlan, setBackfillPlan] = useState<QualityBackfillPlan | null>(null);
+  const [action, setAction] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -22,10 +25,11 @@ export default function ResearchDataQualityPage() {
       .catch((err: Error) => setError(`数据门控读取失败：${err.message}`))
       .finally(() => setLoading(false));
 
-    void Promise.allSettled([api.dataQuality(), api.dataStatus({ includeSourceCoverage: true })])
-      .then(([qualityPayload, statusPayload]) => {
+    void Promise.allSettled([api.dataQuality(), api.dataStatus({ includeSourceCoverage: true }), api.dataQualityBackfillPlan()])
+      .then(([qualityPayload, statusPayload, planPayload]) => {
         setQuality(qualityPayload.status === "fulfilled" ? qualityPayload.value : null);
         setStatus(statusPayload.status === "fulfilled" ? statusPayload.value : null);
+        setBackfillPlan(planPayload.status === "fulfilled" ? planPayload.value : null);
       });
   }, []);
 
@@ -33,6 +37,14 @@ export default function ResearchDataQualityPage() {
   if (error) return <div className="min-h-screen bg-slate-50 p-8"><ErrorState message={error} /></div>;
 
   const sourceRows = status?.source_coverage ?? [];
+  const queueFocusBackfill = (segment: QualityBackfillPlan["segments"][number]) => {
+    setAction(`${segment.market}-${segment.board}`);
+    setNotice("");
+    api.createIngestionBackfill(segment.queue_payload)
+      .then((result) => setNotice(`${segment.market_label} / ${segment.board_label} 已入队 ${result.queued_count} 个任务，跳过 ${result.skipped_count} 个任务。`))
+      .catch((err: Error) => setNotice(`入队失败：${err.message}`))
+      .finally(() => setAction(""));
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 lg:p-10">
@@ -97,6 +109,48 @@ export default function ResearchDataQualityPage() {
               ))}
               {sourceRows.length === 0 && <div className="text-sm text-slate-400">暂无来源覆盖数据</div>}
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-black text-slate-900">优先回填计划</h2>
+              <p className="mt-1 text-xs font-bold text-slate-400">{backfillPlan?.focus ?? "US/HK/北交所优先回填"} · 只入队，不直接执行抓取</p>
+            </div>
+            {notice && <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600">{notice}</div>}
+          </div>
+          <div className="mt-5 grid gap-4 lg:grid-cols-3">
+            {(backfillPlan?.segments ?? []).map((segment) => (
+              <div key={`${segment.market}-${segment.board}`} className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-black text-slate-900">{segment.market_label} / {segment.board_label}</div>
+                    <div className="mt-1 text-xs font-bold text-slate-400">候选 {segment.candidate_count} · 最新 {segment.stats.latest_trade_date ?? "-"}</div>
+                  </div>
+                  <StatusPill status={segment.status} />
+                </div>
+                <p className="mt-3 min-h-10 text-xs leading-5 text-slate-600">{segment.reason}</p>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] font-bold text-slate-500">
+                  <span>覆盖 {(segment.stats.coverage_ratio * 100).toFixed(1)}%</span>
+                  <span>真实 {(segment.stats.real_coverage_ratio * 100).toFixed(1)}%</span>
+                  <span>长期 {(segment.stats.preferred_history_ratio * 100).toFixed(1)}%</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => queueFocusBackfill(segment)}
+                  disabled={Boolean(action)}
+                  className="mt-4 inline-flex h-10 w-full items-center justify-center rounded-xl bg-slate-900 px-3 text-xs font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  {action === `${segment.market}-${segment.board}` ? "入队中..." : "入队回填"}
+                </button>
+              </div>
+            ))}
+            {(!backfillPlan || backfillPlan.segments.length === 0) && (
+              <div className="rounded-xl border border-dashed border-slate-200 p-5 text-sm text-slate-400">
+                暂无回填计划
+              </div>
+            )}
           </div>
         </section>
 

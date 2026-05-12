@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -35,6 +35,7 @@ router = APIRouter(prefix="/api/market", tags=["market"])
 
 _CACHE_TTL_SECONDS = 120.0
 _payload_cache: dict[str, tuple[float, Any]] = {}
+QUALITY_BACKFILL_FOCUS: tuple[tuple[str, str], ...] = (("US", "all"), ("HK", "all"), ("A", "bse"))
 
 
 def _cached_payload(key: str, builder: Callable[[], Any], *, ttl: float = _CACHE_TTL_SECONDS) -> Any:
@@ -415,6 +416,15 @@ def ingestion_priority(
     }
 
 
+@router.get("/data-quality/backfill-plan")
+def data_quality_backfill_plan(
+    limit_per_segment: int = Query(default=20, ge=1, le=80),
+    periods: int = Query(default=320, ge=60, le=1000),
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    return _quality_backfill_plan(session, limit_per_segment=limit_per_segment, periods=periods)
+
+
 @router.get("/data-quality")
 def data_quality(session: Session = Depends(get_session)) -> dict[str, object]:
     return _cached_payload("data-quality", lambda: _data_quality_payload(session), ttl=120.0)
@@ -490,6 +500,7 @@ def ingestion_plan(session: Session = Depends(get_session)) -> dict[str, object]
             "market_data_periods": settings.market_data_periods,
         },
         "markets": markets,
+        "quality_backfill_focus": _quality_backfill_plan(session, limit_per_segment=10, periods=settings.market_data_periods),
         "discovery_commands": discovery_commands,
         "recommended_commands": commands,
         "safety_rules": [
@@ -499,6 +510,141 @@ def ingestion_plan(session: Session = Depends(get_session)) -> dict[str, object]
             "真实源不可用时允许 fallback mock，但 Dashboard 必须显示 actual source。",
         ],
     }
+
+
+def _quality_backfill_plan(session: Session, *, limit_per_segment: int, periods: int) -> dict[str, object]:
+    normalized_periods = max(60, min(int(periods), 1000))
+    normalized_limit = max(1, min(int(limit_per_segment), 80))
+    segments: list[dict[str, object]] = []
+    for market, board in QUALITY_BACKFILL_FOCUS:
+        candidates = priority_candidates(session, market=market, board=board, limit=normalized_limit, periods=normalized_periods)
+        stats = _quality_focus_stats(session, market=market, board=board, periods=normalized_periods)
+        queue_payload = {
+            "markets": [market],
+            "board": board,
+            "batches_per_market": 3,
+            "batch_limit": min(20, normalized_limit),
+            "periods": normalized_periods,
+        }
+        status = _quality_focus_status(stats)
+        segments.append(
+            {
+                "market": market,
+                "market_label": market_label(market),
+                "board": board,
+                "board_label": board_label(board),
+                "status": status,
+                "priority": "high" if status == "FAIL" else "medium" if status == "WARN" else "low",
+                "reason": _quality_focus_reason(stats),
+                "stats": stats,
+                "candidate_count": len(candidates),
+                "candidates": candidates,
+                "queue_payload": queue_payload,
+                "queue_api": "/api/market/ingestion-tasks/backfill",
+                "queue_command": _queue_backfill_command(queue_payload),
+            }
+        )
+    return {
+        "focus": "US/HK/北交所优先回填",
+        "periods": normalized_periods,
+        "limit_per_segment": normalized_limit,
+        "segments": segments,
+        "next_actions": [
+            "先按 focus 顺序入队 US、HK、北交所回填任务。",
+            "每批执行后复查 /api/market/data-quality，FAIL 不消除前不扩大到低优先级市场。",
+            "Agent 报告遇到 FAIL 分段时只输出观察和数据不足说明，不输出确定性结论。",
+        ],
+    }
+
+
+def _quality_focus_stats(session: Session, *, market: str, board: str, periods: int) -> dict[str, object]:
+    bars_summary = (
+        select(
+            DailyBar.stock_code.label("stock_code"),
+            func.count(DailyBar.id).label("bars_count"),
+            func.max(DailyBar.trade_date).label("latest_trade_date"),
+            func.sum(case((DailyBar.source_kind == "real", 1), else_=0)).label("real_bars_count"),
+        )
+        .group_by(DailyBar.stock_code)
+        .subquery()
+    )
+    bars_count = func.coalesce(bars_summary.c.bars_count, 0)
+    real_bars_count = func.coalesce(bars_summary.c.real_bars_count, 0)
+    filters = [
+        Stock.is_active.is_(True),
+        Stock.listing_status == "listed",
+        Stock.asset_type == "equity",
+        Stock.is_etf.is_(False),
+        Stock.market == market,
+    ]
+    if board != "all":
+        filters.append(Stock.board == board)
+    row = session.execute(
+        select(
+            func.count(Stock.id),
+            func.count(bars_summary.c.stock_code),
+            func.sum(case((bars_count == 0, 1), else_=0)),
+            func.sum(case((bars_count < 60, 1), else_=0)),
+            func.sum(case((bars_count < periods, 1), else_=0)),
+            func.sum(case((real_bars_count == 0, 1), else_=0)),
+            func.max(bars_summary.c.latest_trade_date),
+        )
+        .outerjoin(bars_summary, bars_summary.c.stock_code == Stock.code)
+        .where(*filters)
+    ).one()
+    stock_count = int(row[0] or 0)
+    stocks_with_bars = int(row[1] or 0)
+    without_bars = int(row[2] or 0)
+    below_required = int(row[3] or 0)
+    below_preferred = int(row[4] or 0)
+    without_real = int(row[5] or 0)
+    required_ready = max(stock_count - below_required, 0)
+    preferred_ready = max(stock_count - below_preferred, 0)
+    real_ready = max(stock_count - without_real, 0)
+    return {
+        "stock_count": stock_count,
+        "stocks_with_bars": stocks_with_bars,
+        "without_bars": without_bars,
+        "stocks_with_required_history": required_ready,
+        "stocks_with_preferred_history": preferred_ready,
+        "stocks_with_real_bars": real_ready,
+        "coverage_ratio": round(stocks_with_bars / stock_count, 4) if stock_count else 0.0,
+        "required_history_ratio": round(required_ready / stock_count, 4) if stock_count else 0.0,
+        "preferred_history_ratio": round(preferred_ready / stock_count, 4) if stock_count else 0.0,
+        "real_coverage_ratio": round(real_ready / stock_count, 4) if stock_count else 0.0,
+        "latest_trade_date": row[6].isoformat() if row[6] else None,
+    }
+
+
+def _quality_focus_status(stats: dict[str, object]) -> str:
+    coverage = float(stats.get("coverage_ratio") or 0.0)
+    required = float(stats.get("required_history_ratio") or 0.0)
+    real = float(stats.get("real_coverage_ratio") or 0.0)
+    preferred = float(stats.get("preferred_history_ratio") or 0.0)
+    if coverage < 0.95 or required < 0.95 or real < 0.95:
+        return "FAIL"
+    if coverage < 1.0 or preferred < 0.8:
+        return "WARN"
+    return "PASS"
+
+
+def _quality_focus_reason(stats: dict[str, object]) -> str:
+    missing = int(stats.get("without_bars") or 0)
+    below_required = int(stats.get("stock_count") or 0) - int(stats.get("stocks_with_required_history") or 0)
+    without_real = int(stats.get("stock_count") or 0) - int(stats.get("stocks_with_real_bars") or 0)
+    reasons = []
+    if missing:
+        reasons.append(f"{missing} 只无日线")
+    if below_required:
+        reasons.append(f"{below_required} 只未达到 60 根K线")
+    if without_real:
+        reasons.append(f"{without_real} 只缺少真实来源K线")
+    return "；".join(reasons) if reasons else "当前无关键质量缺口，继续监控新鲜度。"
+
+
+def _queue_backfill_command(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False)
+    return f"curl -X POST http://localhost:8000/api/market/ingestion-tasks/backfill -H 'Content-Type: application/json' -d '{encoded}'"
 
 
 @router.get("/research-universe")

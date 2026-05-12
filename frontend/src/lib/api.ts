@@ -79,6 +79,10 @@ export type DataQuality = {
     board: string;
     board_label: string;
     status: "PASS" | "WARN" | "FAIL";
+    formal_research_allowed?: boolean;
+    backfill_priority?: "high" | "medium" | "low";
+    recommended_action?: string;
+    blocking_reasons?: string[];
     stock_count: number;
     stocks_with_bars: number;
     stocks_with_required_history: number;
@@ -105,10 +109,63 @@ export type DataQuality = {
     severity: "WARN" | "FAIL";
     issue_type: string;
     message: string;
+    remediation?: {
+      action: string;
+      api?: string;
+      payload?: Record<string, unknown>;
+    };
     bars_count: number;
     latest_trade_date: string | null;
     source_kinds?: string[];
     real_bars_count?: number;
+  }[];
+};
+
+export type QualityBackfillPlan = {
+  focus: string;
+  periods: number;
+  limit_per_segment: number;
+  next_actions: string[];
+  segments: {
+    market: string;
+    market_label: string;
+    board: string;
+    board_label: string;
+    status: "PASS" | "WARN" | "FAIL";
+    priority: "high" | "medium" | "low";
+    reason: string;
+    stats: {
+      stock_count: number;
+      stocks_with_bars: number;
+      without_bars: number;
+      stocks_with_required_history: number;
+      stocks_with_preferred_history: number;
+      stocks_with_real_bars: number;
+      coverage_ratio: number;
+      required_history_ratio: number;
+      preferred_history_ratio: number;
+      real_coverage_ratio: number;
+      latest_trade_date: string | null;
+    };
+    candidate_count: number;
+    candidates: {
+      code: string;
+      name: string;
+      market: string;
+      board: string;
+      bars_count: number;
+      latest_trade_date: string | null;
+      priority_reason?: string;
+    }[];
+    queue_payload: {
+      markets: string[];
+      board: string;
+      batches_per_market: number;
+      batch_limit: number;
+      periods: number;
+    };
+    queue_api: string;
+    queue_command: string;
   }[];
 };
 
@@ -132,6 +189,7 @@ export type IngestionPlan = {
     remaining_without_bars: number;
     next_batch_offset: number;
   }[];
+  quality_backfill_focus?: QualityBackfillPlan;
   discovery_commands: string[];
   recommended_commands: string[];
   safety_rules: string[];
@@ -1394,6 +1452,7 @@ export const api = {
     return getJson<DataStatus>(`/api/market/data-status${suffix}`);
   },
   dataQuality: () => getJson<DataQuality>("/api/market/data-quality"),
+  dataQualityBackfillPlan: () => getJson<QualityBackfillPlan>("/api/market/data-quality/backfill-plan"),
   ingestionPlan: () => getJson<IngestionPlan>("/api/market/ingestion-plan"),
   backfillManifest: () => getJson<BackfillManifest>("/api/market/backfill-manifest"),
   instruments: (filters?: { market?: string; board?: string; assetType?: string; q?: string; limit?: number; offset?: number }) => {
