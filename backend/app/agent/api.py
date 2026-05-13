@@ -135,11 +135,31 @@ def runtime_health() -> AgentRuntimeHealth:
     # Streaming: RealRuntime supports streaming if LLM configured
     streaming_supported = llm_configured  # Mock also chunks, but true streaming needs LLM
 
+    # Vision support detection
+    vision_configured = False
+    vision_provider: str | None = None
+    supports_image_input = False
+    image_input_max_mb: float | None = None
+
+    if llm_configured:
+        # RealRuntimeAdapter uses OpenAIProvider with gpt-4o which supports vision
+        vision_configured = True
+        vision_provider = "openai"
+        supports_image_input = True
+        image_input_max_mb = 20.0
+
+    if hermes_configured and not vision_configured:
+        # Hermes may support vision depending on its backend; we cannot determine here
+        vision_provider = "hermes"
+        # Keep vision_configured=False since Hermes vision status is unknown
+
     warnings: list[str] = []
     if not llm_configured and not hermes_configured:
         warnings.append("No LLM or Hermes configured. Using deterministic mock runtime. Follow-up will use template fallback.")
     if hermes_configured and not llm_configured:
         warnings.append("Hermes endpoint configured but no direct LLM. Follow-up depends on Hermes-side LLM availability.")
+    if not vision_configured:
+        warnings.append("当前未配置多模态图片识别模型，截图解析不可用。")
 
     return AgentRuntimeHealth(
         runtime_provider=provider,
@@ -148,6 +168,10 @@ def runtime_health() -> AgentRuntimeHealth:
         streaming_supported=streaming_supported,
         followup_llm_enabled=llm_configured,
         fallback_enabled=True,
+        vision_configured=vision_configured,
+        vision_provider=vision_provider,
+        supports_image_input=supports_image_input,
+        image_input_max_mb=image_input_max_mb,
         warnings=warnings,
     )
 

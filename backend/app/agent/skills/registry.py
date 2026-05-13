@@ -25,6 +25,7 @@ SYSTEM_SKILLS: tuple[SystemSkill, ...] = (
     SystemSkill("system:trend_pool_scan", "趋势股票池扫描", "按评分、动量和风险筛出观察池。", AgentTaskType.TREND_POOL_SCAN, "trend_pool_scan.md"),
     SystemSkill("system:tenbagger_candidate", "十倍股早期特征候选", "整理具备早期成长特征的候选清单和证据缺口。", AgentTaskType.TENBAGGER_CANDIDATE, "tenbagger_candidate.md"),
     SystemSkill("system:daily_market_brief", "每日市场简报", "生成强产业链、高动量股票、催化事件和风险预警。", AgentTaskType.DAILY_MARKET_BRIEF, "daily_market_brief.md"),
+    SystemSkill("system:risk_budget", "风险预算与仓位管理", "分析风险预算、计算仓位上限、检查组合暴露和生成仓位计划。", AgentTaskType.RISK_BUDGET, "risk_budget.md"),
 )
 
 

@@ -15,11 +15,29 @@ from app.agent.runtime import AgentRuntimeResult, MockRuntimeAdapter, RealRuntim
 from app.agent.schemas import AgentRunRequest, AgentRunResponse, AgentTaskType
 from app.agent.skills.generator import generate_skill_from_run
 from app.agent.skills.registry import load_skill_template
-from app.agent.tools import evidence_tools, industry_tools, market_tools, report_tools, scoring_tools
+from app.agent.tools import evidence_tools, industry_tools, market_tools, report_tools, risk_tools, scoring_tools
 from app.config import settings
 from app.db.models import AgentArtifact, AgentRun, AgentSkill, AgentStep, AgentToolCall, Industry, IndustryKeyword, Stock
 from app.engines.thesis_engine import extract_theses_from_agent_claims
 from app.services.stock_resolver import STOCK_ALIAS_CODES, resolve_stock
+
+# ---------------------------------------------------------------------------
+# Risk intent keyword lists — checked BEFORE industry chain detection
+# so that risk-related queries are not swallowed by other intent matchers.
+# ---------------------------------------------------------------------------
+RISK_INTENT_POSITION_SIZE: list[str] = [
+    "能配多少", "仓位上限", "最多亏", "单笔风险", "止损价",
+    "无效点", "风险预算", "仓位计划", "账户", "入场",
+    "% 风险", "1% 风险",
+]
+RISK_INTENT_EXPOSURE: list[str] = [
+    "是不是太集中", "主题暴露", "行业暴露", "仓位太",
+    "同一个主题", "组合风险", "暴露超限", "AI 算力", "算力链",
+]
+RISK_INTENT_PLAN: list[str] = [
+    "基于这条 thesis", "生成仓位计划", "加入风险计划",
+    "从观察池生成计划", "风险预算计划", "创建计划",
+]
 
 
 class AgentOrchestrator:
@@ -270,6 +288,11 @@ class AgentOrchestrator:
             return request.task_type
 
         prompt = request.user_prompt
+        # Priority 0: Risk intent — check BEFORE other intents so risk-related
+        # queries (仓位上限, 能配多少, 组合风险, etc.) are not swallowed.
+        if _is_risk_intent(prompt):
+            return AgentTaskType.RISK_BUDGET
+
         # Priority 1: Industry/Chain keywords (Structural analysis is usually more specific)
         if _contains_any(prompt, ["产业链", "行业", "主题", "上下游", "节点", "赛道", "板块"]):
             return AgentTaskType.INDUSTRY_CHAIN_RADAR
@@ -343,6 +366,39 @@ class AgentOrchestrator:
             tool_results["scoring.get_top_scored_stocks"] = self._call_tool(run_id, "scoring.get_top_scored_stocks", scoring_tools.get_top_scored_stocks, self.session, None, 30)
             tool_results["market.get_momentum_rank"] = self._call_tool(run_id, "market.get_momentum_rank", market_tools.get_momentum_rank, self.session, None, request.time_window, 30)
             tool_results["market.get_market_coverage_status"] = self._call_tool(run_id, "market.get_market_coverage_status", market_tools.get_market_coverage_status, self.session)
+        elif task_type == AgentTaskType.RISK_BUDGET:
+            # Risk context: does NOT run the normal full pipeline
+            # (no market/industry/scoring/evidence tools). Instead, extracts
+            # risk parameters and calls risk-specific tools.
+            risk_params = _extract_risk_params(request.user_prompt, selected_symbols)
+            tool_results["risk.risk_params"] = risk_params
+
+            # Always get risk rules for context
+            tool_results["risk.get_risk_rules"] = self._call_tool(
+                run_id, "risk.get_risk_rules", risk_tools.get_risk_rules,
+                self.session, request.user_id,
+            )
+
+            # Get existing position plans
+            tool_results["risk.get_position_plans"] = self._call_tool(
+                run_id, "risk.get_position_plans", risk_tools.get_position_plans,
+                self.session, "active",
+            )
+
+            # Calculate position size only when ALL required params are present.
+            # Missing params are noted so the LLM can ask the user instead of
+            # fabricating numbers.
+            if risk_params.get("has_all_position_params"):
+                tool_results["risk.calculate_position_size"] = self._call_tool(
+                    run_id, "risk.calculate_position_size",
+                    risk_tools.calculate_position_size,
+                    risk_params["account_equity"],
+                    risk_params["symbol"],
+                    risk_params["entry_price"],
+                    risk_params["invalidation_price"],
+                    risk_params.get("risk_per_trade_pct", 1.0),
+                    risk_params.get("market"),
+                )
         else:
             tool_results["report.get_latest_daily_report"] = self._call_tool(run_id, "report.get_latest_daily_report", report_tools.get_latest_daily_report, self.session)
             tool_results["industry.get_industry_heatmap"] = self._call_tool(run_id, "industry.get_industry_heatmap", industry_tools.get_industry_heatmap, self.session, None)
@@ -535,6 +591,7 @@ class AgentOrchestrator:
             "scoring_tools": scoring_tools,
             "evidence_tools": evidence_tools,
             "report_tools": report_tools,
+            "risk_tools": risk_tools,
         }
 
 
@@ -608,3 +665,128 @@ def _has_clear_stock_code(prompt: str) -> bool:
     if re.search(r'(?<!\d)(\d{5,6}\.[A-Za-z]{2})(?![A-Za-z0-9_])', prompt):
         return True
     return False
+
+
+def _is_risk_intent(prompt: str) -> bool:
+    """Check if the user prompt expresses risk-related intent.
+
+    Combined check against all three risk keyword groups.  However, if the
+    prompt also contains strong industry-chain structural keywords (上游,
+    中游, 下游, 产业链) AND *only* matches the broad exposure-list keywords
+    (e.g. "AI 算力", "算力链"), it is treated as industry chain intent —
+    this avoids false positives for queries like "AI 算力上游、中游、下游".
+    """
+    if not _contains_any(
+        prompt,
+        RISK_INTENT_POSITION_SIZE + RISK_INTENT_EXPOSURE + RISK_INTENT_PLAN,
+    ):
+        return False
+
+    # Ambiguity guard: if the prompt has strong industry-chain signals
+    # and only matches the broad exposure keywords (not position-size or
+    # plan keywords), let industry-chain intent win.
+    if _contains_any(prompt, ["上游", "中游", "下游", "产业链", "赛道"]):
+        # Does the prompt match any SPECIFIC risk keyword?
+        specific_risk_keywords = RISK_INTENT_POSITION_SIZE + RISK_INTENT_PLAN + [
+            "是不是太集中", "主题暴露", "行业暴露", "仓位太",
+            "同一个主题", "组合风险", "暴露超限",
+        ]
+        if not _contains_any(prompt, specific_risk_keywords):
+            return False  # Only matched broad exposure — likely industry chain
+
+    return True
+
+
+def _extract_risk_params(prompt: str, selected_symbols: list[str]) -> dict[str, object]:
+    """Extract risk calculation parameters from the user prompt.
+
+    Scans the prompt for account equity, symbol, entry price, invalidation
+    price, and risk-per-trade percentage.  Returns a dict with found values
+    and a list of missing required parameters so the LLM can ask the user
+    rather than fabricating numbers.
+
+    Returns
+    -------
+    dict with keys:
+        - symbol / account_equity / entry_price / invalidation_price /
+          risk_per_trade_pct (when found)
+        - intent_type : str — one of "position_size", "exposure", "plan"
+        - has_all_position_params : bool — True when all four required
+          position-sizing params are present
+        - missing_params : list[str] — human-readable list of what is missing
+    """
+    params: dict[str, object] = {}
+
+    # --- Symbol ---
+    if selected_symbols:
+        params["symbol"] = selected_symbols[0]
+    else:
+        m = re.search(r"(?<!\d)(\d{6})(?!\d)", prompt)
+        if m:
+            params["symbol"] = m.group(1)
+
+    # --- Account equity ---
+    m = re.search(r"(\d+(?:\.\d+)?)\s*万", prompt)
+    if m:
+        params["account_equity"] = float(m.group(1)) * 10000.0
+    else:
+        m = re.search(r"(\d+(?:\.\d+)?)\s*亿", prompt)
+        if m:
+            params["account_equity"] = float(m.group(1)) * 100000000.0
+        else:
+            m = re.search(
+                r"(?:账户|资金|总权益|本金)[^。，,；;\d]*?(\d{4,}(?:\.\d+)?)",
+                prompt,
+            )
+            if m:
+                params["account_equity"] = float(m.group(1))
+
+    # --- Entry price ---
+    m = re.search(
+        r"(?:入场|买入|开仓|成本|建仓)价?[^。，,；;\d]*?(\d+(?:\.\d+)?)",
+        prompt,
+    )
+    if m:
+        params["entry_price"] = float(m.group(1))
+
+    # --- Invalidation / stop price ---
+    m = re.search(
+        r"(?:止损|无效|退出|最大亏损)[^。，,；;\d]*?(\d+(?:\.\d+)?)",
+        prompt,
+    )
+    if m:
+        params["invalidation_price"] = float(m.group(1))
+
+    # --- Risk per trade percentage ---
+    m = re.search(r"(\d+(?:\.\d+)?)\s*%\s*(?:风险|仓位)", prompt)
+    if m:
+        params["risk_per_trade_pct"] = float(m.group(1))
+    else:
+        params["risk_per_trade_pct"] = 1.0
+
+    # --- Intent sub-type ---
+    if _contains_any(prompt, RISK_INTENT_EXPOSURE):
+        params["intent_type"] = "exposure"
+    elif _contains_any(prompt, RISK_INTENT_PLAN):
+        params["intent_type"] = "plan"
+    else:
+        params["intent_type"] = "position_size"
+
+    # --- Missing required params ---
+    missing: list[str] = []
+    if "account_equity" not in params:
+        missing.append("account_equity (账户权益)")
+    if "symbol" not in params:
+        missing.append("symbol (股票代码/名称)")
+    if "entry_price" not in params:
+        missing.append("entry_price (入场价)")
+    if "invalidation_price" not in params:
+        missing.append("invalidation_price (止损价/无效点)")
+
+    params["has_all_position_params"] = all(
+        k in params
+        for k in ("account_equity", "symbol", "entry_price", "invalidation_price")
+    )
+    params["missing_params"] = missing
+
+    return params

@@ -217,13 +217,6 @@ def create_position_plan(
     watchlist_item_id = payload.get("watchlist_item_id")
     user_id = payload.get("user_id")
 
-    if not thesis_id and not watchlist_item_id:
-        raise HTTPException(
-            status_code=400,
-            detail=sanitize_risk_output("需要提供 thesis_id 或 watchlist_item_id"),
-        )
-
-    # --- Load source & extract conditions ---
     thesis: ResearchThesis | None = None
     conditions: list[str] = []
     symbol: str | None = None
@@ -271,8 +264,18 @@ def create_position_plan(
                 thesis_conditions = _loads_json_list(thesis.invalidation_conditions_json)
                 if thesis_conditions:
                     conditions = thesis_conditions
+    else:
+        # Symbol-only creation (e.g., from agent claims without a stored thesis)
+        symbol = payload.get("symbol")
+        subject_name = payload.get("subject_name", "")
+        subject_type = payload.get("subject_type", "stock")
+        if not symbol:
+            raise HTTPException(
+                status_code=400,
+                detail=sanitize_risk_output("需要提供 thesis_id、watchlist_item_id 或 symbol"),
+            )
 
-    if not conditions:
+    if (thesis_id or watchlist_item_id) and not conditions:
         raise HTTPException(
             status_code=400,
             detail=sanitize_risk_output("缺少无效条件，无法创建仓位计划"),
