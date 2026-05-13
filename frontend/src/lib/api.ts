@@ -1585,6 +1585,10 @@ export type RuntimeHealth = {
   vision_provider: string | null;
   supports_image_input: boolean;
   image_input_max_mb: number | null;
+  user_key_configured: boolean;
+  current_provider: string;
+  available_providers: string[];
+  server_llm_configured: boolean;
   warnings: string[];
 };
 
@@ -1760,9 +1764,15 @@ async function getJson<T>(path: string, options?: { cacheMs?: number }): Promise
     }
   }
 
+  const llmProvider = typeof window !== "undefined" ? localStorage.getItem("alpha_llm_provider") || "" : "";
+  const llmApiKey = typeof window !== "undefined" ? localStorage.getItem("alpha_llm_api_key") || "" : "";
+  const llmHeaders: Record<string, string> = {};
+  if (llmProvider) llmHeaders["X-LLM-Provider"] = llmProvider;
+  if (llmApiKey) llmHeaders["X-LLM-API-Key"] = llmApiKey;
+
   const request = fetch(cacheKey, {
     cache: "no-store",
-    headers: { "X-Alpha-User-Id": getUserId() },
+    headers: { "X-Alpha-User-Id": getUserId(), ...llmHeaders },
   }).then((response) => {
     if (!response.ok) {
       throw new Error(`${path} failed: ${response.status}`);
@@ -2114,9 +2124,14 @@ export const api = {
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
   getCache.clear();
+  const llmProvider = typeof window !== "undefined" ? localStorage.getItem("alpha_llm_provider") || "" : "";
+  const llmApiKey = typeof window !== "undefined" ? localStorage.getItem("alpha_llm_api_key") || "" : "";
+  const llmHeaders: Record<string, string> = {};
+  if (llmProvider) llmHeaders["X-LLM-Provider"] = llmProvider;
+  if (llmApiKey) llmHeaders["X-LLM-API-Key"] = llmApiKey;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Alpha-User-Id": getUserId() },
+    headers: { "Content-Type": "application/json", "X-Alpha-User-Id": getUserId(), ...llmHeaders },
     body: JSON.stringify(payload),
     cache: "no-store"
   });
@@ -2135,9 +2150,14 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
 
 async function postFormData<T>(path: string, formData: FormData): Promise<T> {
   getCache.clear();
+  const llmProvider = typeof window !== "undefined" ? localStorage.getItem("alpha_llm_provider") || "" : "";
+  const llmApiKey = typeof window !== "undefined" ? localStorage.getItem("alpha_llm_api_key") || "" : "";
+  const llmHeaders: Record<string, string> = {};
+  if (llmProvider) llmHeaders["X-LLM-Provider"] = llmProvider;
+  if (llmApiKey) llmHeaders["X-LLM-API-Key"] = llmApiKey;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "X-Alpha-User-Id": getUserId() },
+    headers: { "X-Alpha-User-Id": getUserId(), ...llmHeaders },
     body: formData,
     cache: "no-store"
   });

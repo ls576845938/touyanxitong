@@ -44,6 +44,9 @@ class Settings:
     )
     auto_run_pipeline_on_startup: bool = _bool_env("AUTO_RUN_PIPELINE_ON_STARTUP", False)
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY") or None
+    gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
+    deepseek_api_key: str | None = os.getenv("DEEPSEEK_API_KEY") or None
+    llm_provider: str = os.getenv("LLM_PROVIDER", "openai")
     tushare_token: str | None = os.getenv("TUSHARE_TOKEN") or None
     polygon_api_key: str | None = os.getenv("POLYGON_API_KEY") or None
     tiingo_api_key: str | None = os.getenv("TIINGO_API_KEY") or None

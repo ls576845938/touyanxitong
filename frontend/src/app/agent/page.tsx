@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { AlertTriangle, BarChart3, Bot, Calculator, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Eye, FileText, Loader2, Camera, ImageUp, MessageSquare, Play, Printer, Radio, Save, Shield, ShieldAlert, Sparkles, Target, Wrench, XCircle } from "lucide-react";
+import { AlertTriangle, BarChart3, Bot, Calculator, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Eye, FileText, Key, Loader2, Camera, ImageUp, MessageSquare, Play, Printer, Radio, Save, Shield, ShieldAlert, Sparkles, Target, Trash2, Wrench, XCircle } from "lucide-react";
 import { api, type AgentArtifact, type AgentArtifactClaim, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunListItem, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow, type ExtractedPosition, type PortfolioImageExtractResponse, type RuntimeHealth, type WatchlistItemEnhanced, type ExposureData, type ExposureItem, type PositionPlan, type PositionSizeResponse, type RiskPortfolio, type RiskRules } from "@/lib/api";
 
 const FALLBACK_SKILLS: AgentSkill[] = [
@@ -74,6 +74,9 @@ export default function AgentPage() {
   const [addingToWatchlist, setAddingToWatchlist] = useState<Record<string, boolean>>({});
   const [watchlistSuccess, setWatchlistSuccess] = useState<string | null>(null);
   const [riskPanelOpen, setRiskPanelOpen] = useState(false);
+  const [apiKeyInputExpanded, setApiKeyInputExpanded] = useState(false);
+  const [llmProvider, setLlmProvider] = useState<string>("");
+  const [llmApiKey, setLlmApiKey] = useState<string>("");
 
   useEffect(() => {
     api.agentSkills()
@@ -90,6 +93,18 @@ export default function AgentPage() {
     api.fetchWatchlistItems({ status: "active", limit: 5 })
       .then(setWatchlistItems)
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    // Load API key settings from localStorage
+    try {
+      const savedProvider = localStorage.getItem("alpha_llm_provider") || "";
+      const savedApiKey = localStorage.getItem("alpha_llm_api_key") || "";
+      setLlmProvider(savedProvider);
+      setLlmApiKey(savedApiKey);
+    } catch {
+      // localStorage not available
+    }
   }, []);
 
   useEffect(() => {
@@ -441,6 +456,35 @@ export default function AgentPage() {
     }
   }
 
+  function handleSaveApiKey() {
+    try {
+      if (llmApiKey) {
+        localStorage.setItem("alpha_llm_api_key", llmApiKey);
+      } else {
+        localStorage.removeItem("alpha_llm_api_key");
+      }
+      if (llmProvider) {
+        localStorage.setItem("alpha_llm_provider", llmProvider);
+      } else {
+        localStorage.removeItem("alpha_llm_provider");
+      }
+      setApiKeyInputExpanded(false);
+    } catch {
+      // localStorage not available
+    }
+  }
+
+  function handleClearApiKey() {
+    setLlmApiKey("");
+    setLlmProvider("");
+    try {
+      localStorage.removeItem("alpha_llm_api_key");
+      localStorage.removeItem("alpha_llm_provider");
+    } catch {
+      // localStorage not available
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 px-6 py-8">
       <div className={`mx-auto space-y-6 ${riskPanelOpen ? 'max-w-[1640px]' : 'max-w-7xl'}`}>
@@ -468,7 +512,93 @@ export default function AgentPage() {
               {riskPanelOpen ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
               风险工作台
             </button>
-            <RuntimeHealthBadge health={runtimeHealth} />
+            {/* API Key Input */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setApiKeyInputExpanded(!apiKeyInputExpanded)}
+                className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs font-bold transition-colors ${
+                  apiKeyInputExpanded
+                    ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                    : llmApiKey
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                <Key size={14} />
+                <span className={`inline-block h-2 w-2 rounded-full ${
+                  llmApiKey ? 'bg-emerald-500' : 'bg-amber-400'
+                }`} />
+              </button>
+              {apiKeyInputExpanded && (
+                <div className="absolute right-0 top-full z-30 mt-2 w-72 rounded-lg border border-slate-200 bg-white p-4 shadow-lg">
+                  <div className="space-y-3">
+                    <div>
+                      <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">Provider</label>
+                      <select
+                        value={llmProvider}
+                        onChange={(e) => setLlmProvider(e.target.value)}
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 outline-none"
+                      >
+                        <option value="">-- 选择 --</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="gemini">Gemini</option>
+                        <option value="deepseek">DeepSeek</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">API Key</label>
+                      <div className="relative">
+                        <input
+                          type="password"
+                          value={llmApiKey}
+                          onChange={(e) => setLlmApiKey(e.target.value)}
+                          placeholder="输入你的 API Key"
+                          className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 pr-8 text-xs font-bold text-slate-700 outline-none placeholder:text-slate-300"
+                        />
+                        {llmApiKey && (
+                          <button
+                            type="button"
+                            onClick={handleClearApiKey}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500"
+                            title="清除 Key"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSaveApiKey}
+                        className="flex-1 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-800"
+                      >
+                        保存
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setApiKeyInputExpanded(false)}
+                        className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50"
+                      >
+                        取消
+                      </button>
+                    </div>
+                    {!llmApiKey && (
+                      <div className="rounded bg-amber-50 px-2 py-1.5 text-[10px] font-medium text-amber-700">
+                        未配置API Key，使用Mock模式
+                      </div>
+                    )}
+                    {llmApiKey && llmProvider && (
+                      <div className="rounded bg-emerald-50 px-2 py-1.5 text-[10px] font-medium text-emerald-700">
+                        已配置: {llmProvider.toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            <RuntimeHealthBadge health={runtimeHealth} llmProvider={llmProvider} llmApiKey={llmApiKey} />
           </div>
         </section>
 
@@ -1911,7 +2041,7 @@ function VisionUploadPanel({ runtimeHealth, onImportSuccess, portfolioId }: {
   );
 }
 
-function RuntimeHealthBadge({ health }: { health: RuntimeHealth | null }) {
+function RuntimeHealthBadge({ health, llmProvider, llmApiKey }: { health: RuntimeHealth | null; llmProvider?: string; llmApiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
 
   if (!health) {
@@ -1922,7 +2052,14 @@ function RuntimeHealthBadge({ health }: { health: RuntimeHealth | null }) {
     );
   }
 
-  const isHealthy = health.llm_configured || health.hermes_configured;
+  const hasUserKey = !!(llmApiKey || health.user_key_configured);
+  const activeProvider = llmProvider || health.current_provider || "openai";
+
+  // Determine health dot colour: green if key configured (user or server)
+  const isHealthy = hasUserKey || health.server_llm_configured || health.hermes_configured;
+
+  // Vision depends on provider
+  const visionAvailable = activeProvider === "openai"; // OpenAI gpt-4o supports vision; Gemini/DeepSeek limited
 
   return (
     <div className="relative">
@@ -1937,16 +2074,31 @@ function RuntimeHealthBadge({ health }: { health: RuntimeHealth | null }) {
       {expanded && (
         <div className="absolute right-0 top-full z-20 mt-2 w-64 rounded-lg border border-slate-200 bg-white p-4 shadow-lg">
           <div className="space-y-2 text-xs">
+            {/* User Key status */}
             <div className="flex justify-between">
-              <span className="text-slate-400">LLM</span>
-              <span className={health.llm_configured ? 'font-bold text-emerald-600' : 'font-bold text-rose-600'}>
-                {health.llm_configured ? '已配置' : '未配置 (使用Mock)'}
+              <span className="text-slate-400">用户Key</span>
+              <span className={hasUserKey ? 'font-bold text-emerald-600' : 'font-bold text-amber-600'}>
+                {hasUserKey ? '已配置' : '未配置 (使用默认)'}
+              </span>
+            </div>
+            {/* Current provider */}
+            <div className="flex justify-between">
+              <span className="text-slate-400">当前Provider</span>
+              <span className="font-bold text-slate-700">
+                {activeProvider === "openai" ? "OpenAI" : activeProvider === "gemini" ? "Gemini" : activeProvider === "deepseek" ? "DeepSeek" : activeProvider || "—"}
+              </span>
+            </div>
+            {/* Vision status */}
+            <div className="flex justify-between">
+              <span className="text-slate-400">Vision</span>
+              <span className={visionAvailable ? 'font-bold text-emerald-600' : 'font-bold text-amber-600'}>
+                {visionAvailable ? '可用' : '不可用'}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Vision</span>
-              <span className={health.vision_configured ? 'font-bold text-emerald-600' : 'font-bold text-amber-600'}>
-                {health.vision_configured ? '已配置' : '未配置'}
+              <span className="text-slate-400">LLM (服务端)</span>
+              <span className={health.llm_configured ? 'font-bold text-emerald-600' : 'font-bold text-rose-600'}>
+                {health.llm_configured ? '已配置' : '未配置 (使用Mock)'}
               </span>
             </div>
             <div className="flex justify-between">

@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,7 +18,7 @@ from app.agent.export_utils import build_print_html
 from app.agent.guardrails import RISK_DISCLAIMER, sanitize_financial_output
 from app.agent.tools.registry import registry
 from app.config import settings
-from app.llm.provider import OpenAIProvider
+from app.llm.factory import create_provider
 from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import (
     AgentArtifactClaim,
@@ -119,10 +119,15 @@ def list_agent_runs(
 
 
 @router.get("/runtime/health", response_model=AgentRuntimeHealth)
-def runtime_health() -> AgentRuntimeHealth:
+def runtime_health(request: Request) -> AgentRuntimeHealth:
     """Return runtime configuration status. NO secrets returned."""
     llm_configured = bool(settings.openai_api_key)
     hermes_configured = bool(settings.hermes_endpoint)
+
+    # User-supplied key detection (from header)
+    user_key_configured = bool(getattr(request.state, "llm_api_key", None))
+    server_llm_configured = bool(settings.openai_api_key or settings.gemini_api_key or settings.deepseek_api_key)
+    current_provider = getattr(request.state, "llm_provider", None) or settings.llm_provider
 
     # Determine active provider
     if llm_configured:
@@ -132,8 +137,8 @@ def runtime_health() -> AgentRuntimeHealth:
     else:
         provider = "mock"
 
-    # Streaming: RealRuntime supports streaming if LLM configured
-    streaming_supported = llm_configured  # Mock also chunks, but true streaming needs LLM
+    # Streaming: supported if any LLM key is available
+    streaming_supported = bool(server_llm_configured or user_key_configured)
 
     # Vision support detection
     vision_configured = False
@@ -141,17 +146,26 @@ def runtime_health() -> AgentRuntimeHealth:
     supports_image_input = False
     image_input_max_mb: float | None = None
 
-    if llm_configured:
-        # RealRuntimeAdapter uses OpenAIProvider with gpt-4o which supports vision
-        vision_configured = True
-        vision_provider = "openai"
-        supports_image_input = True
-        image_input_max_mb = 20.0
+    # Determine vision capability based on the active provider
+    if user_key_configured or server_llm_configured:
+        if current_provider == "openai":
+            vision_configured = True
+            vision_provider = "openai"
+            supports_image_input = True
+            image_input_max_mb = 20.0
+        elif current_provider == "gemini" and (user_key_configured or settings.gemini_api_key):
+            vision_configured = True
+            vision_provider = "gemini"
+            supports_image_input = True
+            image_input_max_mb = 20.0
+        elif current_provider == "deepseek":
+            vision_configured = False
+            vision_provider = "deepseek"
+            supports_image_input = False
+            image_input_max_mb = None
 
     if hermes_configured and not vision_configured:
-        # Hermes may support vision depending on its backend; we cannot determine here
         vision_provider = "hermes"
-        # Keep vision_configured=False since Hermes vision status is unknown
 
     warnings: list[str] = []
     if not llm_configured and not hermes_configured:
@@ -166,12 +180,16 @@ def runtime_health() -> AgentRuntimeHealth:
         llm_configured=llm_configured,
         hermes_configured=hermes_configured,
         streaming_supported=streaming_supported,
-        followup_llm_enabled=llm_configured,
+        followup_llm_enabled=bool(server_llm_configured or user_key_configured),
         fallback_enabled=True,
         vision_configured=vision_configured,
         vision_provider=vision_provider,
         supports_image_input=supports_image_input,
         image_input_max_mb=image_input_max_mb,
+        user_key_configured=user_key_configured,
+        current_provider=current_provider,
+        available_providers=["openai", "gemini", "deepseek"],
+        server_llm_configured=server_llm_configured,
         warnings=warnings,
     )
 
@@ -293,6 +311,7 @@ async def stream_agent_run_events(
 def create_followup(
     run_id: int,
     payload: AgentFollowupRequest,
+    request: Request,
     session: Session = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> AgentFollowupResponse:
@@ -317,12 +336,17 @@ def create_followup(
         except Exception:
             pass  # Don't crash follow-up on event publish failure
 
+    # Build llm_config from request state (set by LLMAuthMiddleware)
+    llm_api_key = getattr(request.state, "llm_api_key", None)
+    llm_provider = getattr(request.state, "llm_provider", None) or settings.llm_provider
+
     answer_md, answer_warnings = _generate_followup_answer(
         message=payload.message,
         mode=str(payload.mode.value) if isinstance(payload.mode, FollowupMode) else str(payload.mode),
         run_id=run_id,
         session=session,
         on_event=_publish_followup_event,
+        llm_config={"api_key": llm_api_key, "provider": llm_provider},
     )
 
     saved_artifact_id: int | None = None
@@ -777,6 +801,7 @@ def _generate_followup_answer(
     run_id: int,
     session: Session,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    llm_config: dict | None = None,
 ) -> tuple[str, list[str]]:
     """Generate a follow-up answer — LLM-first with deterministic template fallback.
 
@@ -843,7 +868,12 @@ def _generate_followup_answer(
     # ------------------------------------------------------------------
     # 2. LLM-first attempt
     # ------------------------------------------------------------------
-    if settings.openai_api_key:
+    # Resolve provider and API key: user-supplied key takes precedence
+    _llm_config = llm_config or {}
+    _api_key = _llm_config.get("api_key") or settings.openai_api_key
+    _provider_name = _llm_config.get("provider") or settings.llm_provider
+
+    if _api_key:
         try:
             # Build prompts
             system_prompt = (
@@ -870,7 +900,7 @@ def _generate_followup_answer(
                 "请根据报告内容回答用户的追问。直接给出回答内容（Markdown格式），不要输出JSON。"
             )
 
-            provider = OpenAIProvider(api_key=settings.openai_api_key)
+            provider = create_provider(_provider_name, _api_key)
 
             if on_event is not None:
                 on_event({"event": "followup_started", "run_id": run_id, "mode": mode})
@@ -916,7 +946,7 @@ def _generate_followup_answer(
         on_event({"event": "followup_started", "run_id": run_id, "mode": mode})
 
     # Determine if LLM was unavailable vs. failed
-    if settings.openai_api_key:
+    if _api_key:
         fallback_reason = "LLM 调用失败，已回退到确定性模板回答"
     else:
         fallback_reason = "当前使用确定性模板回答（LLM 不可用）"

@@ -6,6 +6,11 @@ from loguru import logger
 
 from app.agent.vision.schemas import PortfolioImageExtractResponse, ExtractedPosition
 
+VISION_UNAVAILABLE_MSG = (
+    "当前未配置多模态图片识别模型，截图解析不可用。"
+    "请在环境变量中配置 OPENAI_API_KEY 或支持 Vision 的 LLM 接入。"
+)
+
 # ── System Prompt (Chinese) ──────────────────────────────────────────
 
 SYSTEM_PROMPT = """你是一个专业的证券持仓信息提取助手。你的任务是从用户上传的券商/证券APP截图或网页截图中，精确提取持仓信息并输出为结构化的JSON数据。
@@ -95,8 +100,16 @@ class VisionPortfolioExtractor:
     and extract structured portfolio positions.
     """
 
-    def __init__(self) -> None:
-        self.api_key, self.base_url, self.hermes_config = self._load_config()
+    def __init__(self, api_key: str | None = None, provider: str = "openai") -> None:
+        self.provider = provider
+        if api_key is not None:
+            # Caller-supplied key (e.g. from X-LLM-API-Key header)
+            self.api_key = api_key
+            self.base_url = None
+            self.hermes_config = {}
+        else:
+            # Fall back to server-side config
+            self.api_key, self.base_url, self.hermes_config = self._load_config()
         self.available = bool(self.api_key)
 
     # ------------------------------------------------------------------
@@ -159,9 +172,17 @@ class VisionPortfolioExtractor:
         if not self.available:
             return PortfolioImageExtractResponse(
                 status="vision_unavailable",
+                warnings=[VISION_UNAVAILABLE_MSG],
+                needs_user_confirmation=True,
+            )
+
+        # DeepSeek is text-only — no vision support
+        if self.provider == "deepseek":
+            return PortfolioImageExtractResponse(
+                status="vision_unavailable",
                 warnings=[
-                    "当前未配置多模态图片识别模型，截图解析不可用。"
-                    "请在环境变量中配置 OPENAI_API_KEY 或支持 Vision 的 LLM 接入。"
+                    "DeepSeek 模型不支持图片识别（纯文本模型）。"
+                    "请切换到 OpenAI 或 Gemini 以使用截图解析功能。"
                 ],
                 needs_user_confirmation=True,
             )
@@ -225,15 +246,24 @@ class VisionPortfolioExtractor:
         return "\n".join(parts)
 
     def _call_vision_api(self, image_bytes: bytes, user_prompt: str) -> str:
-        """Call a multimodal LLM (OpenAI GPT-4o or Hermes) with the image."""
+        """Call a multimodal LLM with the image.
+
+        Supports:
+        - ``gemini`` via google-generativeai SDK (Gemini 2.5 Flash)
+        - ``openai`` via OpenAI SDK (GPT-4o)
+        - Hermes sidecar via OpenAI-compatible endpoint
+        """
+        if self.provider == "gemini":
+            return self._call_gemini_vision(image_bytes, user_prompt)
+
+        # OpenAI-compatible path (OpenAI native or Hermes sidecar)
         from openai import OpenAI
 
-        # Determine which endpoint / model to use
         if self.hermes_config.get("enabled"):
             base_url = self.hermes_config["endpoint"]
-            model = "hermes"  # Hermes default model name
+            model = "hermes"
         else:
-            base_url = self.base_url  # None -> OpenAI default
+            base_url = self.base_url
             model = "gpt-4o"
 
         client = OpenAI(api_key=self.api_key, base_url=base_url)
@@ -261,6 +291,21 @@ class VisionPortfolioExtractor:
         )
 
         return response.choices[0].message.content or ""
+
+    def _call_gemini_vision(self, image_bytes: bytes, user_prompt: str) -> str:
+        """Call Gemini with image via google-generativeai SDK."""
+        import google.generativeai as genai
+
+        genai.configure(api_key=self.api_key)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+
+        image_data = base64.b64encode(image_bytes).decode("utf-8")
+        image_part = {"mime_type": "image/png", "data": image_data}
+
+        response = model.generate_content(
+            [SYSTEM_PROMPT, user_prompt, image_part]
+        )
+        return response.text
 
     @staticmethod
     def _strip_markdown_fence(text: str) -> str:

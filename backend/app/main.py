@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.agent.api import router as agent_router
+from app.middleware.llm_auth import LLMAuthMiddleware
 from app.agent.mcp_router import mcp_router
 from app.agent.vision.api import router as vision_router
 from app.risk.api import router as risk_router
@@ -55,6 +56,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(LLMAuthMiddleware)
 
 
 @app.get("/health")

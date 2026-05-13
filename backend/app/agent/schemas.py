@@ -189,6 +189,11 @@ class AgentRuntimeHealth(BaseModel):
     vision_provider: str | None = None
     supports_image_input: bool = False
     image_input_max_mb: float | None = None
+    # Multi-provider support
+    user_key_configured: bool = False
+    current_provider: str = "openai"
+    available_providers: list[str] = Field(default_factory=lambda: ["openai", "gemini", "deepseek"])
+    server_llm_configured: bool = False
     warnings: list[str] = Field(default_factory=list)
 
 

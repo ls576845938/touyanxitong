@@ -6,12 +6,24 @@ from typing import Any
 
 from app.agent.runtime.base import AgentRuntimeResult, RuntimeAdapter
 from app.config import settings
+from app.llm.factory import create_provider
 from app.llm.prompts import RESEARCH_REPORT_PROMPT
-from app.llm.provider import OpenAIProvider
 
 
 class RealRuntimeAdapter(RuntimeAdapter):
     provider_name = "llm"
+
+    def __init__(self, llm_api_key: str | None = None, llm_provider: str = "openai"):
+        self._llm_api_key = llm_api_key
+        self._llm_provider = llm_provider
+
+    def _resolve_provider(self):
+        """Return a provider instance or None (which signals callers to fall back to mock)."""
+        api_key = self._llm_api_key or settings.openai_api_key
+        if not api_key:
+            return None
+        provider_name = self._llm_provider or "openai"
+        return create_provider(provider_name, api_key)
 
     def run(
         self,
@@ -20,12 +32,13 @@ class RealRuntimeAdapter(RuntimeAdapter):
         tools: dict[str, Any],
         skill_template: str,
     ) -> AgentRuntimeResult:
-        if not settings.openai_api_key:
-             from app.agent.runtime.mock_adapter import MockRuntimeAdapter
-             return MockRuntimeAdapter().run(prompt, context, tools, skill_template)
+        provider = self._resolve_provider()
+        if provider is None:
+            from app.agent.runtime.mock_adapter import MockRuntimeAdapter
+            return MockRuntimeAdapter().run(prompt, context, tools, skill_template)
 
         tool_results_summary = self._summarize_tool_results(context.get("tool_results", {}))
-        
+
         system_prompt = RESEARCH_REPORT_PROMPT
         user_message = (
             f"用户问题: {prompt}\n\n"
@@ -35,9 +48,8 @@ class RealRuntimeAdapter(RuntimeAdapter):
         )
 
         try:
-            provider = OpenAIProvider(api_key=settings.openai_api_key)
             data = provider.generate_research_report(system_prompt, user_message)
-            
+
             return AgentRuntimeResult(
                 title=str(data.get("title") or "AI 投研报告"),
                 summary=str(data.get("summary") or "已生成深度投研分析。"),
@@ -60,7 +72,8 @@ class RealRuntimeAdapter(RuntimeAdapter):
         skill_template: str,
         on_event: Callable[[str, dict[str, Any]], Any] | None = None,
     ) -> AgentRuntimeResult:
-        if not settings.openai_api_key:
+        provider = self._resolve_provider()
+        if provider is None:
             from app.agent.runtime.mock_adapter import MockRuntimeAdapter
             return await MockRuntimeAdapter().stream_run(prompt, context, tools, skill_template, on_event=on_event)
 
@@ -76,8 +89,6 @@ class RealRuntimeAdapter(RuntimeAdapter):
         )
 
         try:
-            provider = OpenAIProvider(api_key=settings.openai_api_key)
-
             def on_token(token: str) -> None:
                 if on_event:
                     on_event("token_delta", {"delta": token})
