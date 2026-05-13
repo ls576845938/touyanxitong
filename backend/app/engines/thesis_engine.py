@@ -365,17 +365,12 @@ def _build_stock_thesis(stock: dict[str, Any]) -> dict[str, Any] | None:
     trend_score = float(stock.get("trend_score", 0) or 0)
     risk_penalty = float(stock.get("risk_penalty", 0) or 0)
     rating = str(stock.get("rating", "") or "仅记录")
+    is_ma_bullish = bool(stock.get("is_ma_bullish", False))
+    is_breakout = bool(stock.get("is_breakout_120d", False) or stock.get("is_breakout_250d", False))
+    rs_rank = int(stock.get("relative_strength_rank", 0) or 0)
 
-    if final_score >= 75 and trend_score >= 55 and risk_penalty < 3:
-        direction = "positive"
-        confidence = min(75, 50 + int(final_score / 10))
-        title = f"{name}趋势偏强，持续关注进一步确认"
-        body = (
-            f"{name}（{code}）当前综合评分{final_score:.1f}，趋势分{trend_score:.1f}，"
-            f"评级{rating}，趋势偏强。需关注成交量变化和趋势持续性，"
-            "是否形成有效突破仍需验证。"
-        )
-    elif risk_penalty >= 3:
+    # Determine direction from actual signal data, not hardcoded neutral
+    if risk_penalty >= 3:
         direction = "negative"
         confidence = 45
         title = f"{name}存在风险信号，需核验"
@@ -384,13 +379,44 @@ def _build_stock_thesis(stock: dict[str, Any]) -> dict[str, Any] | None:
             f"综合评分{final_score:.1f}，评级{rating}。"
             "风险扣分较高，需核验风险来源是否已被市场充分定价。"
         )
-    else:
-        direction = "neutral"
-        confidence = 40
-        title = f"{name}趋势中性，等待进一步信号"
+    elif (final_score >= 55 and trend_score >= 40) or (is_ma_bullish and final_score >= 45):
+        direction = "positive"
+        confidence = min(75, 45 + int(final_score / 8))
+        signal_desc = []
+        if is_ma_bullish:
+            signal_desc.append("均线多头排列")
+        if is_breakout:
+            signal_desc.append("突破阶段新高")
+        signal_str = "，".join(signal_desc) if signal_desc else "趋势偏强"
+        title = f"{name}{signal_str}，持续跟踪验证"
         body = (
             f"{name}（{code}）当前综合评分{final_score:.1f}，趋势分{trend_score:.1f}，"
-            f"评级{rating}。趋势方向暂不明确，需更多信号确认方向。"
+            f"评级{rating}，{signal_str}。RS排名{rs_rank}，"
+            "需关注成交量变化和趋势持续性，是否形成有效突破仍需验证。"
+        )
+    elif final_score < 30:
+        direction = "negative"
+        confidence = 40
+        title = f"{name}评分偏低，观察拐点"
+        body = (
+            f"{name}（{code}）当前综合评分{final_score:.1f}（偏低），趋势分{trend_score:.1f}，"
+            f"评级{rating}。评分偏弱，等待趋势拐点确认。"
+        )
+    else:
+        # Middle zone (final_score 30-55 or trend_score < 40): lean positive
+        # unless risk penalty is significant
+        if risk_penalty >= 2:
+            direction = "negative"
+            confidence = 42
+            title = f"{name}风险信号偏高，谨慎观察"
+        else:
+            direction = "positive"
+            confidence = 42
+            title = f"{name}评分{final_score:.0f}分，趋势待确认但偏多"
+        body = (
+            f"{name}（{code}）当前综合评分{final_score:.1f}，趋势分{trend_score:.1f}，"
+            f"评级{rating}。均线{'多头' if is_ma_bullish else '非多头'}排列，RS排名{rs_rank}。"
+            "信号不够强烈，需结合更多证据验证方向。"
         )
 
     return {
@@ -524,26 +550,60 @@ def _build_risk_flags(subject_type: str, text: str) -> list[dict[str, str]]:
 
 
 def _detect_direction(text: str) -> str:
-    """Detect thesis direction from text using keyword heuristics."""
+    """Detect thesis direction from text using keyword heuristics.
+
+    Returns 'positive', 'negative', or 'neutral' based on weighted keyword
+    scoring of the text.  Weights are calibrated to nudge ambiguous texts
+    toward a useful direction rather than default to neutral.
+    """
     positive_keywords = {
-        "增强", "提升", "突破", "增长", "扩散", "强势", "利好",
-        "上行", "回升", "扩张", "走强", "加速", "改善", "突破",
-        "bullish", "positive", "upside", "growth", "strength",
+        # Strong directional signals (weight 3)
+        "多头排列": 3, "突破新高": 3, "持续走牛": 3, "加速上行": 3,
+        "强势突破": 3, "放量上涨": 3, "趋势延续": 3,
+        # Medium signals (weight 2)
+        "均线多头": 2, "站上均线": 2, "量价齐升": 2, "底部抬升": 2,
+        "资金流入": 2, "景气上行": 2, "业绩超预期": 2,
+        # Light signals (weight 1)
+        "增强": 1, "提升": 1, "突破": 1, "增长": 1, "扩散": 1,
+        "强势": 1, "利好": 1, "上行": 1, "回升": 1, "扩张": 1,
+        "走强": 1, "加速": 1, "改善": 1, "偏强": 1,
+        "bullish": 1, "positive": 1, "upside": 1, "growth": 1,
     }
     negative_keywords = {
-        "回落", "风险", "下跌", "恶化", "减弱", "利空", "下行",
-        "收缩", "承压", "降温", "走弱", "减速", "下滑", "亏损",
-        "bearish", "negative", "downside", "decline", "weakness",
+        # Strong directional signals (weight 3)
+        "空头排列": 3, "跌破支撑": 3, "持续走熊": 3, "加速下行": 3,
+        "放量下跌": 3, "趋势逆转": 3, "破位下行": 3,
+        # Medium signals (weight 2)
+        "均线空头": 2, "跌破均线": 2, "量价背离": 2, "顶部信号": 2,
+        "资金流出": 2, "景气下行": 2, "业绩不及预期": 2,
+        # Light signals (weight 1)
+        "回落": 1, "风险": 1, "下跌": 1, "恶化": 1, "减弱": 1,
+        "利空": 1, "下行": 1, "收缩": 1, "承压": 1, "降温": 1,
+        "走弱": 1, "减速": 1, "下滑": 1, "亏损": 1, "偏弱": 1,
+        "bearish": 1, "negative": 1, "downside": 1, "decline": 1,
     }
 
     lower = text.lower()
-    pos_score = sum(1 for w in positive_keywords if w in lower)
-    neg_score = sum(1 for w in negative_keywords if w in lower)
+    pos_score = sum(weight for kw, weight in positive_keywords.items() if kw in lower)
+    neg_score = sum(weight for kw, weight in negative_keywords.items() if kw in lower)
 
+    # If we have any signal, prefer a direction
+    # Only return neutral when both scores are truly zero
     if pos_score > neg_score:
         return "positive"
     if neg_score > pos_score:
         return "negative"
+
+    # Both equal: check context clues for tie-breaking
+    if pos_score > 0:  # tied but non-zero → mixed
+        return "mixed"
+
+    # Truly no signal: check for "观察" / "强观察" (mild positive context)
+    if "强观察" in text or "主升" in text or "看涨" in text or "看好" in text:
+        return "positive"
+    if "排除" in text or "看跌" in text or "看空" in text:
+        return "negative"
+
     return "neutral"
 
 

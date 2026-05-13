@@ -1894,7 +1894,7 @@ export const api = {
     if (params?.subject_id) query.set("subject_id", params.subject_id);
     if (params?.limit) query.set("limit", String(params.limit));
     const suffix = query.toString() ? `?${query.toString()}` : "";
-    return getJson<ResearchThesis[]>(`/api/research/theses${suffix}`, { cacheMs: 0 });
+    return getJson<{ total: number; rows: ResearchThesis[] }>(`/api/research/theses${suffix}`, { cacheMs: 0 }).then((data) => data.rows ?? []);
   },
   fetchThesis: (id: number) => getJson<ResearchThesis>(`/api/research/theses/${id}`, { cacheMs: 0 }),
 
@@ -1908,7 +1908,7 @@ export const api = {
     if (params?.subject_type) query.set("subject_type", params.subject_type);
     if (params?.limit) query.set("limit", String(params.limit));
     const suffix = query.toString() ? `?${query.toString()}` : "";
-    return getJson<WatchlistItemEnhanced[]>(`/api/watchlist/items${suffix}`, { cacheMs: 0 });
+    return getJson<{ total: number; rows: WatchlistItemEnhanced[] }>(`/api/watchlist/items${suffix}`, { cacheMs: 0 }).then((data) => data.rows ?? []);
   },
   addToWatchlist: (payload: { thesis_id?: number; subject_type?: string; subject_id?: string; subject_name?: string; thesis_title?: string; direction?: string; reason?: string; priority?: string }) =>
     postJson<WatchlistItemEnhanced>("/api/watchlist/items", payload),
@@ -1919,15 +1919,15 @@ export const api = {
   // ---------------------------------------------------------------------------
   // Thesis Analytics & Review
   // ---------------------------------------------------------------------------
-  fetchThesisAnalytics: () => safeGetJson<ThesisAnalytics>("/api/research/theses/analytics"),
-  fetchAnnotationSummary: () => safeGetJson<AnnotationSummary>("/api/research/theses/annotation-summary"),
+  fetchThesisAnalytics: () => safeGetJson<ThesisAnalytics>("/api/research/thesis-analytics"),
+  fetchAnnotationSummary: () => safeGetJson<AnnotationSummary>("/api/research/annotations/summary"),
   fetchReportQualityTimeseries: (params?: { source_type?: string; start_date?: string; end_date?: string }) => {
     const query = new URLSearchParams();
     if (params?.source_type) query.set("source_type", params.source_type);
     if (params?.start_date) query.set("start_date", params.start_date);
     if (params?.end_date) query.set("end_date", params.end_date);
     const suffix = query.toString() ? `?${query.toString()}` : "";
-    return safeGetJsonArray<ReportQualityPoint>(`/api/research/theses/report-quality${suffix}`);
+    return safeGetJson<{ total: number; rows: ReportQualityPoint[] }>(`/api/research/report-quality${suffix}`).then((data) => data?.rows ?? []);
   },
 };
 

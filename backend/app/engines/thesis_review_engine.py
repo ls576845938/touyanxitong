@@ -218,18 +218,26 @@ def _review_industry_thesis(
 
         # Simple direction check based on heat change
         direction = str(thesis.direction or "up").lower()
-        if direction == "up" and heat_change > 2.0:
+        is_positive = direction in ("up", "positive")
+        is_negative = direction in ("down", "negative")
+        if is_positive and heat_change > 2.0:
             status = "hit"
             notes.append("Industry heat increased, thesis direction confirmed.")
-        elif direction == "down" and heat_change < -2.0:
+        elif is_negative and heat_change < -2.0:
             status = "hit"
             notes.append("Industry heat decreased, thesis direction confirmed.")
-        elif direction == "up" and heat_change < -5.0:
+        elif is_positive and heat_change < -5.0:
             status = "missed"
-            notes.append("Industry heat declined significantly despite up-thesis.")
-        elif direction == "down" and heat_change > 5.0:
+            notes.append("Industry heat declined significantly despite positive thesis.")
+        elif is_negative and heat_change > 5.0:
             status = "missed"
-            notes.append("Industry heat increased significantly despite down-thesis.")
+            notes.append("Industry heat increased significantly despite negative thesis.")
+        elif direction in ("neutral", "mixed") and abs(heat_change) <= 2.0:
+            status = "hit"
+            notes.append("Heat change is small — neutral thesis holds.")
+        elif direction in ("neutral", "mixed") and abs(heat_change) >= 5.0:
+            status = "missed"
+            notes.append("Large heat change — neutral thesis missed the signal.")
         else:
             status = "inconclusive"
             notes.append("Heat change insufficient to confirm or contradict thesis direction.")
@@ -553,24 +561,35 @@ def _classify_outcome(
     Returns ``(status, note)``.
     """
     scale = math.sqrt(max(horizon_days, 5) / 5.0)
-    hit_threshold = 0.02 * scale  # min positive move to call "hit"
-    miss_threshold = 0.05 * scale  # min counter move to call "missed"
+    hit_threshold = 0.015 * scale  # min move in thesis direction to call "hit"
+    miss_threshold = 0.03 * scale  # min counter-directional move to call "missed"
 
     direction = direction.lower()
 
-    if direction == "up":
+    # Normalize: thesis engine uses "positive"/"negative"/"neutral"/"mixed"
+    if direction in ("up", "positive"):
         if realized_return >= hit_threshold:
-            return "hit", f"Realized return {realized_return:+.4f} aligns with up-thesis."
+            return "hit", f"Realized return {realized_return:+.4f} aligns with up/positive thesis."
         if realized_return <= -miss_threshold:
-            return "missed", f"Realized return {realized_return:+.4f} contradicts up-thesis."
+            return "missed", f"Realized return {realized_return:+.4f} contradicts up/positive thesis."
         return "inconclusive", f"Realized return {realized_return:+.4f} within neutral range (hit≥{hit_threshold:.4f}, miss≤{-miss_threshold:.4f})."
 
-    if direction == "down":
+    if direction in ("down", "negative"):
         if realized_return <= -hit_threshold:
-            return "hit", f"Realized return {realized_return:+.4f} aligns with down-thesis."
+            return "hit", f"Realized return {realized_return:+.4f} aligns with down/negative thesis."
         if realized_return >= miss_threshold:
-            return "missed", f"Realized return {realized_return:+.4f} contradicts down-thesis."
+            return "missed", f"Realized return {realized_return:+.4f} contradicts down/negative thesis."
         return "inconclusive", f"Realized return {realized_return:+.4f} within neutral range."
+
+    # Neutral / mixed: thesis predicted sideways/no clear direction
+    # Hit if |return| stays small; missed if a large move occurs
+    if direction in ("neutral", "mixed"):
+        abs_return = abs(realized_return)
+        if abs_return <= hit_threshold:
+            return "hit", f"Realized return {realized_return:+.4f} is small — neutral thesis holds."
+        if abs_return >= miss_threshold:
+            return "missed", f"Realized return {realized_return:+.4f} is a large move — neutral thesis missed the signal."
+        return "inconclusive", f"Realized return {realized_return:+.4f} in borderline range."
 
     return "inconclusive", f"Unrecognized direction '{direction}'; cannot classify."
 
