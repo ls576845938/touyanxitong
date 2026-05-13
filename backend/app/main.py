@@ -9,6 +9,7 @@ from loguru import logger
 
 from app.agent.api import router as agent_router
 from app.agent.mcp_router import mcp_router
+from app.api.routes_analytics import router as analytics_router
 from app.api.routes_chain import router as chain_router
 from app.api.routes_industry import router as industry_router
 from app.api.routes_market import router as market_router
@@ -19,6 +20,7 @@ from app.api.routes_stocks import router as stocks_router
 from app.api.routes_quality import router as quality_router
 from app.api.routes_tenbagger import router as tenbagger_router
 from app.api.routes_thesis import router as thesis_router
+from app.api.routes_annotations import router as annotations_router
 from app.api.routes_thesis_review import router as thesis_review_router
 from app.api.routes_watchlist import router as watchlist_router
 from app.config import settings
@@ -69,6 +71,7 @@ def health() -> dict[str, object]:
 
 
 app.include_router(market_router)
+app.include_router(analytics_router)
 app.include_router(industry_router)
 app.include_router(chain_router)
 app.include_router(stocks_router)
@@ -78,6 +81,7 @@ app.include_router(research_router)
 app.include_router(quality_router)
 app.include_router(tenbagger_router)
 app.include_router(thesis_router)
+app.include_router(annotations_router)
 app.include_router(thesis_review_router)
 app.include_router(retail_router)
 app.include_router(agent_router)

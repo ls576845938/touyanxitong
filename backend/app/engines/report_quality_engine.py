@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -16,15 +17,23 @@ from app.db.models import (
 )
 
 
-def compute_report_quality(source_type: str, source_id: int, db_session: Session) -> ReportQualityScore:
+def compute_report_quality(
+    source_type: str, source_id: int, db_session: Session, score_date: date | None = None
+) -> ReportQualityScore:
     """Compute a report quality score for a given source (daily_report or agent_run).
 
     Counts theses linked to the source, evaluates evidence coverage, confidence,
     and guardrail violations. Stores the composite quality score.
 
+    Uses upsert on (source_type, source_id, score_date) so that calling this
+    multiple times on the same day updates the existing row rather than creating
+    duplicates. Each new day produces a fresh time-series row.
+
     Integration hook: call this after DailyReport generation (daily_report_job.py)
     or after AgentRun completion (orchestrator.py).
     """
+    score_date = score_date or date.today()
+
     # Validate the source exists
     _resolve_source(source_type, source_id, db_session)
 
@@ -71,11 +80,12 @@ def compute_report_quality(source_type: str, source_id: int, db_session: Session
         hit_rate_60d=None,
     )
 
-    # Upsert the quality score record
+    # Upsert on (source_type, source_id, score_date) — new row per day
     existing = db_session.scalars(
         select(ReportQualityScore).where(
             ReportQualityScore.source_type == source_type,
             ReportQualityScore.source_id == source_id,
+            ReportQualityScore.score_date == score_date,
         )
     ).first()
 
@@ -86,11 +96,14 @@ def compute_report_quality(source_type: str, source_id: int, db_session: Session
         existing.guardrail_violation_count = guardrail_violation_count
         existing.unavailable_data_count = unavailable_data_count
         existing.quality_score = round(quality_score, 2)
+        existing.review_backed = False
         result = existing
     else:
         result = ReportQualityScore(
             source_type=source_type,
             source_id=source_id,
+            score_date=score_date,
+            review_backed=False,
             thesis_count=thesis_count,
             evidence_count=evidence_count,
             avg_confidence=round(avg_confidence, 2),
@@ -108,28 +121,35 @@ def update_quality_from_reviews(source_type: str, source_id: int, db_session: Se
     """Update a report quality score with hit rates from completed thesis reviews.
 
     Finds all theses linked to the source, retrieves completed reviews,
-    computes hit rates per horizon (5d, 20d, 60d), and recalculates the
-    composite quality score.
+    computes hit rates per horizon (5d, 20d, 60d), and creates a NEW row
+    with ``review_backed=True`` so that the time series captures both
+    pre-review and post-review snapshots.
 
     Integration hook: call this after running thesis reviews.
     """
-    score_record = db_session.scalars(
-        select(ReportQualityScore).where(
+    today = date.today()
+
+    # Find the latest quality record for this source
+    latest = db_session.scalars(
+        select(ReportQualityScore)
+        .where(
             ReportQualityScore.source_type == source_type,
             ReportQualityScore.source_id == source_id,
         )
+        .order_by(ReportQualityScore.score_date.desc(), ReportQualityScore.created_at.desc())
+        .limit(1)
     ).first()
 
-    if score_record is None:
-        # No pre-existing record; compute from scratch
-        score_record = compute_report_quality(source_type, source_id, db_session)
+    if latest is None:
+        # No pre-existing record; compute from scratch first
+        latest = compute_report_quality(source_type, source_id, db_session, score_date=today)
 
     # Find theses linked to this source
     theses = _find_linked_theses(source_type, source_id, db_session)
     thesis_ids = [t.id for t in theses]
 
     if not thesis_ids:
-        return score_record
+        return latest
 
     # Find all completed reviews for these theses
     reviews = db_session.scalars(
@@ -154,24 +174,84 @@ def update_quality_from_reviews(source_type: str, source_id: int, db_session: Se
     hit_rate_20d = _safe_hit_rate(horizon_groups[20])
     hit_rate_60d = _safe_hit_rate(horizon_groups[60])
 
-    # Update the record
-    score_record.hit_rate_5d = hit_rate_5d
-    score_record.hit_rate_20d = hit_rate_20d
-    score_record.hit_rate_60d = hit_rate_60d
-
     # Recompute quality score incorporating hit rates
     quality_score = _compute_quality_score(
-        thesis_count=score_record.thesis_count,
-        evidence_count=score_record.evidence_count,
-        avg_confidence=score_record.avg_confidence,
-        guardrail_violation_count=score_record.guardrail_violation_count,
+        thesis_count=latest.thesis_count,
+        evidence_count=latest.evidence_count,
+        avg_confidence=latest.avg_confidence,
+        guardrail_violation_count=latest.guardrail_violation_count,
         hit_rate_5d=hit_rate_5d,
         hit_rate_20d=hit_rate_20d,
         hit_rate_60d=hit_rate_60d,
     )
-    score_record.quality_score = round(quality_score, 2)
+
+    # Upsert on (source_type, source_id, score_date=today) for review-backed row
+    existing = db_session.scalars(
+        select(ReportQualityScore).where(
+            ReportQualityScore.source_type == source_type,
+            ReportQualityScore.source_id == source_id,
+            ReportQualityScore.score_date == today,
+        )
+    ).first()
+
+    if existing:
+        existing.review_backed = True
+        existing.hit_rate_5d = hit_rate_5d
+        existing.hit_rate_20d = hit_rate_20d
+        existing.hit_rate_60d = hit_rate_60d
+        existing.quality_score = round(quality_score, 2)
+        # Carry forward base data
+        existing.thesis_count = latest.thesis_count
+        existing.evidence_count = latest.evidence_count
+        existing.avg_confidence = latest.avg_confidence
+        existing.guardrail_violation_count = latest.guardrail_violation_count
+        existing.unavailable_data_count = latest.unavailable_data_count
+        result = existing
+    else:
+        result = ReportQualityScore(
+            source_type=source_type,
+            source_id=source_id,
+            score_date=today,
+            review_backed=True,
+            thesis_count=latest.thesis_count,
+            evidence_count=latest.evidence_count,
+            avg_confidence=latest.avg_confidence,
+            guardrail_violation_count=latest.guardrail_violation_count,
+            unavailable_data_count=latest.unavailable_data_count,
+            hit_rate_5d=hit_rate_5d,
+            hit_rate_20d=hit_rate_20d,
+            hit_rate_60d=hit_rate_60d,
+            quality_score=round(quality_score, 2),
+        )
+        db_session.add(result)
+
     db_session.commit()
-    return score_record
+    return result
+
+
+def get_quality_timeseries(
+    db_session: Session,
+    source_type: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[ReportQualityScore]:
+    """Return report quality scores as an ordered time series.
+
+    Optional filters narrow the result set. Results are sorted by
+    score_date ascending.
+    """
+    query = select(ReportQualityScore)
+
+    if source_type:
+        query = query.where(ReportQualityScore.source_type == source_type)
+    if start_date:
+        query = query.where(ReportQualityScore.score_date >= start_date)
+    if end_date:
+        query = query.where(ReportQualityScore.score_date <= end_date)
+
+    query = query.order_by(ReportQualityScore.score_date.asc())
+    results = db_session.scalars(query).all()
+    return list(results)
 
 
 def create_feedback_event(thesis: ResearchThesis, review: ResearchThesisReview, db_session: Session) -> ScoringFeedbackEvent:

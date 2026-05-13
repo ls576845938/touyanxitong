@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -891,7 +891,7 @@ class ResearchThesisReview(Base):
 class ReportQualityScore(Base):
     __tablename__ = "report_quality_scores"
     __table_args__ = (
-        UniqueConstraint("source_type", "source_id", name="uq_report_quality_source"),
+        UniqueConstraint("source_type", "source_id", "score_date", name="uq_report_quality_source_date"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -906,6 +906,8 @@ class ReportQualityScore(Base):
     unavailable_data_count: Mapped[int] = mapped_column(Integer, default=0)
     guardrail_violation_count: Mapped[int] = mapped_column(Integer, default=0)
     quality_score: Mapped[float] = mapped_column(Float, default=0.0)  # composite 0-100
+    score_date: Mapped[date] = mapped_column(Date, default=date.today, index=True)
+    review_backed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -922,6 +924,44 @@ class ScoringFeedbackEvent(Base):
     review_status: Mapped[str] = mapped_column(String(24), default="pending")
     confidence: Mapped[int] = mapped_column(Integer, default=50)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResearchThesisAnnotation(Base):
+    __tablename__ = "research_thesis_annotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    thesis_id: Mapped[int] = mapped_column(ForeignKey("research_thesis.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    label: Mapped[str] = mapped_column(String(32))
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    thesis: Mapped[ResearchThesis] = relationship("ResearchThesis", backref="annotations")
+
+
+class ThesisReviewAnalyticsSnapshot(Base):
+    __tablename__ = "thesis_review_analytics_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    snapshot_date: Mapped[date] = mapped_column(Date, index=True)
+    sample_size: Mapped[int] = mapped_column(default=0)
+    hit_count: Mapped[int] = mapped_column(default=0)
+    missed_count: Mapped[int] = mapped_column(default=0)
+    invalidated_count: Mapped[int] = mapped_column(default=0)
+    inconclusive_count: Mapped[int] = mapped_column(default=0)
+    hit_rate: Mapped[float | None] = mapped_column(nullable=True)
+    miss_rate: Mapped[float | None] = mapped_column(nullable=True)
+    inconclusive_rate: Mapped[float | None] = mapped_column(nullable=True)
+    by_subject_type_json: Mapped[str] = mapped_column(Text, default="{}")
+    by_direction_json: Mapped[str] = mapped_column(Text, default="{}")
+    by_horizon_json: Mapped[str] = mapped_column(Text, default="{}")
+    by_confidence_bucket_json: Mapped[str] = mapped_column(Text, default="{}")
+    by_evidence_type_json: Mapped[str] = mapped_column(Text, default="{}")
+    by_source_type_json: Mapped[str] = mapped_column(Text, default="{}")
+    calibration_report_json: Mapped[str] = mapped_column(Text, default="{}")
+    low_sample_warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
 class AgentEvent(Base):

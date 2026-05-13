@@ -17,7 +17,7 @@ from app.db.models import Base
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SQLITE_PATH = BACKEND_DIR / "data" / "alpha_radar.db"
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 22
 
 
 @dataclass(frozen=True)
@@ -226,6 +226,108 @@ def _migration_retail_research_loop_schema(target_engine: Engine) -> None:
 
 def _migration_report_quality_feedback_schema(_: Engine) -> None:
     """Version marker for report_quality_scores and scoring_feedback_events tables created from SQLAlchemy metadata."""
+
+
+def _migration_thesis_analytics(_: Engine) -> None:
+    """Version marker for thesis_review_analytics_snapshots table created from SQLAlchemy metadata."""
+
+
+def _migration_annotation_feedback_schema(_: Engine) -> None:
+    """Version marker for research_thesis_annotations table created from SQLAlchemy metadata."""
+
+
+def _migration_report_quality_timeseries(target_engine: Engine) -> None:
+    """Add time-series columns and update unique constraint for report_quality_scores.
+
+    - Drops the old unique constraint on (source_type, source_id)
+    - Adds ``score_date`` and ``review_backed`` columns
+    - Creates a new unique constraint on (source_type, source_id, score_date)
+    """
+    inspector = inspect(target_engine)
+    if not inspector.has_table("report_quality_scores"):
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("report_quality_scores")}
+    if "score_date" in existing and "review_backed" in existing:
+        return  # already migrated
+
+    dialect = target_engine.dialect.name
+
+    with target_engine.begin() as connection:
+        if dialect == "sqlite":
+            connection.execute(text("""
+                CREATE TABLE report_quality_scores_new (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    source_type VARCHAR(24) NOT NULL,
+                    source_id INTEGER NOT NULL,
+                    thesis_count INTEGER DEFAULT 0 NOT NULL,
+                    evidence_count INTEGER DEFAULT 0 NOT NULL,
+                    avg_confidence FLOAT DEFAULT 0 NOT NULL,
+                    hit_rate_5d FLOAT,
+                    hit_rate_20d FLOAT,
+                    hit_rate_60d FLOAT,
+                    unavailable_data_count INTEGER DEFAULT 0 NOT NULL,
+                    guardrail_violation_count INTEGER DEFAULT 0 NOT NULL,
+                    quality_score FLOAT DEFAULT 0 NOT NULL,
+                    score_date DATE DEFAULT (DATE('now')) NOT NULL,
+                    review_backed BOOLEAN DEFAULT 0 NOT NULL,
+                    created_at DATETIME NOT NULL
+                )
+            """))
+            connection.execute(text("""
+                INSERT INTO report_quality_scores_new (
+                    id, source_type, source_id,
+                    thesis_count, evidence_count, avg_confidence,
+                    hit_rate_5d, hit_rate_20d, hit_rate_60d,
+                    unavailable_data_count, guardrail_violation_count, quality_score,
+                    score_date, review_backed, created_at
+                )
+                SELECT
+                    id, source_type, source_id,
+                    thesis_count, evidence_count, avg_confidence,
+                    hit_rate_5d, hit_rate_20d, hit_rate_60d,
+                    unavailable_data_count, guardrail_violation_count, quality_score,
+                    DATE(created_at), 0, created_at
+                FROM report_quality_scores
+            """))
+            connection.execute(text("DROP TABLE report_quality_scores"))
+            connection.execute(text("ALTER TABLE report_quality_scores_new RENAME TO report_quality_scores"))
+            connection.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_report_quality_source_date "
+                "ON report_quality_scores (source_type, source_id, score_date)"
+            ))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_report_quality_scores_score_date "
+                "ON report_quality_scores (score_date)"
+            ))
+        elif dialect == "postgresql":
+            # Drop old unique constraint
+            connection.execute(text(
+                "ALTER TABLE report_quality_scores DROP CONSTRAINT IF EXISTS uq_report_quality_source"
+            ))
+            # Add score_date and backfill
+            connection.execute(text(
+                "ALTER TABLE report_quality_scores ADD COLUMN score_date DATE"
+            ))
+            connection.execute(text(
+                "UPDATE report_quality_scores SET score_date = DATE(created_at) WHERE score_date IS NULL"
+            ))
+            connection.execute(text(
+                "ALTER TABLE report_quality_scores ALTER COLUMN score_date SET NOT NULL"
+            ))
+            # Add review_backed
+            connection.execute(text(
+                "ALTER TABLE report_quality_scores ADD COLUMN review_backed BOOLEAN DEFAULT false NOT NULL"
+            ))
+            # New unique constraint
+            connection.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_report_quality_source_date "
+                "ON report_quality_scores (source_type, source_id, score_date)"
+            ))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_report_quality_scores_score_date "
+                "ON report_quality_scores (score_date)"
+            ))
 
 
 def _migration_closed_loop_columns(target_engine: Engine) -> None:
@@ -931,6 +1033,9 @@ SCHEMA_MIGRATIONS = [
     SchemaMigration(17, "report_quality_feedback_schema", _migration_report_quality_feedback_schema),
     SchemaMigration(18, "watchlist_extension", _migration_watchlist_extension),
     SchemaMigration(19, "closed_loop_columns", _migration_closed_loop_columns),
+    SchemaMigration(20, "thesis_analytics_snapshots", _migration_thesis_analytics),
+    SchemaMigration(21, "annotation_feedback_schema", _migration_annotation_feedback_schema),
+    SchemaMigration(22, "report_quality_timeseries", _migration_report_quality_timeseries),
 ]
 
 

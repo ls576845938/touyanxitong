@@ -23,7 +23,7 @@ import {
   TrendingUp
 } from "lucide-react";
 import { motion } from "framer-motion";
-import { api, type DataQuality, type DataStatus, type IndustryRadarRow, type IngestionTask, type MarketSummary, type ReportSummary, type ResearchDataGate, type ResearchUniverse, type ResearchThesis, type SignalBacktestLatest, type TenbaggerThesisList, type TrendPoolRow, type WatchlistChanges, type WatchlistItemEnhanced } from "@/lib/api";
+import { api, type AnnotationSummary, type DataQuality, type DataStatus, type IndustryRadarRow, type IngestionTask, type MarketSummary, type ReportQualityPoint, type ReportSummary, type ResearchDataGate, type ResearchUniverse, type ResearchThesis, type SignalBacktestLatest, type TenbaggerThesisList, type ThesisAnalytics, type TrendPoolRow, type WatchlistChanges, type WatchlistItemEnhanced } from "@/lib/api";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { ScoreBadge } from "@/components/ScoreBadge";
@@ -46,6 +46,10 @@ export default function DashboardPage() {
   const [pendingReviewTheses, setPendingReviewTheses] = useState<ResearchThesis[]>([]);
   const [watchlistItemsForDash, setWatchlistItemsForDash] = useState<WatchlistItemEnhanced[]>([]);
   const [thesesError, setThesesError] = useState("");
+  const [analyticsData, setAnalyticsData] = useState<ThesisAnalytics | null>(null);
+  const [annotationData, setAnnotationData] = useState<AnnotationSummary | null>(null);
+  const [reportQualityData, setReportQualityData] = useState<ReportQualityPoint[]>([]);
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -105,6 +109,18 @@ export default function DashboardPage() {
     void api.fetchWatchlistItems({ status: "active", limit: 5 })
       .then(setWatchlistItemsForDash)
       .catch(() => {});
+
+    // Fetch thesis review analytics (graceful 404 handling)
+    void Promise.allSettled([
+      api.fetchThesisAnalytics(),
+      api.fetchAnnotationSummary(),
+      api.fetchReportQualityTimeseries(),
+    ]).then(([analytics, annotations, qualityPoints]) => {
+      setAnalyticsData(analytics.status === "fulfilled" ? analytics.value : null);
+      setAnnotationData(annotations.status === "fulfilled" ? annotations.value : null);
+      setReportQualityData(qualityPoints.status === "fulfilled" ? qualityPoints.value : []);
+      setAnalyticsLoading(false);
+    });
   }, []);
 
   if (loading) return <div className="min-h-[60vh] flex items-center justify-center"><LoadingState label="系统正在同步全球产业波动数据" /></div>;
@@ -339,6 +355,226 @@ export default function DashboardPage() {
           </div>
         </section>
       </div>
+
+      {/* Thesis Review Analytics */}
+      {analyticsLoading ? (
+        <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+          <div className="animate-pulse">
+            <div className="h-3 w-48 bg-slate-100 rounded mb-6" />
+            <div className="h-5 w-32 bg-slate-100 rounded mb-8" />
+            <div className="grid grid-cols-4 gap-4">
+              {[1,2,3,4].map(i => <div key={i} className="h-24 bg-slate-100 rounded-2xl" />)}
+            </div>
+          </div>
+        </section>
+      ) : (
+        <>
+          {/* Row 1: Thesis Overview + Annotation Summary */}
+          <div className="grid gap-6 lg:grid-cols-[1fr_0.4fr]">
+            {/* Section 1: Thesis Review Overview */}
+            <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+                <ClipboardCheck size={14} />
+                THESIS REVIEW ANALYTICS
+              </div>
+              <h2 className="text-xl font-bold text-slate-900 mb-6">观点复盘总览</h2>
+              {!analyticsData ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center">
+                  <p className="text-sm font-medium text-slate-400">暂无复盘数据。</p>
+                </div>
+              ) : (
+                <>
+                  {analyticsData.sample_size < 10 && (
+                    <div className="mb-4 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] font-medium text-amber-700">
+                      样本不足 (N={analyticsData.sample_size})，暂不作结论
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="p-4 rounded-2xl border border-slate-100 bg-slate-50/30">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">已复盘</div>
+                      <div className="text-lg font-bold text-slate-900">{analyticsData.sample_size}</div>
+                    </div>
+                    <div className="p-4 rounded-2xl border border-emerald-100 bg-emerald-50/30">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">命中率</div>
+                      <div className="text-lg font-bold text-emerald-600">{pct(analyticsData.hit_rate ?? 0)}</div>
+                    </div>
+                    <div className="p-4 rounded-2xl border border-rose-100 bg-rose-50/30">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">错失率</div>
+                      <div className="text-lg font-bold text-rose-600">{pct(analyticsData.miss_rate ?? 0)}</div>
+                    </div>
+                    <div className="p-4 rounded-2xl border border-amber-100 bg-amber-50/30">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">不确定率</div>
+                      <div className="text-lg font-bold text-amber-600">{pct(analyticsData.inconclusive_rate ?? 0)}</div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </section>
+
+            {/* Section 5: Annotation Summary */}
+            <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+                <Info size={14} />
+                ANNOTATIONS
+              </div>
+              <h2 className="text-xl font-bold text-slate-900 mb-6">标注统计</h2>
+              {!annotationData ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 py-6 text-center">
+                  <p className="text-sm font-medium text-slate-400">暂无标注。</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">总标注</div>
+                    <div className="text-2xl font-black text-slate-900">{annotationData.total}</div>
+                  </div>
+                  <div className="space-y-2">
+                    <AnnotationStat label="有用率" value={annotationData.useful_rate} color="emerald" />
+                    <AnnotationStat label="证据弱率" value={annotationData.evidence_weak_rate} color="amber" />
+                    <AnnotationStat label="模糊率" value={annotationData.too_vague_rate} color="rose" />
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+
+          {/* Row 2: Calibration + Best/Worst (only if analytics data exists) */}
+          {analyticsData && (
+            <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+              {/* Section 2: Confidence Calibration */}
+              <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+                  <BarChart3 size={14} />
+                  CALIBRATION
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 mb-6">置信度校准</h2>
+                {(() => {
+                  const buckets: CalibrationBucket[] = parseJsonField<CalibrationBucket[]>(analyticsData.calibration_report_json) || [];
+                  if (buckets.length === 0) {
+                    return (
+                      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 py-6 text-center">
+                        <p className="text-sm font-medium text-slate-400">暂无校准数据。</p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="space-y-5">
+                      {buckets.map((b, i) => (
+                        <div key={i}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[11px] font-bold text-slate-600">{b.bucket}</span>
+                            <span className="text-[10px] font-bold text-slate-400">N={b.sample_size}</span>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-medium text-indigo-400 w-12 shrink-0">预期</span>
+                              <div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-indigo-200 rounded-full transition-all" style={{ width: `${Math.min(100, (b.confidence_mid ?? 0) * 100)}%` }} />
+                              </div>
+                              <span className="text-[9px] font-bold text-indigo-400 w-10 text-right">{(b.confidence_mid ?? 0) * 100}%</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-medium text-indigo-600 w-12 shrink-0">实际</span>
+                              <div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-indigo-600 rounded-full transition-all" style={{ width: `${Math.min(100, (b.actual_hit_rate ?? 0) * 100)}%` }} />
+                              </div>
+                              <span className="text-[9px] font-bold text-indigo-600 w-10 text-right">{(b.actual_hit_rate ?? 0) * 100}%</span>
+                            </div>
+                          </div>
+                          <div className="mt-1 flex justify-end">
+                            <CalibrationGap gap={b.gap} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </section>
+
+              {/* Section 3: Best/Worst Groups */}
+              <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+                  <Target size={14} />
+                  GROUP PERFORMANCE
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 mb-6">分群表现</h2>
+                <div className="space-y-6">
+                  {parseGroupsSummary(analyticsData).map((group, i) => (
+                    <div key={i}>
+                      <div className="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-2">{group.label}</div>
+                      <div className="space-y-1">
+                        {group.items.length > 0 ? group.items.map((item, j) => (
+                          <GroupRow key={j} item={item} />
+                        )) : (
+                          <div className="text-[11px] font-medium text-slate-400 py-1">暂无数据</div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {/* Section 4: Report Quality Trend */}
+          <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+              <TrendingUp size={14} />
+              REPORT QUALITY TREND
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-6">日报质量趋势</h2>
+            {reportQualityData.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center">
+                <p className="text-sm font-medium text-slate-400">暂无质量趋势数据。</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                      <th className="pb-3 pr-4">日期</th>
+                      <th className="pb-3 pr-4">质量评分</th>
+                      <th className="pb-3 pr-4">观点数</th>
+                      <th className="pb-3 pr-4">证据数</th>
+                      <th className="pb-3 pr-4">平均置信</th>
+                      <th className="pb-3 pr-4">5日命中</th>
+                      <th className="pb-3 pr-4">20日命中</th>
+                      <th className="pb-3 pr-4">状态</th>
+                      <th className="pb-3">趋势</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {reportQualityData.slice(0, 10).map((point, idx, arr) => (
+                      <tr key={point.score_date} className="text-[13px] text-slate-900 font-medium">
+                        <td className="py-3 pr-4 text-slate-500">{point.score_date}</td>
+                        <td className="py-3 pr-4 font-bold">{point.quality_score.toFixed(1)}</td>
+                        <td className="py-3 pr-4">{point.thesis_count}</td>
+                        <td className="py-3 pr-4">{point.evidence_count}</td>
+                        <td className="py-3 pr-4">{Math.round(point.avg_confidence * 100)}%</td>
+                        <td className="py-3 pr-4">{point.hit_rate_5d != null ? `${(point.hit_rate_5d * 100).toFixed(0)}%` : '-'}</td>
+                        <td className="py-3 pr-4">{point.hit_rate_20d != null ? `${(point.hit_rate_20d * 100).toFixed(0)}%` : '-'}</td>
+                        <td className="py-3 pr-4">
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
+                            point.review_backed ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
+                          }`}>
+                            {point.review_backed ? '已复盘' : '待复盘'}
+                          </span>
+                        </td>
+                        <td className="py-3">
+                          <TrendArrow
+                            current={point.quality_score}
+                            previous={idx < arr.length - 1 ? arr[idx + 1].quality_score : null}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
+      )}
 
       {/* Anomalies */}
       {industries.filter((ind) => Math.abs(ind.heat_change_7d) > 30).length > 0 && (
@@ -648,6 +884,104 @@ export default function DashboardPage() {
       </section>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Thesis Analytics types & helpers
+// ---------------------------------------------------------------------------
+interface CalibrationBucket {
+  bucket: string;
+  confidence_mid: number | null;
+  sample_size: number;
+  actual_hit_rate: number | null;
+  gap: number | null;
+}
+
+interface GroupItem {
+  name: string;
+  hit_rate: number | null;
+  sample_size: number;
+}
+
+interface GroupSummary {
+  label: string;
+  items: GroupItem[];
+}
+
+function parseJsonField<T>(json: string): T | null {
+  try {
+    return JSON.parse(json) as T;
+  } catch {
+    return null;
+  }
+}
+
+function parseGroupsSummary(data: ThesisAnalytics): GroupSummary[] {
+  const subjectTypes = parseJsonField<Array<{ subject_type: string; sample_size: number; hit_rate: number | null }>>(data.by_subject_type_json) || [];
+  const horizons = parseJsonField<Array<{ horizon_days: number; sample_size: number; hit_rate: number | null }>>(data.by_horizon_json) || [];
+  const sortedST = [...subjectTypes].sort((a, b) => (b.hit_rate ?? 0) - (a.hit_rate ?? 0));
+  const sortedH = [...horizons].sort((a, b) => (b.hit_rate ?? 0) - (a.hit_rate ?? 0));
+  const labelMap: Record<string, string> = { stock: "个股", industry: "产业", index: "指数", sector: "板块" };
+  return [
+    {
+      label: "最佳类型",
+      items: sortedST.slice(0, 2).map(s => ({ name: labelMap[s.subject_type] || s.subject_type, hit_rate: s.hit_rate, sample_size: s.sample_size })),
+    },
+    {
+      label: "最佳周期",
+      items: sortedH.slice(0, 2).map(h => ({ name: `${h.horizon_days}天`, hit_rate: h.hit_rate, sample_size: h.sample_size })),
+    },
+    {
+      label: "最差类型",
+      items: sortedST.slice(-2).reverse().map(s => ({ name: labelMap[s.subject_type] || s.subject_type, hit_rate: s.hit_rate, sample_size: s.sample_size })),
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Thesis Analytics sub-components
+// ---------------------------------------------------------------------------
+function AnnotationStat({ label, value, color }: { label: string; value: number | null; color: string }) {
+  const colorMap: Record<string, string> = { emerald: "text-emerald-600", amber: "text-amber-600", rose: "text-rose-600" };
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-[11px] font-medium text-slate-500">{label}</span>
+      <span className={`text-[12px] font-bold tabular-nums ${colorMap[color] || 'text-slate-900'}`}>
+        {value != null ? `${(value * 100).toFixed(0)}%` : '-'}
+      </span>
+    </div>
+  );
+}
+
+function CalibrationGap({ gap }: { gap: number | null }) {
+  if (gap == null) return <span className="text-[9px] text-slate-400">--</span>;
+  const isOver = gap > 0;
+  return (
+    <span className={`text-[9px] font-bold ${isOver ? 'text-rose-500' : 'text-emerald-500'}`}>
+      {isOver ? '过度自信' : '保守'} {Math.abs(gap).toFixed(1)}%
+    </span>
+  );
+}
+
+function GroupRow({ item }: { item: GroupItem }) {
+  return (
+    <div className="flex items-center justify-between py-1">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-[12px] font-bold text-slate-900 truncate">{item.name}</span>
+        <span className="text-[9px] font-medium text-slate-400 shrink-0">N={item.sample_size}</span>
+      </div>
+      <span className={`text-[11px] font-black tabular-nums ${(item.hit_rate ?? 0) >= 0.5 ? 'text-emerald-600' : 'text-rose-600'}`}>
+        {pct(item.hit_rate ?? 0)}
+      </span>
+    </div>
+  );
+}
+
+function TrendArrow({ current, previous }: { current: number; previous: number | null }) {
+  if (previous == null) return <span className="text-slate-300">--</span>;
+  if (current > previous) return <span className="text-emerald-500 text-sm">&#8593;</span>;
+  if (current < previous) return <span className="text-rose-500 text-sm">&#8595;</span>;
+  return <span className="text-slate-400 text-sm">&#8594;</span>;
 }
 
 // Sub-components for better organization

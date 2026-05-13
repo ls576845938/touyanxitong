@@ -1,45 +1,87 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import ReportQualityScore, ScoringFeedbackEvent
+from app.db.models import AgentRun, DailyReport, ReportQualityScore, ScoringFeedbackEvent
 from app.db.session import get_session
-from app.engines.report_quality_engine import compute_report_quality, update_quality_from_reviews
+from app.engines.report_quality_engine import (
+    compute_report_quality,
+    get_quality_timeseries,
+    update_quality_from_reviews,
+)
 
 router = APIRouter(prefix="/api/research", tags=["report-quality"])
 
 
 @router.get("/report-quality")
 def get_report_quality(
-    source_type: str = Query(..., description="daily_report or agent_run"),
-    source_id: int = Query(..., ge=1),
+    source_type: str | None = Query(default=None, description="daily_report or agent_run"),
+    source_id: int | None = Query(default=None, ge=1, description="Source record id (single-record mode)"),
+    start_date: str | None = Query(default=None, description="YYYY-MM-DD start (time-series mode)"),
+    end_date: str | None = Query(default=None, description="YYYY-MM-DD end (time-series mode)"),
     session: Session = Depends(get_session),
 ) -> dict[str, object]:
-    """Get a report quality score for a specific source.
+    """Get report quality score(s).
 
-    If no score record exists yet, computes and persists it on-demand.
+    Two modes:
+      1. *Single-record* — pass ``source_type`` + ``source_id`` to get the
+         latest score for a specific source (backward compatible). Computes
+         on-demand if no score exists yet.
+      2. *Time series* — pass ``source_type`` (optional) + optional date
+         range to retrieve scores ordered by date.
     """
-    if source_type not in ("daily_report", "agent_run"):
-        raise HTTPException(status_code=400, detail="source_type must be daily_report or agent_run")
+    # Single-record mode (backward compatible)
+    if source_id is not None:
+        if source_type not in ("daily_report", "agent_run"):
+            raise HTTPException(status_code=400, detail="source_type must be daily_report or agent_run")
 
-    record = session.scalars(
-        select(ReportQualityScore).where(
-            ReportQualityScore.source_type == source_type,
-            ReportQualityScore.source_id == source_id,
-        )
-    ).first()
+        record = session.scalars(
+            select(ReportQualityScore)
+            .where(
+                ReportQualityScore.source_type == source_type,
+                ReportQualityScore.source_id == source_id,
+            )
+            .order_by(ReportQualityScore.score_date.desc(), ReportQualityScore.created_at.desc())
+            .limit(1)
+        ).first()
 
-    if record is None:
+        if record is None:
+            try:
+                record = compute_report_quality(source_type, source_id, session)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc))
+
+        return _quality_score_payload(record)
+
+    # Time-series mode
+    parsed_start: date | None = None
+    parsed_end: date | None = None
+    if start_date:
         try:
-            record = compute_report_quality(source_type, source_id, session)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            parsed_start = date.fromisoformat(start_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid start_date: {start_date}")
+    if end_date:
+        try:
+            parsed_end = date.fromisoformat(end_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid end_date: {end_date}")
 
-    return _quality_score_payload(record)
+    records = get_quality_timeseries(
+        session,
+        source_type=source_type,
+        start_date=parsed_start,
+        end_date=parsed_end,
+    )
+
+    return {
+        "total": len(records),
+        "rows": [_quality_score_payload(r) for r in records],
+    }
 
 
 @router.post("/report-quality/compute")
@@ -72,6 +114,75 @@ def trigger_update_quality_from_reviews(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return _quality_score_payload(record)
+
+
+@router.post("/report-quality/recompute")
+def recompute_report_quality(
+    body: dict[str, object],
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    """Recompute report quality scores for a source type across a date range.
+
+    For each source in the range, a new quality-score row is created or updated
+    (upsert on source_type, source_id, score_date). This allows backfilling
+    quality scores for historical reports.
+
+    Request body:
+      ``source_type`` (required): ``"daily_report"`` or ``"agent_run"``
+      ``start_date`` (optional, default today): YYYY-MM-DD
+      ``end_date`` (optional, default today): YYYY-MM-DD
+    """
+    source_type = body.get("source_type", "daily_report")
+    if source_type not in ("daily_report", "agent_run"):
+        raise HTTPException(status_code=400, detail="source_type must be daily_report or agent_run")
+
+    start_date_str = body.get("start_date")
+    end_date_str = body.get("end_date")
+    today_str = date.today().isoformat()
+
+    try:
+        parsed_start = date.fromisoformat(str(start_date_str or today_str))
+        parsed_end = date.fromisoformat(str(end_date_str or today_str))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {exc}")
+
+    processed = 0
+    errors: list[dict[str, object]] = []
+
+    if source_type == "daily_report":
+        sources = session.scalars(
+            select(DailyReport).where(
+                DailyReport.report_date >= parsed_start,
+                DailyReport.report_date <= parsed_end,
+            )
+        ).all()
+        for src in sources:
+            try:
+                compute_report_quality("daily_report", src.id, session, score_date=src.report_date)
+                processed += 1
+            except Exception as exc:
+                errors.append({"source_id": src.id, "error": str(exc)})
+    else:
+        sources = session.scalars(
+            select(AgentRun).where(
+                AgentRun.created_at >= parsed_start,
+                AgentRun.created_at <= parsed_end,
+            )
+        ).all()
+        for src in sources:
+            try:
+                compute_report_quality("agent_run", src.id, session)
+                processed += 1
+            except Exception as exc:
+                errors.append({"source_id": src.id, "error": str(exc)})
+
+    return {
+        "source_type": source_type,
+        "start_date": parsed_start.isoformat(),
+        "end_date": parsed_end.isoformat(),
+        "processed": processed,
+        "errors": errors,
+    }
 
 
 @router.get("/feedback-events")
@@ -155,6 +266,8 @@ def _quality_score_payload(record: ReportQualityScore) -> dict[str, object]:
         "id": record.id,
         "source_type": record.source_type,
         "source_id": record.source_id,
+        "score_date": record.score_date.isoformat() if record.score_date else None,
+        "review_backed": record.review_backed,
         "thesis_count": record.thesis_count,
         "evidence_count": record.evidence_count,
         "avg_confidence": record.avg_confidence,

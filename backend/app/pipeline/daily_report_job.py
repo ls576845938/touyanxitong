@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 
 from loguru import logger
 from sqlalchemy import func, select
@@ -15,7 +15,14 @@ from app.engines.thesis_engine import generate_theses_from_report, thesis_to_mar
 from app.pipeline.utils import latest_available_date, latest_trade_date
 
 
-def run_daily_report_job(session: Session, report_date: date | None = None) -> dict[str, int | str]:
+def run_daily_report_job(
+    session: Session,
+    report_date: date | None = None,
+    thesis_source_type: str | None = None,
+    thesis_created_date: date | None = None,
+    skip_review_schedule: bool = False,
+    thesis_limit: int | None = None,
+) -> dict[str, int | str]:
     requested_date = report_date or latest_trade_date(session)
     target_date = latest_available_date(session, StockScore.trade_date, requested_date) or requested_date
     stocks = session.scalars(select(Stock).where(Stock.is_active.is_(True))).all()
@@ -59,11 +66,16 @@ def run_daily_report_job(session: Session, report_date: date | None = None) -> d
         market_summary=result.market_summary,
     )
 
+    # Apply thesis limit for replay
+    if thesis_limit is not None:
+        thesis_dicts = thesis_dicts[:thesis_limit]
+
     # Save theses to database (flush to get IDs)
+    source_type = thesis_source_type or "daily_report"
     saved_thesis_ids: list[int] = []
     for thesis_data in thesis_dicts:
         thesis = ResearchThesis(
-            source_type="daily_report",
+            source_type=source_type,
             source_id=None,
             subject_type=thesis_data["subject_type"],
             subject_id=str(thesis_data.get("subject_id") or "") or thesis_data["subject_type"],
@@ -78,11 +90,17 @@ def run_daily_report_job(session: Session, report_date: date | None = None) -> d
             invalidation_conditions_json=json.dumps(thesis_data.get("invalidation_conditions", []), ensure_ascii=False),
             risk_flags_json=json.dumps(thesis_data.get("risk_flags", []), ensure_ascii=False),
         )
+        # Override created_at to historical date for replay so review scheduling
+        # uses the correct anchor date.
+        if thesis_created_date is not None:
+            thesis.created_at = datetime.combine(thesis_created_date, datetime.min.time(), tzinfo=timezone.utc)
         session.add(thesis)
         session.flush()
-        # Auto-create review schedule for the new thesis
-        from app.engines.thesis_review_engine import create_review_schedule
-        create_review_schedule(thesis, session)
+        # Auto-create review schedule for the new thesis (skip for replay scripts
+        # that manage their own review schedules with custom horizons)
+        if not skip_review_schedule:
+            from app.engines.thesis_review_engine import create_review_schedule
+            create_review_schedule(thesis, session)
         saved_thesis_ids.append(thesis.id)
 
     # Add thesis section to full markdown

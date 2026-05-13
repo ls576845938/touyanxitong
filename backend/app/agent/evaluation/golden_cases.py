@@ -76,6 +76,7 @@ GOLDEN_CASES = [
         "require_evidence_refs": True,
         "require_invalidation": True,
         "require_horizon": True,
+        "require_review_schedule": True,
         "max_confidence": 85,
     },
     {
@@ -86,6 +87,7 @@ GOLDEN_CASES = [
         "min_thesis_count": 1,
         "require_evidence_refs": True,
         "require_uncertainty": True,
+        "require_review_schedule": True,
     },
     {
         "prompt": "帮我筛出当前最强的趋势股票池",
@@ -103,6 +105,7 @@ GOLDEN_CASES = [
         "min_thesis_count": 1,
         "require_confidence": True,
         "require_horizon": True,
+        "require_review_schedule": True,
     },
     {
         "prompt": "帮我找有十倍股早期特征的公司",

@@ -4,13 +4,13 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agent.evaluation.golden_cases import GOLDEN_CASES
 from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import AgentRunRequest
-from app.db.models import AgentArtifact, ResearchThesis
+from app.db.models import AgentArtifact, ResearchThesis, ResearchThesisReview
 
 # ---------------------------------------------------------------------------
 # Legacy runner (unchanged) — validates task_type, required_phrases,
@@ -70,6 +70,7 @@ class ThesisQualityResult:
     forbidden_ok: bool
     risk_flags_ok: bool
     uncertainty_ok: bool
+    review_schedule_ok: bool = True
     failures: list[str] = field(default_factory=list)
 
     @property
@@ -267,6 +268,27 @@ def _check_thesis_quality(
     else:
         uncertainty_ok = True
 
+    # --- 9. require_review_schedule ---
+    if case.get("require_review_schedule"):
+        all_have_schedule = True
+        for t in thesis_records:
+            sched_count = session.scalar(
+                select(func.count(ResearchThesisReview.id)).where(
+                    ResearchThesisReview.thesis_id == t.id
+                )
+            )
+            if sched_count == 0:
+                all_have_schedule = False
+                failures.append(
+                    f"Thesis #{t.id} ('{t.thesis_title[:60]}') has no review schedule"
+                )
+        if thesis_count == 0:
+            review_schedule_ok = True
+        else:
+            review_schedule_ok = all_have_schedule
+    else:
+        review_schedule_ok = True
+
     return ThesisQualityResult(
         case_index=case_index,
         task_type_correct=True,  # filled by caller below
@@ -279,6 +301,7 @@ def _check_thesis_quality(
         forbidden_ok=forbidden_ok,
         risk_flags_ok=risk_flags_ok,
         uncertainty_ok=uncertainty_ok,
+        review_schedule_ok=review_schedule_ok,
         failures=failures,
     )
 

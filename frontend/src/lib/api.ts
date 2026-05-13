@@ -1396,6 +1396,47 @@ export type WatchlistItemEnhanced = {
   updated_at: string;
 };
 
+// ---------------------------------------------------------------------------
+// Thesis Analytics & Review
+// ---------------------------------------------------------------------------
+export interface ThesisAnalytics {
+  snapshot_date: string;
+  sample_size: number;
+  hit_count: number;
+  missed_count: number;
+  invalidated_count: number;
+  inconclusive_count: number;
+  hit_rate: number | null;
+  miss_rate: number | null;
+  inconclusive_rate: number | null;
+  by_subject_type_json: string;
+  by_direction_json: string;
+  by_horizon_json: string;
+  by_confidence_bucket_json: string;
+  by_source_type_json: string;
+  calibration_report_json: string;
+  low_sample_warnings_json: string;
+}
+
+export interface AnnotationSummary {
+  total: number;
+  useful_rate: number | null;
+  evidence_weak_rate: number | null;
+  too_vague_rate: number | null;
+  by_label: Record<string, number>;
+}
+
+export interface ReportQualityPoint {
+  score_date: string;
+  quality_score: number;
+  thesis_count: number;
+  evidence_count: number;
+  avg_confidence: number;
+  hit_rate_5d: number | null;
+  hit_rate_20d: number | null;
+  review_backed: boolean;
+}
+
 export type AgentTaskType =
   | "stock_deep_research"
   | "industry_chain_radar"
@@ -1601,6 +1642,28 @@ async function getJson<T>(path: string, options?: { cacheMs?: number }): Promise
   }
 
   return request;
+}
+
+async function safeGetJson<T>(path: string): Promise<T | null> {
+  try {
+    return await getJson<T>(path, { cacheMs: 0 });
+  } catch (err) {
+    if (err instanceof Error && /404|not found/i.test(err.message)) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function safeGetJsonArray<T>(path: string): Promise<T[]> {
+  try {
+    return await getJson<T[]>(path, { cacheMs: 0 });
+  } catch (err) {
+    if (err instanceof Error && /404|not found/i.test(err.message)) {
+      return [];
+    }
+    throw err;
+  }
 }
 
 export const api = {
@@ -1852,6 +1915,20 @@ export const api = {
   archiveWatchlistItem: (itemId: number) => postJson<WatchlistItemEnhanced>(`/api/watchlist/items/${itemId}/archive`, {}),
   updateWatchlistItem: (itemId: number, payload: { reason?: string; priority?: string }) =>
     postJson<WatchlistItemEnhanced>(`/api/watchlist/items/${itemId}`, payload),
+
+  // ---------------------------------------------------------------------------
+  // Thesis Analytics & Review
+  // ---------------------------------------------------------------------------
+  fetchThesisAnalytics: () => safeGetJson<ThesisAnalytics>("/api/research/theses/analytics"),
+  fetchAnnotationSummary: () => safeGetJson<AnnotationSummary>("/api/research/theses/annotation-summary"),
+  fetchReportQualityTimeseries: (params?: { source_type?: string; start_date?: string; end_date?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.source_type) query.set("source_type", params.source_type);
+    if (params?.start_date) query.set("start_date", params.start_date);
+    if (params?.end_date) query.set("end_date", params.end_date);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return safeGetJsonArray<ReportQualityPoint>(`/api/research/theses/report-quality${suffix}`);
+  },
 };
 
 
