@@ -28,3 +28,27 @@ class PortfolioImageExtractResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     unmapped_rows: list[str] = Field(default_factory=list)
     needs_user_confirmation: bool = True
+
+
+# ── Confirm-import schemas (MVP 3.4) ─────────────────────────────────
+
+
+class ConfirmedPosition(BaseModel):
+    """A user-confirmed position ready for database import."""
+
+    symbol: str
+    name: str | None = None
+    market: str = "A"
+    quantity: float
+    market_value: float | None = None
+    cost: float | None = None
+
+
+class ConfirmImportRequest(BaseModel):
+    """Request body for the confirm-portfolio-import endpoint."""
+
+    portfolio_id: int | None = None
+    positions: list[ConfirmedPosition]
+    import_mode: str = "merge"  # replace / merge / append
+    account_equity: float | None = None
+    cash: float | None = None

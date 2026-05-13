@@ -1614,6 +1614,23 @@ export type PortfolioImageExtractResponse = {
   needs_user_confirmation: boolean;
 };
 
+export interface ConfirmedPosition {
+  symbol: string
+  name?: string
+  market?: string
+  quantity: number
+  market_value?: number
+  cost?: number
+}
+
+export interface ConfirmImportRequest {
+  portfolio_id?: number
+  positions: ConfirmedPosition[]
+  import_mode: 'merge' | 'replace' | 'append'
+  account_equity?: number
+  cash?: number
+}
+
 export type AgentRunListItem = {
   id: number;
   task_type: string;
@@ -2090,6 +2107,8 @@ export const api = {
     }
     return postFormData<PortfolioImageExtractResponse>("/api/agent/vision/extract-portfolio", formData);
   },
+  confirmPortfolioImport: (data: ConfirmImportRequest) =>
+    postJson<RiskPortfolio>("/api/agent/vision/confirm-portfolio-import", data),
 };
 
 

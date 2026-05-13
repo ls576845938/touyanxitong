@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, BarChart3, Bot, Calculator, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Eye, FileText, Loader2, Camera, ImageUp, MessageSquare, Play, Printer, Radio, Save, Shield, ShieldAlert, Sparkles, Target, Wrench, XCircle } from "lucide-react";
-import { api, type AgentArtifact, type AgentArtifactClaim, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunListItem, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow, type PortfolioImageExtractResponse, type RuntimeHealth, type WatchlistItemEnhanced, type ExposureData, type ExposureItem, type PositionPlan, type PositionSizeResponse, type RiskPortfolio, type RiskRules } from "@/lib/api";
+import { api, type AgentArtifact, type AgentArtifactClaim, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunListItem, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow, type ExtractedPosition, type PortfolioImageExtractResponse, type RuntimeHealth, type WatchlistItemEnhanced, type ExposureData, type ExposureItem, type PositionPlan, type PositionSizeResponse, type RiskPortfolio, type RiskRules } from "@/lib/api";
 
 const FALLBACK_SKILLS: AgentSkill[] = [
   { id: "system:stock_deep_research", name: "个股深度投研", description: "趋势、评分、产业链和证据链报告。", skill_type: "stock_deep_research", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
@@ -1343,30 +1343,163 @@ function SkillBuilderPanel({ prompt, run, artifact }: { prompt: string; run: Age
   );
 }
 
-function VisionUploadPanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | null }) {
+function VisionUploadPanel({ runtimeHealth, onImportSuccess, portfolioId }: {
+  runtimeHealth: RuntimeHealth | null;
+  onImportSuccess?: () => void;
+  portfolioId?: number;
+}) {
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [result, setResult] = useState<PortfolioImageExtractResponse | null>(null);
   const [error, setError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Confirmation flow state
+  const [confirmedPositions, setConfirmedPositions] = useState<Array<ExtractedPosition & { selected: boolean; market?: string | null; broker_name?: string | null }>>([]);
+  const [accountEquityInput, setAccountEquityInput] = useState("");
+  const [cashInput, setCashInput] = useState("");
+  const [importMode, setImportMode] = useState<"merge" | "replace" | "append">("merge");
+  const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState("");
+  const [confirmSuccess, setConfirmSuccess] = useState(false);
+
   const visionAvailable = runtimeHealth?.vision_configured === true;
-  const visionProvider = runtimeHealth?.vision_provider ?? null;
+  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+
+  function resetConfirmation() {
+    setConfirmedPositions([]);
+    setAccountEquityInput("");
+    setCashInput("");
+    setImportMode("merge");
+    setConfirming(false);
+    setConfirmError("");
+    setConfirmSuccess(false);
+  }
+
+  async function uploadWithProgress(file: File, onProgress: (pct: number) => void): Promise<PortfolioImageExtractResponse> {
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+    const userId = (() => {
+      try {
+        return localStorage.getItem("alpha_user_id") || "anonymous";
+      } catch {
+        return "anonymous";
+      }
+    })();
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append("image", file);
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 80);
+          onProgress(pct);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch {
+            reject(new Error("解析响应失败"));
+          }
+        } else {
+          let detail = "";
+          try {
+            const payload = JSON.parse(xhr.responseText);
+            detail = typeof payload?.detail === "string" ? payload.detail : JSON.stringify(payload);
+          } catch {
+            detail = xhr.responseText;
+          }
+          reject(new Error(`上传失败: ${xhr.status}${detail ? `: ${detail}` : ""}`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("网络错误"));
+      xhr.open("POST", `${API_BASE_URL}/api/agent/vision/extract-portfolio`);
+      xhr.setRequestHeader("X-Alpha-User-Id", userId);
+      xhr.send(formData);
+    });
+  }
 
   async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // File size validation
+    if (file.size > MAX_FILE_SIZE) {
+      setError("文件大小超过 5MB 限制，请压缩后重试。");
+      setResult(null);
+      resetConfirmation();
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
     setError("");
     setResult(null);
+    resetConfirmation();
     setUploading(true);
+    setUploadProgress(0);
+
     try {
-      const res = await api.extractPortfolioFromImage(file);
+      // Use XHR for real upload progress tracking
+      const res = await uploadWithProgress(file, (pct) => setUploadProgress(pct));
+      setUploadProgress(100);
       setResult(res);
+      if (res.positions && res.positions.length > 0) {
+        setConfirmedPositions(
+          res.positions.map((p) => ({ ...p, selected: true }))
+        );
+        setAccountEquityInput(res.account_equity != null ? String(res.account_equity) : "");
+        setCashInput(res.cash != null ? String(res.cash) : "");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "截图解析请求失败");
     } finally {
       setUploading(false);
-      // Reset file input so the same file can be re-selected
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function updatePosition(index: number, changes: Partial<ExtractedPosition & { selected: boolean; market?: string | null }>) {
+    setConfirmedPositions((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], ...changes };
+      return next;
+    });
+  }
+
+  async function handleConfirmImport() {
+    const selected = confirmedPositions.filter((p) => p.selected);
+    if (selected.length === 0) {
+      setConfirmError("请至少勾选一个持仓。");
+      return;
+    }
+    setConfirming(true);
+    setConfirmError("");
+    try {
+      await api.confirmPortfolioImport({
+        portfolio_id: portfolioId,
+        positions: selected.map((p) => ({
+          symbol: p.symbol || "",
+          name: p.name || undefined,
+          market: p.market || undefined,
+          quantity: p.quantity ?? 0,
+          market_value: p.market_value ?? undefined,
+          cost: p.cost ?? undefined,
+        })),
+        import_mode: importMode,
+        account_equity: accountEquityInput ? parseFloat(accountEquityInput) : undefined,
+        cash: cashInput ? parseFloat(cashInput) : undefined,
+      });
+      setConfirmSuccess(true);
+      onImportSuccess?.();
+    } catch (err) {
+      setConfirmError(err instanceof Error ? err.message : "导入确认失败");
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -1374,21 +1507,25 @@ function VisionUploadPanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | n
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-3 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
         <Camera size={16} className="text-indigo-600" />
-        截图解析 (Beta)
+        截图解析导入 (Beta)
       </div>
+
+      {/* File Input (hidden) */}
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/bmp"
+        accept="image/png,image/jpeg,image/webp"
         onChange={handleFileSelected}
         className="hidden"
         id="vision-upload-input"
       />
+
+      {/* Upload Button */}
       <button
         type="button"
-        disabled={!visionAvailable || uploading}
+        disabled={!visionAvailable || uploading || confirming}
         onClick={() => fileInputRef.current?.click()}
-        title={!visionAvailable ? "需要配置多模态模型" : "上传持仓截图解析"}
+        title={!visionAvailable ? "当前未配置多模态图片识别模型" : "上传持仓截图"}
         className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-sm font-bold text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400 transition-colors"
       >
         {uploading ? (
@@ -1396,57 +1533,378 @@ function VisionUploadPanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | n
         ) : (
           <ImageUp size={16} />
         )}
-        {uploading ? "解析中..." : "上传持仓截图解析 (Beta)"}
+        {uploading ? "解析中..." : "上传持仓截图"}
       </button>
+
+      {/* Vision not configured message */}
       {!visionAvailable && runtimeHealth && (
         <div className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[10px] font-bold text-amber-700">
-          需要配置多模态模型 (如 OPENAI_API_KEY) 才能使用截图解析功能。
+          当前未配置多模态图片识别模型。请配置 OPENAI_API_KEY 后重试。
         </div>
       )}
+
+      {/* Upload Progress */}
+      {uploading && (
+        <div className="mt-3 space-y-1">
+          <div className="flex items-center gap-2 text-xs font-bold text-indigo-700">
+            <Loader2 size={14} className="animate-spin" />
+            {uploadProgress < 80 ? "上传中..." : "解析中..."}
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-indigo-500 transition-all duration-300"
+              style={{ width: `${Math.max(uploadProgress, 10)}%` }}
+            />
+          </div>
+          <div className="text-right text-[10px] font-bold text-slate-400">
+            {uploadProgress}%
+          </div>
+        </div>
+      )}
+
+      {/* Error display */}
       {error && (
         <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{error}</div>
       )}
-      {result && (
-        <div className="mt-3 space-y-2">
-          {result.status === "vision_unavailable" && (
-            <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
-              {result.warnings[0] ?? "Vision 不可用"}
-            </div>
-          )}
-          {result.status === "success" && (
-            <div className="space-y-2">
-              <div className="text-xs font-bold text-emerald-700">
-                解析成功 · {result.positions.length} 个持仓
+
+      {/* Confirmation flow: show after successful extraction */}
+      {!uploading && result && result.status === "success" && !confirmSuccess && (
+        <div className="mt-4 space-y-4">
+          {/* Account Header - editable */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-500">账户信息</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="block text-xs font-bold text-slate-500">账户权益</label>
+                <input
+                  type="number"
+                  value={accountEquityInput}
+                  onChange={(e) => setAccountEquityInput(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+                  placeholder="输入账户权益"
+                />
               </div>
-              {result.account_equity != null && (
-                <div className="text-xs font-medium text-slate-600">
-                  账户权益: ￥{result.account_equity.toLocaleString()}
-                </div>
-              )}
-              {result.positions.length > 0 && (
-                <div className="max-h-40 space-y-1 overflow-y-auto">
-                  {result.positions.map((pos: { symbol: string | null; name: string | null; quantity: number | null; market_value: number | null; }, i: number) => (
-                    <div key={i} className="rounded bg-slate-50 px-2 py-1.5 text-[10px] font-medium text-slate-700">
-                      <span className="font-bold">{pos.symbol || "?"}</span>
-                      {pos.name && <span className="ml-1 text-slate-400">({pos.name})</span>}
-                      {pos.quantity != null && <span className="ml-1">x{pos.quantity}</span>}
-                      {pos.market_value != null && <span className="ml-1">￥{pos.market_value.toLocaleString()}</span>}
+              <div>
+                <label className="block text-xs font-bold text-slate-500">可用现金</label>
+                <input
+                  type="number"
+                  value={cashInput}
+                  onChange={(e) => setCashInput(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+                  placeholder="输入可用现金"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Positions Section */}
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                持仓确认 ({confirmedPositions.filter((p) => p.selected).length}/{confirmedPositions.length})
+              </div>
+            </div>
+
+            {/* Desktop Table */}
+            <div className="hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-[10px] font-bold text-slate-500">
+                    <th className="px-2 py-2 w-8">
+                      <input
+                        type="checkbox"
+                        checked={confirmedPositions.length > 0 && confirmedPositions.every((p) => p.selected)}
+                        onChange={() => {
+                          const allSelected = confirmedPositions.every((p) => p.selected);
+                          setConfirmedPositions((prev) => prev.map((p) => ({ ...p, selected: !allSelected })));
+                        }}
+                        className="rounded border-slate-300"
+                      />
+                    </th>
+                    <th className="px-2 py-2">代码</th>
+                    <th className="px-2 py-2">名称</th>
+                    <th className="px-2 py-2">市场</th>
+                    <th className="px-2 py-2 text-right">数量</th>
+                    <th className="px-2 py-2 text-right">市值</th>
+                    <th className="px-2 py-2 text-right">成本</th>
+                    <th className="px-2 py-2 text-right">权重</th>
+                    <th className="px-2 py-2 text-right">置信度</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {confirmedPositions.map((pos, i) => {
+                    const lowConf = pos.confidence < 50;
+                    return (
+                      <tr
+                        key={i}
+                        className={`border-b border-slate-100 transition-colors ${
+                          lowConf ? 'bg-amber-50/60 hover:bg-amber-100/60' : 'hover:bg-slate-50'
+                        } ${!pos.selected ? 'opacity-50' : ''}`}
+                      >
+                        <td className="px-2 py-1.5">
+                          <input
+                            type="checkbox"
+                            checked={pos.selected}
+                            onChange={() => updatePosition(i, { selected: !pos.selected })}
+                            className="rounded border-slate-300"
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <input
+                            type="text"
+                            value={pos.symbol || ""}
+                            onChange={(e) => updatePosition(i, { symbol: e.target.value })}
+                            className="w-16 rounded border border-slate-200 bg-white px-1 py-0.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+                          />
+                        </td>
+                        <td className="px-2 py-1.5 text-slate-600">{pos.name || "—"}</td>
+                        <td className="px-2 py-1.5 text-slate-600">{pos.market || "—"}</td>
+                        <td className="px-2 py-1.5 text-right">
+                          <input
+                            type="number"
+                            value={pos.quantity ?? ""}
+                            onChange={(e) => updatePosition(i, { quantity: e.target.value ? parseFloat(e.target.value) : null })}
+                            className="w-20 rounded border border-slate-200 bg-white px-1 py-0.5 text-right text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+                          />
+                        </td>
+                        <td className="px-2 py-1.5 text-right text-slate-600">
+                          {pos.market_value != null ? pos.market_value.toLocaleString() : "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={pos.cost ?? ""}
+                            onChange={(e) => updatePosition(i, { cost: e.target.value ? parseFloat(e.target.value) : null })}
+                            className="w-20 rounded border border-slate-200 bg-white px-1 py-0.5 text-right text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+                          />
+                        </td>
+                        <td className="px-2 py-1.5 text-right text-slate-600">
+                          {pos.weight_pct != null ? `${pos.weight_pct.toFixed(1)}%` : "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                            pos.confidence >= 80 ? 'bg-emerald-100 text-emerald-700' :
+                            pos.confidence >= 50 ? 'bg-indigo-100 text-indigo-700' :
+                            'bg-amber-100 text-amber-700'
+                          }`}>
+                            {pos.confidence}%
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile Cards */}
+            <div className="space-y-2 md:hidden">
+              {confirmedPositions.map((pos, i) => {
+                const lowConf = pos.confidence < 50;
+                return (
+                  <div
+                    key={i}
+                    className={`rounded-lg border p-3 ${
+                      lowConf
+                        ? 'border-amber-200 bg-amber-50/40'
+                        : 'border-slate-200 bg-slate-50'
+                    } ${!pos.selected ? 'opacity-50' : ''}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={pos.selected}
+                        onChange={() => updatePosition(i, { selected: !pos.selected })}
+                        className="rounded border-slate-300"
+                      />
+                      <div className="flex flex-1 items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={pos.symbol || ""}
+                            onChange={(e) => updatePosition(i, { symbol: e.target.value })}
+                            className="w-16 rounded border border-slate-200 bg-white px-1 py-0.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+                          />
+                          {pos.name && <span className="text-xs text-slate-500">{pos.name}</span>}
+                        </div>
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                          pos.confidence >= 80 ? 'bg-emerald-100 text-emerald-700' :
+                          pos.confidence >= 50 ? 'bg-indigo-100 text-indigo-700' :
+                          'bg-amber-100 text-amber-700'
+                        }`}>
+                          {pos.confidence}%
+                        </span>
+                      </div>
                     </div>
-                  ))}
-                </div>
-              )}
-              {result.needs_user_confirmation && (
-                <div className="text-[10px] font-bold text-amber-600">
-                  请确认提取结果后手动创建持仓。
-                </div>
-              )}
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <span className="text-slate-400">市场:</span>
+                        <span className="ml-1 text-slate-600">{pos.market || "—"}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">数量:</span>
+                        <input
+                          type="number"
+                          value={pos.quantity ?? ""}
+                          onChange={(e) => updatePosition(i, { quantity: e.target.value ? parseFloat(e.target.value) : null })}
+                          className="ml-1 w-20 rounded border border-slate-200 bg-white px-1 py-0.5 text-right text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+                        />
+                      </div>
+                      <div>
+                        <span className="text-slate-400">市值:</span>
+                        <span className="ml-1 text-slate-600">
+                          {pos.market_value != null ? pos.market_value.toLocaleString() : "—"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">成本:</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={pos.cost ?? ""}
+                          onChange={(e) => updatePosition(i, { cost: e.target.value ? parseFloat(e.target.value) : null })}
+                          className="ml-1 w-20 rounded border border-slate-200 bg-white px-1 py-0.5 text-right text-xs font-bold text-slate-700 outline-none focus:border-indigo-400"
+                        />
+                      </div>
+                      <div>
+                        <span className="text-slate-400">权重:</span>
+                        <span className="ml-1 text-slate-600">
+                          {pos.weight_pct != null ? `${pos.weight_pct.toFixed(1)}%` : "—"}
+                        </span>
+                      </div>
+                    </div>
+                    {lowConf && (
+                      <div className="mt-1.5 flex items-center gap-1 text-[10px] text-amber-700">
+                        <AlertTriangle size={10} />
+                        置信度较低，请核对数据
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Low confidence notice */}
+          {confirmedPositions.some((p) => p.selected && p.confidence < 50) && (
+            <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] font-bold leading-5 text-amber-800">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>部分持仓置信度较低（&lt; 50%），已用琥珀色标记。请手动核对代码、数量和成本数据后导入。</span>
             </div>
           )}
-          {result.status === "parse_failed" && (
-            <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">
-              解析失败：{result.warnings.join("；")}
+
+          {/* Unmapped rows */}
+          {result.unmapped_rows && result.unmapped_rows.length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                未解析行 ({result.unmapped_rows.length})
+              </div>
+              <div className="space-y-1">
+                {result.unmapped_rows.map((row, i) => (
+                  <div key={i} className="rounded bg-white px-2 py-1 text-[10px] font-medium text-slate-500">
+                    {row}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
+
+          {/* Import mode selector */}
+          <div>
+            <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-500">导入方式</div>
+            <div className="flex flex-wrap gap-2">
+              {(["merge", "replace", "append"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setImportMode(mode)}
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition-colors ${
+                    importMode === mode
+                      ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                      : 'border-slate-200 text-slate-500 hover:border-slate-300'
+                  }`}
+                >
+                  {mode === "merge" && "合并 (merge)"}
+                  {mode === "replace" && "替换 (replace)"}
+                  {mode === "append" && "追加 (append)"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Confirm Error */}
+          {confirmError && (
+            <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{confirmError}</div>
+          )}
+
+          {/* Confirm Button */}
+          <button
+            type="button"
+            onClick={handleConfirmImport}
+            disabled={confirming}
+            className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300 hover:bg-indigo-700 transition-colors"
+          >
+            {confirming ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <CheckCircle2 size={16} />
+            )}
+            {confirming ? "导入中..." : "确认导入"}
+          </button>
+        </div>
+      )}
+
+      {/* Success state */}
+      {!uploading && confirmSuccess && result?.status === "success" && (
+        <div className="mt-4 space-y-3">
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+            <div className="flex items-center gap-2 text-sm font-black text-emerald-700">
+              <CheckCircle2 size={18} />
+              导入成功
+            </div>
+            <div className="mt-1 text-xs font-medium text-emerald-600">
+              已导入 {confirmedPositions.filter((p) => p.selected).length} 个持仓（{importMode === "merge" ? "合并" : importMode === "replace" ? "替换" : "追加"}模式），
+              风险工作台已刷新。
+            </div>
+            {accountEquityInput && (
+              <div className="mt-1 text-xs text-emerald-600">
+                账户权益: ￥{parseFloat(accountEquityInput).toLocaleString()}
+                {cashInput ? ` | 现金: ￥${parseFloat(cashInput).toLocaleString()}` : ""}
+              </div>
+            )}
+            <div className="mt-2 text-[10px] font-medium italic text-emerald-500">
+              持仓数据已更新至风险工作台。不构成投资建议。
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setResult(null);
+              resetConfirmation();
+            }}
+            className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:border-slate-300 transition-colors"
+          >
+            <ImageUp size={14} />
+            继续上传新截图
+          </button>
+        </div>
+      )}
+
+      {/* Other status codes */}
+      {!uploading && result && result.status !== "success" && result.status !== "vision_unavailable" && result.status !== "parse_failed" && (
+        <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+          {result.warnings.join("；") || "未知状态"}
+        </div>
+      )}
+      {result && result.status === "vision_unavailable" && (
+        <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+          {result.warnings[0] ?? "Vision 不可用"}
+        </div>
+      )}
+      {result && result.status === "parse_failed" && (
+        <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">
+          解析失败：{result.warnings.join("；")}
         </div>
       )}
     </section>
@@ -2059,7 +2517,13 @@ function RiskWorkspacePanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | 
   const [calcLoading, setCalcLoading] = useState(false);
   const [calcErrorMsg, setCalcErrorMsg] = useState("");
 
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
   const portfolio = portfolios.length > 0 ? portfolios[0] : null;
+
+  function handleImportSuccess() {
+    setRefreshTrigger((prev) => prev + 1);
+  }
 
   useEffect(() => {
     setPortfoliosLoading(true);
@@ -2068,7 +2532,7 @@ function RiskWorkspacePanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | 
       .then((data) => setPortfolios(Array.isArray(data) ? data : []))
       .catch((err) => setPortfoliosError(err.message))
       .finally(() => setPortfoliosLoading(false));
-  }, []);
+  }, [refreshTrigger]);
 
   useEffect(() => {
     if (!portfolio) return;
@@ -2079,7 +2543,7 @@ function RiskWorkspacePanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | 
       .catch((err) => setExposureError(err.message))
       .finally(() => setExposureLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [portfolio?.id]);
+  }, [portfolio?.id, refreshTrigger]);
 
   useEffect(() => {
     setRulesLoading(true);
@@ -2088,7 +2552,7 @@ function RiskWorkspacePanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | 
       .then(setRules)
       .catch((err) => setRulesError(err.message))
       .finally(() => setRulesLoading(false));
-  }, []);
+  }, [refreshTrigger]);
 
   useEffect(() => {
     setPlansLoading(true);
@@ -2097,7 +2561,7 @@ function RiskWorkspacePanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | 
       .then((data) => setPlans(Array.isArray(data) ? data : []))
       .catch((err) => setPlansError(err.message))
       .finally(() => setPlansLoading(false));
-  }, []);
+  }, [refreshTrigger]);
 
   async function handleCalculate() {
     if (!portfolio || !calcSymbol || !calcEntryPrice || !calcRiskPct) return;
@@ -2168,7 +2632,7 @@ function RiskWorkspacePanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | 
         <ShieldAlert size={14} className="text-amber-600" />
         风险工作台
       </div>
-      <VisionUploadPanel runtimeHealth={runtimeHealth} />
+      <VisionUploadPanel runtimeHealth={runtimeHealth} onImportSuccess={handleImportSuccess} portfolioId={portfolio?.id} />
       <div className="mt-2 space-y-2">
         {/* Section 1: Portfolio Snapshot */}
         <Section
