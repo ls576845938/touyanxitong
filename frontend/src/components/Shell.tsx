@@ -3,27 +3,35 @@
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
-import { 
-  BarChart3, 
-  ClipboardCheck, 
-  Database, 
-  FileText, 
+import {
+  BarChart3,
+  ClipboardCheck,
+  Database,
+  FileText,
   Crosshair,
-  Gauge, 
+  Gauge,
   Network,
   LayoutGrid,
   Activity,
   Share2,
-  Bot
+  Bot,
+  Eye,
+  ChevronDown,
+  Search
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { StockSearch } from "@/components/StockSearch";
+import { useState } from "react";
 
-const navItems = [
-  { href: "/agent", label: "Agent", icon: Bot },
+const PRIMARY_NAV_ITEMS = [
   { href: "/dashboard", label: "总览", icon: Gauge },
+  { href: "/agent", label: "投研Agent", icon: Bot },
+  { href: "/trend", label: "个股", icon: Search },
+  { href: "/watchlist", label: "观察池", icon: Eye },
+];
+
+const SECONDARY_NAV_ITEMS = [
   { href: "/research/ai-big-graph", label: "AI大图谱", icon: Share2 },
-  { href: "/trend", label: "趋势雷达", icon: BarChart3 },
   { href: "/research/thesis", label: "逻辑狙击", icon: Crosshair },
   { href: "/research", label: "研究任务", icon: ClipboardCheck },
   { href: "/research/ai-infra-map", label: "深度图谱", icon: Network },
@@ -35,18 +43,53 @@ const navItems = [
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const activeHref = navItems
+  const [showMore, setShowMore] = useState(false);
+
+  const allNavItems = [...PRIMARY_NAV_ITEMS, ...SECONDARY_NAV_ITEMS];
+  const activeHref = allNavItems
     .filter((item) => item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`))
     .sort((a, b) => b.href.length - a.href.length)[0]?.href;
 
   useEffect(() => {
     const id = window.setTimeout(() => {
-      for (const item of navItems) {
+      for (const item of allNavItems) {
         if (item.href !== pathname) router.prefetch(item.href);
       }
     }, 800);
     return () => window.clearTimeout(id);
   }, [pathname, router]);
+
+  function NavIcon({ item }: { item: typeof PRIMARY_NAV_ITEMS[0] }) {
+    const active = item.href === activeHref;
+    const Icon = item.icon;
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        prefetch
+        onMouseEnter={() => router.prefetch(item.href)}
+        title={item.label}
+        className={`group relative flex h-12 w-12 items-center justify-center rounded-xl transition-all duration-200 ${
+          active
+            ? "bg-slate-100 text-slate-900 shadow-inner"
+            : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+        }`}
+      >
+        <Icon size={20} strokeWidth={active ? 2.5 : 2} />
+        {active && (
+          <motion.div
+            layoutId="sidebar-active"
+            className="absolute left-0 h-6 w-1 rounded-r-full bg-slate-900"
+          />
+        )}
+        <div className="absolute left-16 hidden group-hover:block z-50">
+           <div className="bg-slate-900 text-white text-[10px] font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap">
+              {item.label}
+           </div>
+        </div>
+      </Link>
+    );
+  }
 
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-900">
@@ -57,39 +100,62 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <LayoutGrid size={20} />
           </div>
         </div>
-        <nav className="flex flex-1 flex-col items-center gap-4 py-8">
-          {navItems.map((item) => {
-            const active = item.href === activeHref;
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                prefetch
-                onMouseEnter={() => router.prefetch(item.href)}
-                title={item.label}
-                className={`group relative flex h-12 w-12 items-center justify-center rounded-xl transition-all duration-200 ${
-                  active
-                    ? "bg-slate-100 text-slate-900 shadow-inner"
-                    : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
-                }`}
-              >
-                <Icon size={20} strokeWidth={active ? 2.5 : 2} />
-                {active && (
-                  <motion.div
-                    layoutId="sidebar-active"
-                    className="absolute left-0 h-6 w-1 rounded-r-full bg-slate-900"
-                  />
-                )}
-                {/* Tooltip - simplified for density */}
-                <div className="absolute left-16 hidden group-hover:block z-50">
-                   <div className="bg-slate-900 text-white text-[10px] font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap">
-                      {item.label}
-                   </div>
+        <nav className="flex flex-1 flex-col items-center gap-3 py-6">
+          {PRIMARY_NAV_ITEMS.map((item) => (
+            <NavIcon key={item.href} item={item} />
+          ))}
+
+          {/* Separator */}
+          <div className="my-1 h-px w-8 bg-slate-200" />
+
+          {/* Secondary Nav with toggle */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMore(!showMore)}
+              title={showMore ? "收起更多" : "更多功能"}
+              className={`group relative flex h-12 w-12 items-center justify-center rounded-xl transition-all duration-200 ${
+                !activeHref || PRIMARY_NAV_ITEMS.some((p) => p.href === activeHref)
+                  ? "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+                  : "bg-slate-100 text-slate-900 shadow-inner"
+              }`}
+            >
+              <ChevronDown size={18} strokeWidth={2} className={`transition-transform ${showMore ? 'rotate-180' : ''}`} />
+              <div className="absolute left-16 hidden group-hover:block z-50">
+                 <div className="bg-slate-900 text-white text-[10px] font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap">
+                    {showMore ? "收起更多" : "更多"}
+                 </div>
+              </div>
+            </button>
+
+            {/* Dropdown for More items */}
+            {showMore && (
+              <div className="absolute left-16 top-0 z-50 w-48 rounded-xl border border-slate-200 bg-white py-2 shadow-xl">
+                <div className="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">
+                  更多功能
                 </div>
-              </Link>
-            );
-          })}
+                {SECONDARY_NAV_ITEMS.map((item) => {
+                  const active = item.href === activeHref;
+                  const Icon = item.icon;
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      onClick={() => setShowMore(false)}
+                      className={`flex items-center gap-3 px-4 py-2.5 text-xs font-bold transition-colors ${
+                        active
+                          ? "bg-slate-100 text-slate-900"
+                          : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                      }`}
+                    >
+                      <Icon size={16} strokeWidth={active ? 2.5 : 2} />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </nav>
         <div className="border-t border-slate-100 p-4">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">

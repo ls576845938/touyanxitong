@@ -780,12 +780,62 @@ REPORT_TOOLS: list[ToolSpec] = [
 ]
 
 
+# ------------------------------------------------------------------
+# WATCHLIST INPUTS (1)
+# ------------------------------------------------------------------
+
+
+class AddToWatchlistInput(BaseModel):
+    thesis_id: int = Field(description="研报论点 ID（ResearchThesis）")
+    user_id: str | None = Field(
+        default=None,
+        description="用户标识符，用于用户隔离。留空则对所有用户可见。",
+    )
+    priority: str | None = Field(
+        default=None,
+        description="优先级：S / A / B，默认 B",
+    )
+
+
+class AddToWatchlistOutput(BaseModel):
+    status: str = Field(description="ok 或 error")
+    message: str | None = Field(default=None, description="操作结果描述")
+    item: dict[str, Any] | None = Field(default=None, description="创建的观察池条目")
+
+
+# ===================================================================
+# WATCHLIST TOOLS  (1 tool)
+# ===================================================================
+
+WATCHLIST_TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="add_to_watchlist",
+        category="watchlist",
+        description=(
+            "将研报论点添加到观察池（观察池）。"
+            "从研报论点自动提取关注理由、关键指标、失效条件。"
+            "不会重复添加同一论点。"
+        ),
+        input_schema=AddToWatchlistInput.model_json_schema(),
+        output_schema=AddToWatchlistOutput.model_json_schema(),
+        read_only=False,
+        risk_level="medium",
+        timeout_ms=10000,
+        examples=[
+            {"thesis_id": 1, "description": "按论点 ID 添加到观察池"},
+            {"thesis_id": 1, "user_id": "user_a", "priority": "A", "description": "指定用户和优先级"},
+        ],
+        unavailable_behavior="Returns status='error' with message when thesis_id is not found.",
+    ),
+]
+
+
 # ===================================================================
 # AGGREGATE HELPERS
 # ===================================================================
 
 _ALL_TOOLS: list[ToolSpec] = (
-    MARKET_TOOLS + INDUSTRY_TOOLS + SCORING_TOOLS + EVIDENCE_TOOLS + REPORT_TOOLS
+    MARKET_TOOLS + INDUSTRY_TOOLS + SCORING_TOOLS + EVIDENCE_TOOLS + REPORT_TOOLS + WATCHLIST_TOOLS
 )
 
 _TOOL_MAP: dict[str, ToolSpec] = {spec.name: spec for spec in _ALL_TOOLS}
@@ -796,6 +846,7 @@ _CATEGORY_MAP: dict[str, list[ToolSpec]] = {
     "scoring": SCORING_TOOLS,
     "evidence": EVIDENCE_TOOLS,
     "report": REPORT_TOOLS,
+    "watchlist": WATCHLIST_TOOLS,
 }
 
 

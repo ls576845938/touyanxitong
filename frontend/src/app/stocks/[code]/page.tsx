@@ -3,14 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, Database, History, RotateCcw, TrendingUp, ShieldCheck, Activity, Info } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, Database, Eye, History, RotateCcw, TrendingUp, ShieldCheck, Activity, Info } from "lucide-react";
 import { motion } from "framer-motion";
 import { CandleChart } from "@/components/CandleChart";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { StockSearch } from "@/components/StockSearch";
-import { api, type BarRow, type IngestionTask, type InstrumentNavigation, type SourceComparison, type StockEvidence, type StockHistory } from "@/lib/api";
+import { api, type BarRow, type IngestionTask, type InstrumentNavigation, type ResearchThesis, type SourceComparison, type StockEvidence, type StockHistory, type WatchlistItemEnhanced } from "@/lib/api";
 import { boardLabel, marketLabel } from "@/lib/markets";
 
 const containerVariants = {
@@ -45,6 +45,9 @@ export default function StockEvidencePage() {
   const [error, setError] = useState("");
   const [ingesting, setIngesting] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [relatedTheses, setRelatedTheses] = useState<ResearchThesis[]>([]);
+  const [watchlistStatus, setWatchlistStatus] = useState<WatchlistItemEnhanced | null>(null);
+  const [thesesLoading, setThesesLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
@@ -65,6 +68,18 @@ export default function StockEvidencePage() {
       })
       .catch((err: Error) => setError(`证据链读取失败：${err.message}`))
       .finally(() => setLoading(false));
+
+    void Promise.allSettled([
+      api.fetchTheses({ subject_type: "stock", subject_id: code, limit: 10 }),
+      api.fetchWatchlistItems({ status: "active", limit: 20 })
+    ]).then(([theses, items]) => {
+      if (theses.status === "fulfilled") setRelatedTheses(theses.value);
+      if (items.status === "fulfilled") {
+        const match = items.value.find((item) => item.subject_type === "stock" && item.subject_id === code);
+        setWatchlistStatus(match || null);
+      }
+      setThesesLoading(false);
+    });
   }, [code, refreshKey]);
 
   const ingestThisStock = () => {
@@ -432,6 +447,152 @@ export default function StockEvidencePage() {
               </div>
             </div>
           ))}
+        </div>
+      </motion.section>
+
+      {/* Related Theses & Watchlist Status */}
+      <motion.section variants={itemVariants} className="grid gap-6 lg:grid-cols-[1.3fr_0.7fr]">
+        {/* Related Theses */}
+        <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
+          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+            <Info size={14} />
+            相关观点
+          </div>
+          <h2 className="text-xl font-bold text-slate-900 mb-6">相关研究观点</h2>
+          {thesesLoading ? (
+            <div className="rounded-xl bg-slate-50 p-6 text-center">
+              <p className="text-xs font-medium text-slate-400">加载中...</p>
+            </div>
+          ) : relatedTheses.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center">
+              <p className="text-sm font-medium text-slate-400">暂无相关研究观点。</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {relatedTheses.map((thesis) => (
+                <div key={thesis.id} className="rounded-2xl border border-slate-100 bg-slate-50/30 p-5 hover:border-indigo-100 transition-colors">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider border ${
+                          thesis.direction === "positive" ? "bg-rose-100 text-rose-700 border-rose-200" :
+                          thesis.direction === "negative" ? "bg-emerald-100 text-emerald-700 border-emerald-200" :
+                          thesis.direction === "mixed" ? "bg-amber-100 text-amber-700 border-amber-200" :
+                          "bg-slate-100 text-slate-600 border-slate-200"
+                        }`}>
+                          {thesis.direction === "positive" ? "看多" :
+                           thesis.direction === "negative" ? "看空" :
+                           thesis.direction === "mixed" ? "多空交织" : "中性"}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400">
+                          置信度 {Math.round(thesis.confidence * 100)}%
+                        </span>
+                        {thesis.status && (
+                          <span className="text-[10px] font-bold text-slate-400">
+                            {thesis.status}
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="text-sm font-bold text-slate-900 leading-snug">
+                        {thesis.thesis_title || thesis.thesis_body?.slice(0, 120)}
+                      </h3>
+                    </div>
+                  </div>
+                  {thesis.review_date && (
+                    <div className="mt-3 text-[10px] font-bold text-amber-600">
+                      复盘日: {thesis.review_date}
+                      {thesis.review_result && ` | 结果: ${thesis.review_result}`}
+                    </div>
+                  )}
+                  <div className="mt-3 h-1 w-full bg-slate-200 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-indigo-500" style={{ width: `${Math.round(thesis.confidence * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Watchlist Status & Review History */}
+        <div className="space-y-6">
+          {/* Watchlist Status */}
+          <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+              <Eye size={14} />
+              观察状态
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-6">观察池状态</h2>
+            {watchlistStatus ? (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <span className={`px-3 py-1 rounded-lg text-xs font-black uppercase tracking-wider ${
+                    watchlistStatus.priority === "S" ? "bg-rose-100 text-rose-700" :
+                    watchlistStatus.priority === "A" ? "bg-amber-100 text-amber-700" :
+                    "bg-slate-100 text-slate-600"
+                  }`}>
+                    优先级 {watchlistStatus.priority}
+                  </span>
+                  <span className="text-xs font-bold text-emerald-600">观察中</span>
+                </div>
+                {watchlistStatus.reason && (
+                  <div className="rounded-xl bg-slate-50 p-4 mb-4">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">加入原因</div>
+                    <p className="text-sm font-medium text-slate-700">{watchlistStatus.reason}</p>
+                  </div>
+                )}
+                {watchlistStatus.thesis_title && (
+                  <div className="rounded-xl bg-indigo-50/50 p-4">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-indigo-500 mb-1">关联观点</div>
+                    <p className="text-sm font-medium text-slate-700">{watchlistStatus.thesis_title}</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center">
+                <p className="text-sm font-medium text-slate-400">当前标的未在观察池中。</p>
+              </div>
+            )}
+          </div>
+
+          {/* Review History */}
+          <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+              <History size={14} />
+              复盘历史
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-6">观点复盘记录</h2>
+            {relatedTheses.filter((t) => t.review_date || t.review_result).length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center">
+                <p className="text-sm font-medium text-slate-400">暂无复盘记录。</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {relatedTheses
+                  .filter((t) => t.review_date || t.review_result)
+                  .map((thesis) => (
+                    <div key={thesis.id} className="rounded-xl border border-slate-100 bg-slate-50/30 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-bold text-slate-900 truncate">
+                            {thesis.thesis_title || thesis.thesis_body?.slice(0, 80)}
+                          </div>
+                          {thesis.review_date && (
+                            <div className="mt-1 text-[11px] font-medium text-slate-500">
+                              复盘日期: {thesis.review_date}
+                            </div>
+                          )}
+                        </div>
+                        {thesis.review_result && (
+                          <span className="shrink-0 px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
+                            {thesis.review_result}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
         </div>
       </motion.section>
     </motion.div>

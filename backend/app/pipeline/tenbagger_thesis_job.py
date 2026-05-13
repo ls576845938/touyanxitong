@@ -62,6 +62,7 @@ def run_tenbagger_thesis_job(session: Session, trade_date: date | None = None) -
             articles=articles_by_stock.get(code, []),
             trade_date=target_date,
             fundamental=fundamental_by_code.get(code),
+            db_session=session,
         )
         payload = {
             "thesis_score": result.thesis_score,

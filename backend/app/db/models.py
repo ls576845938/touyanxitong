@@ -371,6 +371,7 @@ class DailyReport(Base):
     new_watchlist_stocks: Mapped[str] = mapped_column(Text, default="[]")
     risk_alerts: Mapped[str] = mapped_column(Text, default="[]")
     full_markdown: Mapped[str] = mapped_column(Text, default="")
+    thesis_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -451,14 +452,31 @@ class DataIngestionTask(Base):
 
 class WatchlistItem(Base):
     __tablename__ = "watchlist_item"
-    __table_args__ = (UniqueConstraint("stock_code", name="uq_watchlist_code"),)
+    __table_args__ = (
+        UniqueConstraint("subject_type", "subject_id", "user_id", name="uq_watchlist_subject_user"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    stock_code: Mapped[str] = mapped_column(String(16), ForeignKey("stock.code"), index=True)
+    stock_code: Mapped[str | None] = mapped_column(String(16), ForeignKey("stock.code"), nullable=True, index=True)
     note: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(16), default="观察")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    # Extended fields for thesis-linked observation pool
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    subject_type: Mapped[str] = mapped_column(String(16), default="stock")
+    subject_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    subject_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_thesis_id: Mapped[int | None] = mapped_column(ForeignKey("research_thesis.id"), nullable=True)
+    source_report_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    watch_metrics_json: Mapped[str] = mapped_column(Text, default="[]")
+    invalidation_conditions_json: Mapped[str] = mapped_column(Text, default="[]")
+    priority: Mapped[str] = mapped_column(String(8), default="B")
+
+    stock: Mapped[Stock] = relationship("Stock")
+    thesis: Mapped[ResearchThesis] = relationship("ResearchThesis")
 
 
 class TenbaggerThesis(Base):
@@ -608,6 +626,25 @@ class EvidenceEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AlternativeSignalRecord(Base):
+    __tablename__ = "alternative_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_name: Mapped[str] = mapped_column(String(64), index=True)
+    subject_type: Mapped[str] = mapped_column(String(16))
+    subject_id: Mapped[str] = mapped_column(String(32), index=True)
+    subject_name: Mapped[str] = mapped_column(String(128))
+    value: Mapped[float] = mapped_column(Float)
+    value_type: Mapped[str] = mapped_column(String(16))
+    source: Mapped[str] = mapped_column(String(32))
+    observed_at: Mapped[date] = mapped_column(Date, index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    freshness: Mapped[str] = mapped_column(String(16), default="daily")
+    status: Mapped[str] = mapped_column(String(24), default="available")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class RetailStockPool(Base):
     __tablename__ = "retail_stock_pool"
     __table_args__ = (UniqueConstraint("security_id", name="uq_retail_stock_pool_security"), {"extend_existing": True})
@@ -712,6 +749,7 @@ class TradeReview(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+
 class AgentRun(Base):
     __tablename__ = "agent_runs"
     __table_args__ = {"extend_existing": True}
@@ -770,6 +808,7 @@ class AgentArtifact(Base):
     content_md: Mapped[str] = mapped_column(Text, default="")
     content_json: Mapped[str] = mapped_column(Text, default="{}")
     evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    thesis_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
@@ -802,6 +841,87 @@ class AgentFollowup(Base):
     warnings_json: Mapped[str] = mapped_column(Text, default="[]")
     saved_artifact_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class ResearchThesis(Base):
+    __tablename__ = "research_thesis"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="agent", index=True)
+    source_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    subject_type: Mapped[str] = mapped_column(String(32), default="stock", index=True)
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_name: Mapped[str] = mapped_column(String(128), default="")
+    thesis_title: Mapped[str] = mapped_column(Text, default="")
+    thesis_body: Mapped[str] = mapped_column(Text, default="")
+    direction: Mapped[str] = mapped_column(String(16), default="up", index=True)
+    horizon_days: Mapped[int] = mapped_column(Integer, default=20)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    key_metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    invalidation_conditions_json: Mapped[str] = mapped_column(Text, default="[]")
+    risk_flags_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(24), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    # reviews loaded via query (not a relationship) to avoid registry conflicts
+
+
+class ResearchThesisReview(Base):
+    __tablename__ = "research_thesis_review"
+    __table_args__ = (
+        UniqueConstraint("thesis_id", "review_horizon_days", name="uq_thesis_review_horizon"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    thesis_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_thesis.id"), index=True)
+    review_horizon_days: Mapped[int] = mapped_column(Integer, default=20)
+    scheduled_review_date: Mapped[date] = mapped_column(Date, index=True)
+    actual_review_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    review_status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    realized_metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    realized_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    benchmark_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    evidence_update_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReportQualityScore(Base):
+    __tablename__ = "report_quality_scores"
+    __table_args__ = (
+        UniqueConstraint("source_type", "source_id", name="uq_report_quality_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_type: Mapped[str] = mapped_column(String(24))  # daily_report / agent_run
+    source_id: Mapped[int]
+    thesis_count: Mapped[int] = mapped_column(Integer, default=0)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    hit_rate_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hit_rate_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hit_rate_60d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unavailable_data_count: Mapped[int] = mapped_column(Integer, default=0)
+    guardrail_violation_count: Mapped[int] = mapped_column(Integer, default=0)
+    quality_score: Mapped[float] = mapped_column(Float, default=0.0)  # composite 0-100
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ScoringFeedbackEvent(Base):
+    __tablename__ = "scoring_feedback_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    thesis_id: Mapped[int | None] = mapped_column(ForeignKey("research_thesis.id"), nullable=True)
+    subject_type: Mapped[str] = mapped_column(String(16))  # stock / industry / market / theme
+    subject_id: Mapped[str] = mapped_column(String(32))
+    signal_name: Mapped[str] = mapped_column(String(64))  # scoring dimension name
+    expected_direction: Mapped[str] = mapped_column(String(16))  # positive / negative / neutral
+    actual_direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    review_status: Mapped[str] = mapped_column(String(24), default="pending")
+    confidence: Mapped[int] = mapped_column(Integer, default=50)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AgentEvent(Base):

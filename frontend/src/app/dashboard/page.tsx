@@ -2,24 +2,28 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { 
+import {
   Activity,
-  ArrowRight, 
+  AlertTriangle,
+  ArrowRight,
   ArrowUpRight,
-  BarChart3, 
-  ClipboardCheck, 
+  BarChart3,
+  CalendarDays,
+  ClipboardCheck,
   Crosshair,
-  FileText, 
+  Eye,
+  FileText,
   FlaskConical,
+  Info,
   Radar,
-  Repeat2, 
+  Repeat2,
   Share2,
   ShieldCheck,
   Target,
   TrendingUp
 } from "lucide-react";
 import { motion } from "framer-motion";
-import { api, type DataQuality, type DataStatus, type IndustryRadarRow, type IngestionTask, type MarketSummary, type ReportSummary, type ResearchDataGate, type ResearchUniverse, type SignalBacktestLatest, type TenbaggerThesisList, type TrendPoolRow, type WatchlistChanges } from "@/lib/api";
+import { api, type DataQuality, type DataStatus, type IndustryRadarRow, type IngestionTask, type MarketSummary, type ReportSummary, type ResearchDataGate, type ResearchUniverse, type ResearchThesis, type SignalBacktestLatest, type TenbaggerThesisList, type TrendPoolRow, type WatchlistChanges, type WatchlistItemEnhanced } from "@/lib/api";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { ScoreBadge } from "@/components/ScoreBadge";
@@ -38,6 +42,10 @@ export default function DashboardPage() {
   const [thesisSnapshot, setThesisSnapshot] = useState<TenbaggerThesisList | null>(null);
   const [researchGate, setResearchGate] = useState<ResearchDataGate | null>(null);
   const [backtestSnapshot, setBacktestSnapshot] = useState<SignalBacktestLatest | null>(null);
+  const [todayTheses, setTodayTheses] = useState<ResearchThesis[]>([]);
+  const [pendingReviewTheses, setPendingReviewTheses] = useState<ResearchThesis[]>([]);
+  const [watchlistItemsForDash, setWatchlistItemsForDash] = useState<WatchlistItemEnhanced[]>([]);
+  const [thesesError, setThesesError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -80,6 +88,23 @@ export default function DashboardPage() {
       setResearchGate(gate.status === "fulfilled" ? gate.value : null);
       setBacktestSnapshot(backtest.status === "fulfilled" ? backtest.value : null);
     });
+
+    // Fetch theses and watchlist items (graceful 404 handling)
+    void api.fetchTheses({ source_type: "daily_report", status: "active", limit: 5 })
+      .then(setTodayTheses)
+      .catch(() => setThesesError("theses_unavailable"));
+
+    void api.fetchTheses({ status: "active", limit: 20 })
+      .then((allTheses) => {
+        const now = new Date();
+        const upcoming = allTheses.filter((t) => t.review_date && new Date(t.review_date) >= now).slice(0, 5);
+        setPendingReviewTheses(upcoming.length > 0 ? upcoming : allTheses.slice(0, 3));
+      })
+      .catch(() => {});
+
+    void api.fetchWatchlistItems({ status: "active", limit: 5 })
+      .then(setWatchlistItemsForDash)
+      .catch(() => {});
   }, []);
 
   if (loading) return <div className="min-h-[60vh] flex items-center justify-center"><LoadingState label="系统正在同步全球产业波动数据" /></div>;
@@ -212,6 +237,157 @@ export default function DashboardPage() {
         <PanelLink icon={<ShieldCheck size={20} />} title="数据门控" href="/research/data-quality" text="正式研究准入状态" />
         <PanelLink icon={<FileText size={20} />} title="投研简报" href="/report" text="日报与关键变化回看" />
       </section>
+
+      {/* Research Theses & Pending Reviews */}
+      <div className="grid gap-6 lg:grid-cols-[1.3fr_0.7fr]">
+        {/* Today's Theses */}
+        <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+                <Info size={14} />
+                TODAY'S THESES
+              </div>
+              <h2 className="text-xl font-bold text-slate-900">今日核心观点</h2>
+            </div>
+            {todayTheses.length > 0 && (
+              <Link href="/watchlist" className="text-[12px] font-bold text-indigo-600 hover:underline">
+                查看全部
+              </Link>
+            )}
+          </div>
+          {thesesError === "theses_unavailable" ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center">
+              <p className="text-sm font-medium text-slate-400">观点数据接口暂不可用，系统将在数据就绪后自动展示。</p>
+            </div>
+          ) : todayTheses.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center">
+              <p className="text-sm font-medium text-slate-400">暂无今日核心观点，启动 Agent 投研生成分析。</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {todayTheses.map((thesis) => (
+                <ThesisCard key={thesis.id} thesis={thesis} />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Pending Reviews / Watchlist Summary */}
+        <section className="rounded-3xl bg-white border border-slate-200 p-8 shadow-sm">
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-2">
+                <CalendarDays size={14} />
+                PENDING REVIEWS
+              </div>
+              <h2 className="text-xl font-bold text-slate-900">待复盘观点</h2>
+            </div>
+          </div>
+          {pendingReviewTheses.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center">
+              <p className="text-sm font-medium text-slate-400">暂无待复盘的观点。</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingReviewTheses.map((thesis) => (
+                <PendingReviewCard key={thesis.id} thesis={thesis} />
+              ))}
+            </div>
+          )}
+
+          {/* Divider */}
+          <div className="my-6 border-t border-slate-100" />
+
+          {/* Watchlist Summary */}
+          <div>
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">
+              <Eye size={14} />
+              WATCHLIST SUMMARY
+            </div>
+            {watchlistItemsForDash.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-4 text-center">
+                <p className="text-xs font-medium text-slate-400">观察池暂无数据。</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {watchlistItemsForDash.slice(0, 4).map((item) => (
+                  <Link
+                    key={item.id}
+                    href={`/watchlist`}
+                    className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100 hover:border-indigo-100 transition-colors group"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-slate-900 truncate group-hover:text-indigo-600 transition-colors">
+                        {item.subject_name}
+                      </div>
+                      <div className="text-[10px] font-medium text-slate-400 mt-0.5 truncate">
+                        {item.thesis_title || item.reason}
+                      </div>
+                    </div>
+                    <span className={`shrink-0 px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
+                      item.priority === "S" ? "bg-rose-100 text-rose-700" :
+                      item.priority === "A" ? "bg-amber-100 text-amber-700" :
+                      "bg-slate-100 text-slate-600"
+                    }`}>
+                      {item.priority}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {/* Anomalies */}
+      {industries.filter((ind) => Math.abs(ind.heat_change_7d) > 30).length > 0 && (
+        <section className="rounded-3xl bg-white border border-amber-200 p-8 shadow-sm">
+          <div className="flex items-start gap-4 mb-6">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+              <AlertTriangle size={20} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-amber-500 mb-2">
+                异常信号
+              </div>
+              <h2 className="text-xl font-bold text-slate-900">产业热度异常波动</h2>
+              <p className="mt-1 text-sm text-slate-500">以下产业近7日热度变化超过阈值，建议重点关注。</p>
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {industries
+              .filter((ind) => Math.abs(ind.heat_change_7d) > 30)
+              .slice(0, 8)
+              .map((ind) => (
+                <div key={ind.industry_id} className="rounded-2xl border border-slate-100 bg-slate-50/50 p-5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-bold text-slate-900 truncate">{ind.name}</h3>
+                    <span className={`text-[11px] font-black tabular-nums ${
+                      ind.heat_change_7d > 0 ? "text-rose-500" : "text-emerald-500"
+                    }`}>
+                      {ind.heat_change_7d > 0 ? "+" : ""}{ind.heat_change_7d.toFixed(0)}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-xs font-medium text-slate-500">热度 {ind.heat_score.toFixed(1)}</span>
+                    <span className="w-1 h-1 bg-slate-300 rounded-full" />
+                    <span className="text-xs font-medium text-slate-500">{ind.related_stock_count} 只股票</span>
+                  </div>
+                  {ind.top_keywords.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {ind.top_keywords.slice(0, 3).map((kw) => (
+                        <span key={kw} className="px-2 py-0.5 rounded bg-white border border-slate-200 text-[9px] font-bold text-slate-500">
+                          {kw}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+          </div>
+        </section>
+      )}
 
       {/* Main Grid Content */}
       <div className="grid gap-6 lg:grid-cols-[1fr_0.8fr]">
@@ -586,6 +762,122 @@ function EmptyState({ text }: { text: string }) {
     <div className="py-4 text-center rounded-xl border border-dashed border-slate-200">
       <p className="text-[11px] font-medium text-slate-400">{text}</p>
     </div>
+  );
+}
+
+function ThesisCard({ thesis }: { thesis: ResearchThesis }) {
+  const [expanded, setExpanded] = useState(false);
+  const directionColors: Record<string, string> = {
+    positive: "bg-rose-100 text-rose-700 border-rose-200",
+    negative: "bg-emerald-100 text-emerald-700 border-emerald-200",
+    neutral: "bg-slate-100 text-slate-600 border-slate-200",
+    mixed: "bg-amber-100 text-amber-700 border-amber-200"
+  };
+  const directionLabels: Record<string, string> = {
+    positive: "看多",
+    negative: "看空",
+    neutral: "中性",
+    mixed: "多空交织"
+  };
+  let invalidationConditions: string[] = [];
+  try {
+    const parsed = JSON.parse(thesis.invalidation_conditions_json);
+    invalidationConditions = Array.isArray(parsed) ? parsed : typeof parsed === "string" ? [parsed] : [];
+  } catch {}
+
+  return (
+    <div className="rounded-2xl border border-slate-100 bg-slate-50/30 p-5 hover:border-indigo-100 transition-colors">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider border ${directionColors[thesis.direction] || directionColors.neutral}`}>
+              {directionLabels[thesis.direction] || thesis.direction}
+            </span>
+            <span className="text-[10px] font-bold text-slate-400">
+              {thesis.horizon_days}天周期
+            </span>
+            <span className="text-[10px] font-bold text-slate-400">
+              {thesis.source_type === "daily_report" ? "日报" : thesis.source_type}
+            </span>
+          </div>
+          <h3 className="text-sm font-bold text-slate-900 leading-snug">
+            {thesis.thesis_title || thesis.thesis_body?.slice(0, 120)}
+          </h3>
+          {thesis.subject_name && (
+            <p className="mt-1 text-[11px] font-medium text-indigo-600">
+              {thesis.subject_name} ({thesis.subject_id})
+            </p>
+          )}
+        </div>
+        <div className="shrink-0 text-right">
+          <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">置信度</div>
+          <div className="text-lg font-black text-slate-900 tabular-nums">{Math.round(thesis.confidence * 100)}%</div>
+        </div>
+      </div>
+
+      {/* Confidence bar */}
+      <div className="mt-3 h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full bg-indigo-500 transition-all"
+          style={{ width: `${Math.round(thesis.confidence * 100)}%` }}
+        />
+      </div>
+
+      {/* Invalidation conditions (collapsed) */}
+      {invalidationConditions.length > 0 && (
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="text-[10px] font-bold text-slate-400 hover:text-slate-600 transition-colors flex items-center gap-1"
+          >
+            {expanded ? "收起" : "展开"}证伪条件 ({invalidationConditions.length})
+          </button>
+          {expanded && (
+            <ul className="mt-2 space-y-1">
+              {invalidationConditions.map((cond, i) => (
+                <li key={i} className="text-[11px] font-medium text-slate-500 flex items-start gap-2">
+                  <span className="w-1 h-1 mt-1.5 shrink-0 rounded-full bg-slate-300" />
+                  {cond}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PendingReviewCard({ thesis }: { thesis: ResearchThesis }) {
+  return (
+    <Link
+      href={thesis.subject_type === "stock" ? `/stocks/${encodeURIComponent(thesis.subject_id)}` : "/watchlist"}
+      className="block rounded-xl border border-slate-100 bg-slate-50/30 p-4 hover:border-indigo-100 hover:bg-white transition-all group"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-slate-900 truncate group-hover:text-indigo-600 transition-colors">
+            {thesis.thesis_title || thesis.thesis_body?.slice(0, 80)}
+          </div>
+          {thesis.subject_name && (
+            <div className="text-[11px] font-medium text-slate-500 mt-0.5">
+              {thesis.subject_name} ({thesis.subject_id})
+            </div>
+          )}
+        </div>
+        <div className="shrink-0 flex flex-col items-end gap-1">
+          {thesis.review_date && (
+            <span className="text-[10px] font-bold text-amber-600 whitespace-nowrap">
+              复盘日: {thesis.review_date}
+            </span>
+          )}
+          <span className="text-[10px] font-bold text-slate-400">
+            置信度 {Math.round(thesis.confidence * 100)}%
+          </span>
+        </div>
+      </div>
+    </Link>
   );
 }
 

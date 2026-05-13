@@ -366,7 +366,11 @@ def test_sse_events_for_completed_run(tmp_path) -> None:
 
 
 def test_tools_endpoint(tmp_path) -> None:
-    """GET /api/agent/tools should return a list with >=5 read_only tools."""
+    """GET /api/agent/tools should return a list with >=5 read_only tools.
+
+    Watchlist tools (add_to_watchlist) are intentionally writable and excluded
+    from the read_only check.
+    """
     with _client(tmp_path) as client:
         response = client.get("/api/agent/tools")
         if response.status_code == 404:
@@ -375,8 +379,12 @@ def test_tools_endpoint(tmp_path) -> None:
         tools = response.json()
         assert isinstance(tools, list)
         assert len(tools) >= 5
+        read_only_categories = {"market", "industry", "scoring", "evidence", "report"}
         for tool in tools:
-            assert tool.get("read_only") is True
+            if tool.get("category") in read_only_categories:
+                assert tool.get("read_only") is True, (
+                    f"Tool '{tool.get('name')}' (category={tool.get('category')}) is not read_only"
+                )
 
 
 def test_mcp_manifest_endpoint(tmp_path) -> None:
@@ -714,11 +722,17 @@ def test_toolspec_json_schema_structure() -> None:
 
 
 def test_toolspec_all_tools_read_only() -> None:
-    """Every registered tool has read_only=True."""
+    """Every registered tool in read-only categories has read_only=True.
+
+    Watchlist tools (add_to_watchlist) are intentionally writable.
+    """
     from app.agent.tools.registry import registry
 
+    READ_ONLY_CATEGORIES = {"market", "industry", "scoring", "evidence", "report"}
+
     for tool in registry.get_all_tools():
-        assert tool.read_only is True, f"Tool '{tool.name}' is not read_only"
+        if tool.category in READ_ONLY_CATEGORIES:
+            assert tool.read_only is True, f"Tool '{tool.name}' (category={tool.category}) is not read_only"
 
 
 def test_followup_uses_llm_when_available(tmp_path) -> None:

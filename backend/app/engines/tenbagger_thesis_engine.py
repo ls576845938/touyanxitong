@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+from app.engines.alternative_signals_engine import (
+    AlternativeSignal,
+    compute_evidence_momentum_signal,
+    compute_news_sentiment_signal,
+)
 from app.engines.data_gate_engine import ResearchDataGate, assess_research_data_gate
 
 
@@ -52,6 +59,7 @@ def build_tenbagger_thesis(
     articles: list[Any],
     trade_date: date,
     fundamental: Any | None = None,
+    db_session: Session | None = None,
 ) -> TenbaggerThesisResult:
     data_gate = assess_research_data_gate(stock=stock, score=score, fundamental=fundamental)
     missing = _missing_evidence(stock, score, fundamental, articles)
@@ -74,7 +82,7 @@ def build_tenbagger_thesis(
     )
     logic_gate_score = _logic_gate_score(logic_gates)
     logic_gate_status = _logic_gate_status(logic_gate_score, logic_gates)
-    alternative_data_signals = _alternative_data_signals(stock, industry_heat, articles, trade_date)
+    alternative_data_signals = _alternative_data_signals(stock, industry_heat, articles, trade_date, db_session=db_session)
     contrarian_signal = _contrarian_signal(
         opportunity_score=opportunity_score,
         quality_score=quality_score,
@@ -453,31 +461,69 @@ def _logic_gate_status(score: float, gates: list[dict[str, Any]]) -> str:
     return "WARN"
 
 
-def _alternative_data_signals(stock: Any, industry_heat: Any | None, articles: list[Any], trade_date: date) -> list[dict[str, Any]]:
+def _alternative_data_signals(
+    stock: Any,
+    industry_heat: Any | None,
+    articles: list[Any],
+    trade_date: date,
+    db_session: Session | None = None,
+) -> list[dict[str, Any]]:
+    stock_code = str(_field(stock, "code", ""))
+    stock_name = str(_field(stock, "name", ""))
     heat_score = _number(_field(industry_heat, "heat_score", 0.0))
     industry_name = str(_field(stock, "industry_level1", ""))
     text = _article_text(articles)
-    compute_signal = min(100.0, heat_score * 2.2 + _keyword_hits(text, ["算力", "GPU", "云", "租赁", "GB200", "H100", "compute"]) * 11)
-    customs_signal = min(100.0, heat_score * 1.5 + _keyword_hits(text, ["HBM", "光模块", "CPO", "PCB", "进口", "海关", "module"]) * 13)
+
+    # Build real signals when a DB session is available
+    signals: list[dict[str, Any]] = []
+
+    if db_session is not None:
+        ev_signal = compute_evidence_momentum_signal(
+            db_session,
+            subject_type="stock",
+            subject_id=stock_code,
+            subject_name=stock_name,
+            trade_date=trade_date,
+        )
+        signals.append(_alt_signal_from_dataclass(ev_signal, trade_date))
+
+        news_signal = compute_news_sentiment_signal(
+            db_session,
+            subject_type="stock",
+            subject_id=stock_code,
+            subject_name=stock_name,
+            trade_date=trade_date,
+        )
+        signals.append(_alt_signal_from_dataclass(news_signal, trade_date))
+    else:
+        # Fallback deterministic proxies when no session
+        compute_signal = min(100.0, heat_score * 2.2 + _keyword_hits(text, ["算力", "GPU", "云", "租赁", "GB200", "H100", "compute"]) * 11)
+        customs_signal = min(100.0, heat_score * 1.5 + _keyword_hits(text, ["HBM", "光模块", "CPO", "PCB", "进口", "海关", "module"]) * 13)
+        signals.append(
+            _alt_signal(
+                "evidence_momentum_placeholder",
+                "证据事件动量 (pending DB)",
+                compute_signal,
+                "neutral",
+                "pending_connector",
+                trade_date,
+            )
+        )
+        signals.append(
+            _alt_signal(
+                "news_sentiment_placeholder",
+                "新闻情绪动量 (pending DB)",
+                customs_signal if industry_name in {"AI算力", "半导体", "通信设备"} else customs_signal * 0.55,
+                "neutral",
+                "pending_connector",
+                trade_date,
+            )
+        )
+
+    # Always include the deterministic proxy signals (kept as pending_connector)
     talent_signal = min(100.0, 18 + _keyword_hits(text, ["高管", "核心技术", "招聘", "人才", "离职", "founder", "talent"]) * 16)
     order_signal = min(100.0, heat_score * 1.3 + _keyword_hits(text, ["订单", "客户", "中标", "交付", "产能"]) * 12)
-    signals = [
-        _alt_signal(
-            "compute_rental_price",
-            "算力租赁价格溢价 proxy",
-            compute_signal,
-            "positive" if compute_signal >= 60 else "neutral",
-            "pending_connector" if compute_signal < 25 else "proxy_active",
-            trade_date,
-        ),
-        _alt_signal(
-            "customs_import",
-            "HBM/光模块/关键原材料进出口 proxy",
-            customs_signal if industry_name in {"AI算力", "半导体", "通信设备"} else customs_signal * 0.55,
-            "positive" if customs_signal >= 55 else "neutral",
-            "pending_connector" if customs_signal < 25 else "proxy_active",
-            trade_date,
-        ),
+    signals.append(
         _alt_signal(
             "talent_flow",
             "高管/核心技术人员流动 proxy",
@@ -485,7 +531,9 @@ def _alternative_data_signals(stock: Any, industry_heat: Any | None, articles: l
             "watch" if talent_signal >= 45 else "neutral",
             "pending_connector" if talent_signal < 35 else "proxy_active",
             trade_date,
-        ),
+        )
+    )
+    signals.append(
         _alt_signal(
             "order_yield",
             "订单/良率/交付草根验证 proxy",
@@ -493,9 +541,30 @@ def _alternative_data_signals(stock: Any, industry_heat: Any | None, articles: l
             "positive" if order_signal >= 60 else "neutral",
             "pending_connector" if order_signal < 30 else "proxy_active",
             trade_date,
-        ),
-    ]
+        )
+    )
     return signals
+
+
+def _alt_signal_from_dataclass(signal: AlternativeSignal, trade_date: date) -> dict[str, Any]:
+    direction = str(signal.metadata_json.get("direction", "neutral"))
+    label_map = {
+        "evidence_momentum": "证据事件动量",
+        "news_sentiment": "新闻情绪动量",
+    }
+    label = label_map.get(signal.signal_name, signal.signal_name)
+    return {
+        "id": signal.signal_name,
+        "label": label,
+        "score": round(max(0.0, min(100.0, signal.value)), 2),
+        "direction": direction,
+        "coverage_status": signal.coverage_status,
+        "source": signal.source,
+        "generated_at": trade_date.isoformat(),
+        "confidence": signal.confidence,
+        "freshness": signal.freshness,
+        "metadata_json": signal.metadata_json,
+    }
 
 
 def _alt_signal(

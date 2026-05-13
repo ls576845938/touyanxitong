@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Bot, CheckCircle2, Clock, Download, FileText, Loader2, MessageSquare, Play, Printer, Radio, Save, ShieldAlert, Sparkles, Wrench, XCircle } from "lucide-react";
-import { api, type AgentArtifact, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunListItem, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow, type RuntimeHealth } from "@/lib/api";
+import Link from "next/link";
+import { Bot, CheckCircle2, Clock, Download, Eye, FileText, Loader2, MessageSquare, Play, Printer, Radio, Save, ShieldAlert, Sparkles, Wrench, XCircle } from "lucide-react";
+import { api, type AgentArtifact, type AgentArtifactClaim, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunListItem, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow, type RuntimeHealth, type WatchlistItemEnhanced } from "@/lib/api";
 
 const FALLBACK_SKILLS: AgentSkill[] = [
   { id: "system:stock_deep_research", name: "个股深度投研", description: "趋势、评分、产业链和证据链报告。", skill_type: "stock_deep_research", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
@@ -69,6 +70,9 @@ export default function AgentPage() {
   const [runHistory, setRunHistory] = useState<AgentRunListItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [watchlistItems, setWatchlistItems] = useState<WatchlistItemEnhanced[]>([]);
+  const [addingToWatchlist, setAddingToWatchlist] = useState<Record<string, boolean>>({});
+  const [watchlistSuccess, setWatchlistSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     api.agentSkills()
@@ -82,6 +86,9 @@ export default function AgentPage() {
       .then(setRunHistory)
       .catch((err) => setHistoryError(err.message))
       .finally(() => setHistoryLoading(false));
+    api.fetchWatchlistItems({ status: "active", limit: 5 })
+      .then(setWatchlistItems)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -409,6 +416,30 @@ export default function AgentPage() {
     }
   }
 
+  async function handleAddToWatchlist(claim: AgentArtifactClaim) {
+    const key = claim.id || `claim_${Date.now()}`;
+    setAddingToWatchlist((prev) => ({ ...prev, [key]: true }));
+    setWatchlistSuccess(null);
+    try {
+      await api.addToWatchlist({
+        thesis_title: claim.text?.slice(0, 200) || claim.section || "Agent 观点",
+        direction: "neutral",
+        reason: claim.text?.slice(0, 500) || "",
+        priority: "B"
+      });
+      setWatchlistSuccess(key);
+      setTimeout(() => setWatchlistSuccess(null), 3000);
+      // Refresh watchlist items
+      api.fetchWatchlistItems({ status: "active", limit: 5 })
+        .then(setWatchlistItems)
+        .catch(() => {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加入观察池失败");
+    } finally {
+      setAddingToWatchlist((prev) => ({ ...prev, [key]: false }));
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 px-6 py-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -464,7 +495,8 @@ export default function AgentPage() {
           <aside className="space-y-6">
             <AgentRunTimeline loading={loading} steps={steps} run={run} sseStatus={sseStatus} isGenerating={streamingContent !== ""} />
             <RunHistoryPanel runs={runHistory} loading={historyLoading} error={historyError} onSelectRun={loadHistoryRun} />
-            <EvidencePanel artifact={artifact} run={run} />
+            <EvidencePanel artifact={artifact} run={run} onAddToWatchlist={handleAddToWatchlist} addingToWatchlist={addingToWatchlist} watchlistSuccess={watchlistSuccess} />
+            <AgentWatchlistPanel items={watchlistItems} />
             <SkillBuilderPanel prompt={prompt} run={run} artifact={artifact} />
           </aside>
         </div>
@@ -919,7 +951,13 @@ function ResearchReportViewer({
   );
 }
 
-function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run: AgentRunResponse | null }) {
+function EvidencePanel({ artifact, run, onAddToWatchlist, addingToWatchlist, watchlistSuccess }: {
+  artifact: AgentArtifact | null;
+  run: AgentRunResponse | null;
+  onAddToWatchlist: (claim: AgentArtifactClaim) => void;
+  addingToWatchlist: Record<string, boolean>;
+  watchlistSuccess: string | null;
+}) {
   const refs = artifact?.evidence_refs ?? [];
   const claims = artifact?.claims?.length
     ? artifact.claims
@@ -970,6 +1008,23 @@ function EvidencePanel({ artifact, run }: { artifact: AgentArtifact | null; run:
                   <ClaimMeta label="置信度" value={confidence} />
                   <ClaimMeta label="不确定性" value={uncertainty} />
                 </div>
+                {run && run.status === "success" && (
+                  <div className="mt-3 border-t border-slate-200 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => onAddToWatchlist(claim as AgentArtifactClaim)}
+                      disabled={addingToWatchlist[claimId]}
+                      className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 text-[10px] font-bold text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 transition-colors"
+                    >
+                      {addingToWatchlist[claimId] ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Eye size={12} />
+                      )}
+                      {watchlistSuccess === claimId ? "已加入观察池" : "加入观察池"}
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -995,6 +1050,53 @@ function ClaimMeta({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</div>
       <div className="mt-1 text-xs font-bold text-slate-700">{value}</div>
     </div>
+  );
+}
+
+function AgentWatchlistPanel({ items }: { items: WatchlistItemEnhanced[] }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+          <Eye size={16} className="text-indigo-600" />
+          观察池
+        </div>
+        {items.length > 0 && (
+          <Link href="/watchlist" className="text-[10px] font-bold text-indigo-600 hover:underline">
+            查看全部
+          </Link>
+        )}
+      </div>
+      {items.length === 0 ? (
+        <div className="rounded-lg bg-slate-50 p-3 text-xs font-medium text-slate-500">
+          观察池暂无数据。
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => (
+            <Link
+              key={item.id}
+              href="/watchlist"
+              className="block rounded-lg border border-slate-100 bg-slate-50 p-3 transition-colors hover:border-indigo-100 hover:bg-white"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="truncate text-xs font-bold text-slate-800">{item.subject_name || item.thesis_title?.slice(0, 40)}</div>
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-black uppercase ${
+                  item.priority === "S" ? "bg-rose-100 text-rose-700" :
+                  item.priority === "A" ? "bg-amber-100 text-amber-700" :
+                  "bg-slate-100 text-slate-600"
+                }`}>
+                  {item.priority}
+                </span>
+              </div>
+              {item.reason && (
+                <div className="mt-1 text-[10px] font-medium text-slate-400 line-clamp-1">{item.reason}</div>
+              )}
+            </Link>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

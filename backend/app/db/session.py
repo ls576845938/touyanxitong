@@ -17,7 +17,7 @@ from app.db.models import Base
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SQLITE_PATH = BACKEND_DIR / "data" / "alpha_radar.db"
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 19
 
 
 @dataclass(frozen=True)
@@ -222,6 +222,131 @@ def _migration_api_performance_indexes(target_engine: Engine) -> None:
 def _migration_retail_research_loop_schema(target_engine: Engine) -> None:
     """Version marker plus indexes for retail research loop tables."""
     _ensure_retail_research_indexes(target_engine)
+
+
+def _migration_report_quality_feedback_schema(_: Engine) -> None:
+    """Version marker for report_quality_scores and scoring_feedback_events tables created from SQLAlchemy metadata."""
+
+
+def _migration_closed_loop_columns(target_engine: Engine) -> None:
+    """Add thesis_ids_json columns and drop overly-restrictive unique constraint for MVP 3.0."""
+    inspector = inspect(target_engine)
+    dialect = target_engine.dialect.name
+
+    # Drop the unique constraint on research_thesis that prevents the same subject
+    # from appearing in multiple reports (source_type, source_id, subject_type, subject_id).
+    if inspector.has_table("research_thesis"):
+        if dialect == "sqlite":
+            with target_engine.begin() as connection:
+                connection.execute(text("DROP INDEX IF EXISTS uq_research_thesis_source_subject"))
+        elif dialect == "postgresql":
+            with target_engine.begin() as connection:
+                connection.execute(text(
+                    "ALTER TABLE research_thesis DROP CONSTRAINT IF EXISTS uq_research_thesis_source_subject"
+                ))
+
+    # daily_reports
+    if inspector.has_table("daily_report"):
+        existing = {col["name"] for col in inspector.get_columns("daily_report")}
+        if "thesis_ids_json" not in existing:
+            with target_engine.begin() as connection:
+                connection.execute(text("ALTER TABLE daily_report ADD COLUMN thesis_ids_json TEXT DEFAULT '[]' NOT NULL"))
+
+    # agent_artifacts
+    if inspector.has_table("agent_artifacts"):
+        existing = {col["name"] for col in inspector.get_columns("agent_artifacts")}
+        if "thesis_ids_json" not in existing:
+            with target_engine.begin() as connection:
+                connection.execute(text("ALTER TABLE agent_artifacts ADD COLUMN thesis_ids_json TEXT DEFAULT '[]' NOT NULL"))
+
+
+def _migration_watchlist_extension(target_engine: Engine) -> None:
+    """Extend watchlist_item table with thesis-linked observation pool columns.
+
+    - Drop the old UNIQUE constraint on stock_code (single-stock uniqueness)
+    - Add extended columns (user_id, subject_type, subject_id, source_thesis_id, etc.)
+    - Make stock_code nullable (industry/theme items do not map to a single stock)
+    - Add composite UNIQUE index on (subject_type, subject_id, user_id)
+    """
+    inspector = inspect(target_engine)
+    if not inspector.has_table("watchlist_item"):
+        return
+    existing = {col["name"] for col in inspector.get_columns("watchlist_item")}
+
+    # Already migrated (subject_type is the lead column)
+    if "subject_type" in existing:
+        return
+
+    dialect = target_engine.dialect.name
+
+    with target_engine.begin() as connection:
+        # 1. Drop the old unique constraint on stock_code
+        if dialect == "sqlite":
+            connection.execute(text("DROP INDEX IF EXISTS uq_watchlist_code"))
+        elif dialect == "postgresql":
+            connection.execute(text("ALTER TABLE watchlist_item DROP CONSTRAINT IF EXISTS uq_watchlist_code"))
+
+        # 2. For SQLite, recreate table (since ALTER TABLE cannot DROP NOT NULL)
+        if dialect == "sqlite":
+            connection.execute(text("""
+                CREATE TABLE watchlist_item_new (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    stock_code VARCHAR(16),
+                    note TEXT DEFAULT '' NOT NULL,
+                    status VARCHAR(16) DEFAULT '观察' NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    user_id VARCHAR(64),
+                    subject_type VARCHAR(16) DEFAULT 'stock' NOT NULL,
+                    subject_id VARCHAR(32),
+                    subject_name VARCHAR(128),
+                    source_thesis_id INTEGER REFERENCES research_theses(id),
+                    source_report_id INTEGER,
+                    reason TEXT,
+                    watch_metrics_json TEXT DEFAULT '[]' NOT NULL,
+                    invalidation_conditions_json TEXT DEFAULT '[]' NOT NULL,
+                    priority VARCHAR(8) DEFAULT 'B' NOT NULL
+                )
+            """))
+            connection.execute(text("""
+                INSERT INTO watchlist_item_new (
+                    id, stock_code, note, status, created_at, updated_at,
+                    user_id, subject_type, subject_id, subject_name,
+                    source_thesis_id, source_report_id, reason,
+                    watch_metrics_json, invalidation_conditions_json, priority
+                )
+                SELECT
+                    id, stock_code, note, status, created_at, updated_at,
+                    NULL, 'stock', stock_code, NULL,
+                    NULL, NULL, NULL,
+                    '[]', '[]', 'B'
+                FROM watchlist_item
+            """))
+            connection.execute(text("DROP TABLE watchlist_item"))
+            connection.execute(text("ALTER TABLE watchlist_item_new RENAME TO watchlist_item"))
+        else:
+            # PostgreSQL: make stock_code nullable, then add columns
+            connection.execute(text("ALTER TABLE watchlist_item ALTER COLUMN stock_code DROP NOT NULL"))
+            pg_alters = [
+                "ALTER TABLE watchlist_item ADD COLUMN user_id VARCHAR(64)",
+                "ALTER TABLE watchlist_item ADD COLUMN subject_type VARCHAR(16) DEFAULT 'stock' NOT NULL",
+                "ALTER TABLE watchlist_item ADD COLUMN subject_id VARCHAR(32)",
+                "ALTER TABLE watchlist_item ADD COLUMN subject_name VARCHAR(128)",
+                "ALTER TABLE watchlist_item ADD COLUMN source_thesis_id INTEGER REFERENCES research_theses(id)",
+                "ALTER TABLE watchlist_item ADD COLUMN source_report_id INTEGER",
+                "ALTER TABLE watchlist_item ADD COLUMN reason TEXT",
+                "ALTER TABLE watchlist_item ADD COLUMN watch_metrics_json TEXT DEFAULT '[]' NOT NULL",
+                "ALTER TABLE watchlist_item ADD COLUMN invalidation_conditions_json TEXT DEFAULT '[]' NOT NULL",
+                "ALTER TABLE watchlist_item ADD COLUMN priority VARCHAR(8) DEFAULT 'B' NOT NULL",
+            ]
+            for stmt in pg_alters:
+                connection.execute(text(stmt))
+
+        # 3. Create composite unique index
+        connection.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_watchlist_subject_user "
+            "ON watchlist_item (subject_type, COALESCE(subject_id,''), COALESCE(user_id,''))"
+        ))
 
 
 def _ensure_lightweight_migrations(target_engine: Engine) -> None:
@@ -803,6 +928,9 @@ SCHEMA_MIGRATIONS = [
     SchemaMigration(14, "mark_mock_news_synthetic", _migration_mark_mock_news_synthetic),
     SchemaMigration(15, "tenbagger_sniper_schema", _migration_tenbagger_sniper_schema),
     SchemaMigration(16, "agent_orchestrator_schema", _migration_agent_orchestrator_schema),
+    SchemaMigration(17, "report_quality_feedback_schema", _migration_report_quality_feedback_schema),
+    SchemaMigration(18, "watchlist_extension", _migration_watchlist_extension),
+    SchemaMigration(19, "closed_loop_columns", _migration_closed_loop_columns),
 ]
 
 

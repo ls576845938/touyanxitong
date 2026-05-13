@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import DataSourceRun, EvidenceChain, Industry, IndustryHeat, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal
+from app.db.models import AlternativeSignalRecord, DataSourceRun, EvidenceChain, Industry, IndustryHeat, IndustryKeyword, NewsArticle, Stock, StockScore, TrendSignal
 from app.db.session import get_session
 from app.pipeline.hot_terms_ingestion_job import run_hot_terms_ingestion_job
 
@@ -153,6 +153,43 @@ def refresh_research_hot_terms(
     return {
         **result,
         "snapshot": _hot_terms_payload_v2(session=session, window=window_key, limit=80),
+    }
+
+
+@router.get("/alternative-signals")
+def research_alternative_signals(
+    subject_type: str = Query(default="stock"),
+    subject_id: str = Query(...),
+    limit: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    rows = session.scalars(
+        select(AlternativeSignalRecord)
+        .where(
+            AlternativeSignalRecord.subject_type == subject_type,
+            AlternativeSignalRecord.subject_id == subject_id,
+        )
+        .order_by(AlternativeSignalRecord.observed_at.desc())
+        .limit(limit)
+    ).all()
+    return {
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+        "signals": [
+            {
+                "id": row.id,
+                "signal_name": row.signal_name,
+                "value": row.value,
+                "value_type": row.value_type,
+                "source": row.source,
+                "observed_at": row.observed_at.isoformat() if hasattr(row.observed_at, "isoformat") else str(row.observed_at),
+                "confidence": row.confidence,
+                "freshness": row.freshness,
+                "status": row.status,
+                "metadata_json": _loads_json_object(row.metadata_json),
+            }
+            for row in rows
+        ],
     }
 
 

@@ -16,7 +16,10 @@ from app.api.routes_research import router as research_router
 from app.api.routes_reports import router as reports_router
 from app.api.routes_retail import router as retail_router
 from app.api.routes_stocks import router as stocks_router
+from app.api.routes_quality import router as quality_router
 from app.api.routes_tenbagger import router as tenbagger_router
+from app.api.routes_thesis import router as thesis_router
+from app.api.routes_thesis_review import router as thesis_review_router
 from app.api.routes_watchlist import router as watchlist_router
 from app.config import settings
 from app.db.session import database_url, get_database_info, init_db
@@ -72,7 +75,10 @@ app.include_router(stocks_router)
 app.include_router(reports_router)
 app.include_router(watchlist_router)
 app.include_router(research_router)
+app.include_router(quality_router)
 app.include_router(tenbagger_router)
+app.include_router(thesis_router)
+app.include_router(thesis_review_router)
 app.include_router(retail_router)
 app.include_router(agent_router)
 app.include_router(mcp_router)

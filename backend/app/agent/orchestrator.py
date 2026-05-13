@@ -18,6 +18,7 @@ from app.agent.skills.registry import load_skill_template
 from app.agent.tools import evidence_tools, industry_tools, market_tools, report_tools, scoring_tools
 from app.config import settings
 from app.db.models import AgentArtifact, AgentRun, AgentSkill, AgentStep, AgentToolCall, Industry, IndustryKeyword, Stock
+from app.engines.thesis_engine import extract_theses_from_agent_claims
 from app.services.stock_resolver import STOCK_ALIAS_CODES, resolve_stock
 
 
@@ -187,6 +188,20 @@ class AgentOrchestrator:
             self.session.add(artifact)
             self.session.flush()
             artifact_id = artifact.id
+
+            # Extract structured theses from agent artifact claims
+            raw_claims = content_json.get("claims", []) if isinstance(content_json, dict) else []
+            if raw_claims:
+                thesis_ids = extract_theses_from_agent_claims(
+                    session=self.session,
+                    run_id=run.id,
+                    claims=raw_claims,
+                    artifact_id=artifact_id,
+                )
+                if thesis_ids:
+                    artifact.thesis_ids_json = _json_dumps(thesis_ids)
+                    self.session.flush()
+
             publish_event(
                 self.session,
                 run.id,

@@ -1348,6 +1348,54 @@ export type SignalBacktestRunResponse = {
   run: SignalBacktestRun | null;
 };
 
+// ---------------------------------------------------------------------------
+// Research Thesis (general, not tenbagger-specific)
+// ---------------------------------------------------------------------------
+export type ResearchThesis = {
+  id: number;
+  source_type: string;
+  subject_type: string;
+  subject_id: string;
+  subject_name: string;
+  thesis_title: string;
+  thesis_body: string;
+  direction: "positive" | "negative" | "neutral" | "mixed";
+  horizon_days: number;
+  confidence: number;
+  evidence_refs_json: string;
+  key_metrics_json: string;
+  invalidation_conditions_json: string;
+  risk_flags_json: string;
+  status: string;
+  created_at: string;
+  review_date?: string | null;
+  review_result?: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Watchlist Item (thesis-centric)
+// ---------------------------------------------------------------------------
+export type WatchlistItemEnhanced = {
+  id: number;
+  subject_type: string;
+  subject_id: string;
+  subject_name: string;
+  thesis_title: string;
+  direction: string;
+  reason: string;
+  watch_metrics_json: string;
+  invalidation_conditions_json: string;
+  priority: "S" | "A" | "B";
+  status: string;
+  source_thesis_id?: number | null;
+  thesis?: ResearchThesis | null;
+  review_status?: string | null;
+  review_date?: string | null;
+  review_result?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type AgentTaskType =
   | "stock_deep_research"
   | "industry_chain_radar"
@@ -1771,6 +1819,39 @@ export const api = {
   agentRunExportHtmlUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/html`,
   agentRunExportPrintUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/print`,
   agentRunExportRichHtmlUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/print`,
+
+  // ---------------------------------------------------------------------------
+  // Research Theses API
+  // ---------------------------------------------------------------------------
+  fetchTheses: (params?: { source_type?: string; status?: string; subject_type?: string; subject_id?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.source_type) query.set("source_type", params.source_type);
+    if (params?.status) query.set("status", params.status);
+    if (params?.subject_type) query.set("subject_type", params.subject_type);
+    if (params?.subject_id) query.set("subject_id", params.subject_id);
+    if (params?.limit) query.set("limit", String(params.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return getJson<ResearchThesis[]>(`/api/research/theses${suffix}`, { cacheMs: 0 });
+  },
+  fetchThesis: (id: number) => getJson<ResearchThesis>(`/api/research/theses/${id}`, { cacheMs: 0 }),
+
+  // ---------------------------------------------------------------------------
+  // Watchlist Items API (thesis-centric)
+  // ---------------------------------------------------------------------------
+  fetchWatchlistItems: (params?: { status?: string; priority?: string; subject_type?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.status) query.set("status", params.status);
+    if (params?.priority) query.set("priority", params.priority);
+    if (params?.subject_type) query.set("subject_type", params.subject_type);
+    if (params?.limit) query.set("limit", String(params.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return getJson<WatchlistItemEnhanced[]>(`/api/watchlist/items${suffix}`, { cacheMs: 0 });
+  },
+  addToWatchlist: (payload: { thesis_id?: number; subject_type?: string; subject_id?: string; subject_name?: string; thesis_title?: string; direction?: string; reason?: string; priority?: string }) =>
+    postJson<WatchlistItemEnhanced>("/api/watchlist/items", payload),
+  archiveWatchlistItem: (itemId: number) => postJson<WatchlistItemEnhanced>(`/api/watchlist/items/${itemId}/archive`, {}),
+  updateWatchlistItem: (itemId: number, payload: { reason?: string; priority?: string }) =>
+    postJson<WatchlistItemEnhanced>(`/api/watchlist/items/${itemId}`, payload),
 };
 
 
