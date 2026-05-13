@@ -109,6 +109,16 @@ class AgentArtifactClaimRef(BaseModel):
     has_evidence: bool = False
 
 
+class AgentRunListItem(BaseModel):
+    id: int
+    task_type: str
+    status: str
+    report_title: str
+    created_at: str
+    completed_at: str | None = None
+    user_id: str | None = None
+
+
 class AgentRunDetail(BaseModel):
     id: int
     user_id: str | None = None
@@ -148,6 +158,16 @@ class AgentFollowupResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     saved_artifact_id: int | None = None
     created_at: str
+
+
+class AgentRuntimeHealth(BaseModel):
+    runtime_provider: str
+    llm_configured: bool
+    hermes_configured: bool
+    streaming_supported: bool
+    followup_llm_enabled: bool
+    fallback_enabled: bool
+    warnings: list[str] = Field(default_factory=list)
 
 
 class AgentSkillCreate(BaseModel):

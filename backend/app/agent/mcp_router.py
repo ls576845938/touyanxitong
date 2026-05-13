@@ -13,9 +13,10 @@ Clients send JSON-RPC 2.0 POST requests to ``/mcp/`` and receive JSON-RPC
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.agent.mcp_server import MCPServer
 from app.db.session import SessionLocal
@@ -27,14 +28,31 @@ mcp_router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 
 @mcp_router.post("/")
-def mcp_http_endpoint(request: dict[str, Any]) -> dict[str, Any]:
+async def mcp_http_endpoint(request: Request) -> dict[str, Any]:
     """HTTP transport for MCP JSON-RPC 2.0 requests.
 
     Accepts a JSON-RPC request body and returns the corresponding
     JSON-RPC response.  Supports ``tools/list``, ``tools/call``,
     and ``initialize``.
+
+    Malformed JSON bodies are reported as JSON-RPC 2.0 parse errors
+    (code -32700).  Non-dict bodies are rejected with -32600.
     """
-    return _server.handle_request(request)
+    try:
+        body: Any = await request.json()
+    except json.JSONDecodeError:
+        return MCPServer._error(
+            None, -32700, "Parse error",
+            data="Request body is not valid JSON",
+        )
+
+    if not isinstance(body, dict):
+        return MCPServer._error(
+            None, -32600, "Invalid Request",
+            data="Request body must be a JSON object",
+        )
+
+    return _server.handle_request(body)
 
 
 @mcp_router.get("/")

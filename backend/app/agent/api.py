@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -28,8 +28,10 @@ from app.agent.schemas import (
     AgentFollowupRequest,
     AgentFollowupResponse,
     AgentRunDetail,
+    AgentRunListItem,
     AgentRunRequest,
     AgentRunResponse,
+    AgentRuntimeHealth,
     AgentSkillCreate,
     AgentSkillResponse,
     AgentStepResponse,
@@ -42,12 +44,123 @@ from app.db.session import get_session
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 
+# ---------------------------------------------------------------------------
+# User identity helper
+# ---------------------------------------------------------------------------
+
+def get_current_user_id(x_alpha_user_id: str | None = Header(default=None)) -> str:
+    """Extract user identity from X-Alpha-User-Id header.
+
+    This is the only identity mechanism used throughout the agent API.
+    No authentication, no JWT — just a header passed by the frontend.
+    Anonymous users (no header) get the ``"anonymous"`` identity.
+    """
+    return x_alpha_user_id or "anonymous"
+
+
+def _check_run_access(session: Session, run_id: int, user_id: str) -> AgentRun:
+    """Check that a run exists and belongs to the current user (or has no owner).
+
+    Returns the ``AgentRun`` row on success.  Raises ``HTTPException(404)``
+    if the run is not found or belongs to a different user (existence is
+    hidden from non-owners).
+    """
+    run = session.get(AgentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="agent run not found")
+    if run.user_id and run.user_id != user_id:
+        raise HTTPException(status_code=404, detail="agent run not found")
+    return run
+
+
+@router.get("/runs", response_model=list[AgentRunListItem])
+def list_agent_runs(
+    limit: int = Query(20, ge=1, le=100),
+    status: str | None = None,
+    user_id: str = Depends(get_current_user_id),
+    session: Session = Depends(get_session),
+) -> list[AgentRunListItem]:
+    """List recent runs visible to the current user.
+
+    Returns runs owned by this user **or** runs with no ``user_id`` (legacy
+    records).  Optionally filtered by *status*.  Ordered by creation time,
+    most recent first.
+    """
+    query = (
+        select(AgentRun)
+        .where((AgentRun.user_id == user_id) | (AgentRun.user_id.is_(None)))
+        .order_by(AgentRun.created_at.desc())
+        .limit(limit)
+    )
+    if status:
+        query = query.where(AgentRun.status == status)
+    rows = session.scalars(query).all()
+
+    results: list[AgentRunListItem] = []
+    for row in rows:
+        latest_artifact = session.scalars(
+            select(AgentArtifact)
+            .where(AgentArtifact.run_id == row.id)
+            .order_by(AgentArtifact.created_at.desc())
+            .limit(1)
+        ).first()
+        results.append(
+            AgentRunListItem(
+                id=row.id,
+                task_type=row.task_type,
+                status=row.status,
+                report_title=latest_artifact.title if latest_artifact else "未命名运行",
+                created_at=row.created_at.isoformat() if hasattr(row.created_at, "isoformat") else str(row.created_at),
+                completed_at=row.completed_at.isoformat() if row.completed_at else None,
+                user_id=row.user_id,
+            )
+        )
+    return results
+
+
+@router.get("/runtime/health", response_model=AgentRuntimeHealth)
+def runtime_health() -> AgentRuntimeHealth:
+    """Return runtime configuration status. NO secrets returned."""
+    llm_configured = bool(settings.openai_api_key)
+    hermes_configured = bool(settings.hermes_endpoint)
+
+    # Determine active provider
+    if llm_configured:
+        provider = "llm"
+    elif hermes_configured:
+        provider = "hermes"
+    else:
+        provider = "mock"
+
+    # Streaming: RealRuntime supports streaming if LLM configured
+    streaming_supported = llm_configured  # Mock also chunks, but true streaming needs LLM
+
+    warnings: list[str] = []
+    if not llm_configured and not hermes_configured:
+        warnings.append("No LLM or Hermes configured. Using deterministic mock runtime. Follow-up will use template fallback.")
+    if hermes_configured and not llm_configured:
+        warnings.append("Hermes endpoint configured but no direct LLM. Follow-up depends on Hermes-side LLM availability.")
+
+    return AgentRuntimeHealth(
+        runtime_provider=provider,
+        llm_configured=llm_configured,
+        hermes_configured=hermes_configured,
+        streaming_supported=streaming_supported,
+        followup_llm_enabled=llm_configured,
+        fallback_enabled=True,
+        warnings=warnings,
+    )
+
+
 @router.post("/runs", response_model=AgentRunResponse, status_code=202)
 def create_agent_run(
     payload: AgentRunRequest,
     background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
 ) -> AgentRunResponse:
+    # Set user identity from header (authoritative)
+    payload.user_id = user_id
     orchestrator = AgentOrchestrator(session)
     # Create the run record first
     run_id = orchestrator.create_run_record(payload)
@@ -65,10 +178,12 @@ def create_agent_run(
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunDetail)
-def get_agent_run(run_id: int, session: Session = Depends(get_session)) -> AgentRunDetail:
-    run = session.get(AgentRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="agent run not found")
+def get_agent_run(
+    run_id: int,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> AgentRunDetail:
+    run = _check_run_access(session, run_id, user_id)
     latest_artifact = session.scalars(
         select(AgentArtifact).where(AgentArtifact.run_id == run_id).order_by(AgentArtifact.created_at.desc()).limit(1)
     ).first()
@@ -89,8 +204,12 @@ def get_agent_run(run_id: int, session: Session = Depends(get_session)) -> Agent
 
 
 @router.get("/runs/{run_id}/steps", response_model=list[AgentStepResponse])
-def get_agent_run_steps(run_id: int, session: Session = Depends(get_session)) -> list[AgentStepResponse]:
-    _ensure_run(session, run_id)
+def get_agent_run_steps(
+    run_id: int,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> list[AgentStepResponse]:
+    _check_run_access(session, run_id, user_id)
     rows = session.scalars(select(AgentStep).where(AgentStep.run_id == run_id).order_by(AgentStep.created_at, AgentStep.id)).all()
     return [
         AgentStepResponse(
@@ -109,8 +228,12 @@ def get_agent_run_steps(run_id: int, session: Session = Depends(get_session)) ->
 
 
 @router.get("/runs/{run_id}/artifacts", response_model=list[AgentArtifactResponse])
-def get_agent_run_artifacts(run_id: int, session: Session = Depends(get_session)) -> list[AgentArtifactResponse]:
-    _ensure_run(session, run_id)
+def get_agent_run_artifacts(
+    run_id: int,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> list[AgentArtifactResponse]:
+    _check_run_access(session, run_id, user_id)
     rows = session.scalars(select(AgentArtifact).where(AgentArtifact.run_id == run_id).order_by(AgentArtifact.created_at, AgentArtifact.id)).all()
     return [_artifact_payload(row) for row in rows]
 
@@ -120,6 +243,7 @@ async def stream_agent_run_events(
     run_id: int,
     since_seq: int = Query(0, description="Replay events after this sequence number"),
     session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
 ) -> StreamingResponse:
     """SSE event stream for an agent run (EventBus push).
 
@@ -129,7 +253,7 @@ async def stream_agent_run_events(
 
     For terminated runs events are replayed and the connection closes.
     """
-    _ensure_run(session, run_id)
+    _check_run_access(session, run_id, user_id)
     return StreamingResponse(
         _event_stream(run_id, since_seq),
         media_type="text/event-stream",
@@ -146,8 +270,9 @@ def create_followup(
     run_id: int,
     payload: AgentFollowupRequest,
     session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
 ) -> AgentFollowupResponse:
-    _ensure_run(session, run_id)
+    _check_run_access(session, run_id, user_id)
     artifact = session.scalars(
         select(AgentArtifact)
         .where(AgentArtifact.run_id == run_id)
@@ -216,8 +341,12 @@ def create_followup(
 
 
 @router.get("/runs/{run_id}/messages", response_model=list[dict[str, Any]])
-def get_followup_messages(run_id: int, session: Session = Depends(get_session)) -> list[dict[str, Any]]:
-    _ensure_run(session, run_id)
+def get_followup_messages(
+    run_id: int,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> list[dict[str, Any]]:
+    _check_run_access(session, run_id, user_id)
     rows = session.scalars(
         select(AgentFollowup)
         .where(AgentFollowup.run_id == run_id)
@@ -237,14 +366,18 @@ def get_followup_messages(run_id: int, session: Session = Depends(get_session)) 
 
 
 @router.get("/runs/{run_id}/export/markdown")
-def export_agent_run_markdown(run_id: int, session: Session = Depends(get_session)) -> Response:
+def export_agent_run_markdown(
+    run_id: int,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> Response:
     """Download the artifact content as a Markdown file.
 
     Returns sanitized content_md with the report title as a H1 heading and
     the risk disclaimer.  Content is already guardrails-sanitised in the
     artifact; no further sanitisation is applied.
     """
-    _ensure_run(session, run_id)
+    _check_run_access(session, run_id, user_id)
     artifact = session.scalars(
         select(AgentArtifact).where(AgentArtifact.run_id == run_id).order_by(AgentArtifact.created_at.desc()).limit(1)
     ).first()
@@ -268,14 +401,18 @@ def export_agent_run_markdown(run_id: int, session: Session = Depends(get_sessio
 
 
 @router.get("/runs/{run_id}/export/html")
-def export_agent_run_html(run_id: int, session: Session = Depends(get_session)) -> Response:
+def export_agent_run_html(
+    run_id: int,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> Response:
     """Download the artifact content as a minimal safe HTML page.
 
     Converts the artifact content_md to basic HTML.  The page includes the
     report title, summary, evidence references, and risk disclaimer.  No
     script execution — just formatted, printable text.
     """
-    _ensure_run(session, run_id)
+    _check_run_access(session, run_id, user_id)
     artifact = session.scalars(
         select(AgentArtifact).where(AgentArtifact.run_id == run_id).order_by(AgentArtifact.created_at.desc()).limit(1)
     ).first()
@@ -297,7 +434,11 @@ def export_agent_run_html(run_id: int, session: Session = Depends(get_session)) 
 
 
 @router.get("/runs/{run_id}/export/print")
-def export_agent_run_print_html(run_id: int, session: Session = Depends(get_session)) -> Response:
+def export_agent_run_print_html(
+    run_id: int,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> Response:
     """Return a print-optimized HTML page for the agent research report.
 
     Uses ``markdown-it-py`` for proper HTML rendering (tables, code blocks,
@@ -308,7 +449,7 @@ def export_agent_run_print_html(run_id: int, session: Session = Depends(get_sess
     **Usage**: Open this URL in a browser tab and press **Ctrl+P** /
     **Cmd+P** to save as PDF.  No PDF library is required.
     """
-    _ensure_run(session, run_id)
+    _check_run_access(session, run_id, user_id)
     artifact = session.scalars(
         select(AgentArtifact).where(AgentArtifact.run_id == run_id).order_by(AgentArtifact.created_at.desc()).limit(1)
     ).first()
@@ -337,15 +478,19 @@ def export_agent_run_print_html(run_id: int, session: Session = Depends(get_sess
 
 
 @router.post("/skills", response_model=AgentSkillResponse)
-def create_agent_skill(payload: AgentSkillCreate, session: Session = Depends(get_session)) -> AgentSkillResponse:
+def create_agent_skill(
+    payload: AgentSkillCreate,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> AgentSkillResponse:
     skill = AgentSkill(
         name=payload.name,
         description=payload.description,
         skill_type=str(payload.skill_type),
         skill_md=payload.skill_md,
         skill_config_json=json.dumps(payload.skill_config, ensure_ascii=False),
-        owner_user_id=payload.owner_user_id,
-        is_system=payload.is_system,
+        owner_user_id=user_id,
+        is_system=False,
     )
     session.add(skill)
     session.commit()
@@ -354,27 +499,42 @@ def create_agent_skill(payload: AgentSkillCreate, session: Session = Depends(get
 
 
 @router.get("/skills", response_model=list[AgentSkillResponse])
-def list_agent_skills(session: Session = Depends(get_session)) -> list[AgentSkillResponse]:
+def list_agent_skills(
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> list[AgentSkillResponse]:
     system_rows = [AgentSkillResponse(**payload) for payload in system_skill_payloads()]
     custom_rows = [
         _skill_payload(row)
-        for row in session.scalars(select(AgentSkill).order_by(AgentSkill.is_system.desc(), AgentSkill.created_at.desc())).all()
+        for row in session.scalars(
+            select(AgentSkill)
+            .where((AgentSkill.owner_user_id == user_id) | (AgentSkill.is_system.is_(True)))
+            .order_by(AgentSkill.is_system.desc(), AgentSkill.created_at.desc())
+        ).all()
     ]
     return system_rows + custom_rows
 
 
 @router.get("/skills/{skill_id}", response_model=AgentSkillResponse)
-def get_agent_skill(skill_id: str, session: Session = Depends(get_session)) -> AgentSkillResponse:
+def get_agent_skill(
+    skill_id: str,
+    session: Session = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+) -> AgentSkillResponse:
+    # System skills are visible to everyone
     system_skill = system_skill_by_id(skill_id)
     if system_skill is not None:
         payload = next(item for item in system_skill_payloads() if item["id"] == skill_id)
         return AgentSkillResponse(**payload)
+    # Custom skills: check ownership
     try:
         numeric_id = int(skill_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="agent skill not found") from exc
     skill = session.get(AgentSkill, numeric_id)
     if skill is None:
+        raise HTTPException(status_code=404, detail="agent skill not found")
+    if skill.owner_user_id and skill.owner_user_id != user_id:
         raise HTTPException(status_code=404, detail="agent skill not found")
     return _skill_payload(skill)
 
@@ -731,6 +891,12 @@ def _generate_followup_answer(
     if on_event is not None:
         on_event({"event": "followup_started", "run_id": run_id, "mode": mode})
 
+    # Determine if LLM was unavailable vs. failed
+    if settings.openai_api_key:
+        fallback_reason = "LLM 调用失败，已回退到确定性模板回答"
+    else:
+        fallback_reason = "当前使用确定性模板回答（LLM 不可用）"
+
     answer_lines: list[str] = []
     answer_lines.append(f"# 追问回答: {mode_label}")
     answer_lines.append("")
@@ -784,6 +950,10 @@ def _generate_followup_answer(
     raw_answer = "\n".join(answer_lines)
 
     sanitized, warnings = sanitize_financial_output(raw_answer)
+
+    # Signal fallback mode to caller
+    if fallback_reason not in warnings:
+        warnings.append(fallback_reason)
 
     if on_event is not None:
         on_event({"event": "followup_completed", "run_id": run_id})

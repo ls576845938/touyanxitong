@@ -7,6 +7,7 @@ execution over HTTP or stdio transport.
 
 from __future__ import annotations
 
+import concurrent.futures
 import inspect
 import traceback
 from typing import Any, Callable
@@ -65,6 +66,12 @@ _TOOLS_REQUIRING_SESSION: set[str] = {
     for name, func in _TOOL_FUNCTIONS.items()
     if _first_param_is_session(func)
 }
+
+# Shared thread pool for timed tool execution
+_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="mcp_tool"
+)
+_DEFAULT_TOOL_TIMEOUT_S: int = 30
 
 
 class MCPServer:
@@ -221,19 +228,43 @@ class MCPServer:
         Tools whose first parameter is named ``session`` receive a fresh
         database session; tools without it (e.g. ``generate_report_outline``)
         are called directly.
-        """
-        if tool_name in _TOOLS_REQUIRING_SESSION:
-            if self.session_factory is None:
-                raise RuntimeError(
-                    "session_factory is required for tools that need a "
-                    "database session"
-                )
-            session = self.session_factory()
-            try:
-                return func(session, **arguments)
-            finally:
-                session.close()
 
-        # Tools that don't require a session (generate_report_outline,
-        # format_research_report) are called with arguments directly.
-        return func(**arguments)
+        The execution is subject to a configurable timeout (default 30 s)
+        via a shared thread-pool executor.  Sessions are committed on success
+        and rolled back on failure.
+        """
+        spec = self.registry.get_tool(tool_name)
+        timeout_s = max(
+            (spec.timeout_ms or _DEFAULT_TOOL_TIMEOUT_S * 1000) / 1000.0,
+            1.0,
+        )
+
+        def _run() -> Any:
+            if tool_name in _TOOLS_REQUIRING_SESSION:
+                if self.session_factory is None:
+                    raise RuntimeError(
+                        "session_factory is required for tools that need a "
+                        "database session"
+                    )
+                db = self.session_factory()
+                try:
+                    result = func(db, **arguments)
+                    db.commit()
+                    return result
+                except Exception:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+
+            # Tools that don't require a session (generate_report_outline,
+            # format_research_report) are called with arguments directly.
+            return func(**arguments)
+
+        future = _EXECUTOR.submit(_run)
+        try:
+            return future.result(timeout=timeout_s)
+        except concurrent.futures.TimeoutError:
+            raise RuntimeError(
+                f"Tool '{tool_name}' timed out after {timeout_s}s"
+            )

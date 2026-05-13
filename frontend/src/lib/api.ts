@@ -1485,6 +1485,44 @@ export type AgentMessage = {
   created_at: string;
 };
 
+export type RuntimeHealth = {
+  runtime_provider: string;
+  llm_configured: boolean;
+  hermes_configured: boolean;
+  streaming_supported: boolean;
+  followup_llm_enabled: boolean;
+  fallback_enabled: boolean;
+  warnings: string[];
+};
+
+export type AgentRunListItem = {
+  id: number;
+  task_type: string;
+  status: string;
+  report_title: string;
+  created_at: string;
+  completed_at: string | null;
+  user_id: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// User identity (X-Alpha-User-Id header)
+// ---------------------------------------------------------------------------
+
+function getUserId(): string {
+  if (typeof window === "undefined") return "anonymous";
+  try {
+    let id = localStorage.getItem("alpha_user_id");
+    if (!id) {
+      id = "user_" + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem("alpha_user_id", id);
+    }
+    return id;
+  } catch {
+    return "anonymous";
+  }
+}
+
 async function getJson<T>(path: string, options?: { cacheMs?: number }): Promise<T> {
   const cacheMs = options?.cacheMs ?? DEFAULT_GET_CACHE_MS;
   const cacheKey = `${API_BASE_URL}${path}`;
@@ -1497,7 +1535,10 @@ async function getJson<T>(path: string, options?: { cacheMs?: number }): Promise
     }
   }
 
-  const request = fetch(cacheKey, { cache: "no-store" }).then((response) => {
+  const request = fetch(cacheKey, {
+    cache: "no-store",
+    headers: { "X-Alpha-User-Id": getUserId() },
+  }).then((response) => {
     if (!response.ok) {
       throw new Error(`${path} failed: ${response.status}`);
     }
@@ -1715,10 +1756,21 @@ export const api = {
     postJson<AgentFollowupResponse>(`/api/agent/runs/${runId}/followups`, payload),
   agentRunMessages: (runId: number) =>
     getJson<AgentMessage[]>(`/api/agent/runs/${runId}/messages`, { cacheMs: 0 }),
+  // Runtime health
+  agentRuntimeHealth: () => getJson<RuntimeHealth>("/api/agent/runtime/health"),
+  // Run history
+  agentRunList: (params?: { limit?: number; status?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.limit) query.set("limit", String(params.limit));
+    if (params?.status) query.set("status", params.status);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return getJson<AgentRunListItem[]>(`/api/agent/runs${suffix}`, { cacheMs: 0 });
+  },
   // Export URLs (not JSON endpoints -- direct download / open in tab)
   agentRunExportMarkdownUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/markdown`,
   agentRunExportHtmlUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/html`,
   agentRunExportPrintUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/print`,
+  agentRunExportRichHtmlUrl: (runId: number) => `${API_BASE_URL}/api/agent/runs/${runId}/export/print`,
 };
 
 
@@ -1726,7 +1778,7 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
   getCache.clear();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Alpha-User-Id": getUserId() },
     body: JSON.stringify(payload),
     cache: "no-store"
   });

@@ -4,13 +4,38 @@ import { useEffect, useRef } from "react";
 import { createChart, type IChartApi, ColorType } from "lightweight-charts";
 import type { BarRow } from "@/lib/api";
 
-export function CandleChart({ rows }: { rows: BarRow[] }) {
+// ---------------------------------------------------------------------------
+// Chart export registry (shared across chart components)
+// ---------------------------------------------------------------------------
+export type ChartCaptureFn = () => string | undefined;
+
+const _chartRegistry = new Map<string, ChartCaptureFn>();
+
+export function registerChartCapture(id: string, fn: ChartCaptureFn): () => void {
+  _chartRegistry.set(id, fn);
+  return () => { _chartRegistry.delete(id); };
+}
+
+export function captureAllChartDataUrls(): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [id, fn] of _chartRegistry) {
+    try {
+      const url = fn();
+      if (url) result[id] = url;
+    } catch {
+      // skip failed captures
+    }
+  }
+  return result;
+}
+
+export function CandleChart({ rows, chartId }: { rows: BarRow[]; chartId?: string }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
 
   useEffect(() => {
     if (!ref.current || rows.length === 0) return;
-    
+
     const chart = createChart(ref.current, {
       height: 400,
       layout: {
@@ -46,7 +71,15 @@ export function CandleChart({ rows }: { rows: BarRow[] }) {
     });
 
     chartRef.current = chart;
-    
+
+    // Register for chart export
+    const unregister = chartId
+      ? registerChartCapture(chartId, () => {
+          const canvas = chart.takeScreenshot();
+          return canvas ? canvas.toDataURL("image/png") : undefined;
+        })
+      : null;
+
     const series = chart.addCandlestickSeries({
       upColor: "#ef4444",    // red-500 (Up in China context)
       downColor: "#10b981",  // emerald-500 (Down in China context)
@@ -80,10 +113,11 @@ export function CandleChart({ rows }: { rows: BarRow[] }) {
     
     return () => {
       window.removeEventListener("resize", resize);
+      if (unregister) unregister();
       chart.remove();
       chartRef.current = null;
     };
-  }, [rows]);
+  }, [rows, chartId]);
 
   if (rows.length === 0) {
     return (

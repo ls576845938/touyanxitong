@@ -749,6 +749,16 @@ def test_followup_uses_llm_when_available(tmp_path) -> None:
         assert isinstance(data["answer_md"], str)
         # Template-based answer should reference the original report
         assert "整理如下" in data["answer_md"] or "分析" in data["answer_md"]
+        # Fallback warning should be present when LLM is not available
+        assert "warnings" in data
+        fallback_found = any(
+            "LLM 不可用" in w or "模板回答" in w or "回退" in w
+            for w in data["warnings"]
+        )
+        assert fallback_found, (
+            f"Expected a fallback/template warning in follow-up response, "
+            f"got warnings={data['warnings']}"
+        )
 
 
 def test_followup_save_as_artifact_creates_followup_note(tmp_path) -> None:

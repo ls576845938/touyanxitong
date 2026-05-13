@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Bot, CheckCircle2, Download, FileText, Loader2, MessageSquare, Play, Printer, Radio, Save, ShieldAlert, Sparkles, Wrench, XCircle } from "lucide-react";
-import { api, type AgentArtifact, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow } from "@/lib/api";
+import { Bot, CheckCircle2, Clock, Download, FileText, Loader2, MessageSquare, Play, Printer, Radio, Save, ShieldAlert, Sparkles, Wrench, XCircle } from "lucide-react";
+import { api, type AgentArtifact, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunListItem, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow, type RuntimeHealth } from "@/lib/api";
 
 const FALLBACK_SKILLS: AgentSkill[] = [
   { id: "system:stock_deep_research", name: "个股深度投研", description: "趋势、评分、产业链和证据链报告。", skill_type: "stock_deep_research", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
@@ -65,11 +65,23 @@ export default function AgentPage() {
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingFollowupContent, setStreamingFollowupContent] = useState("");
   const lastSeqRef = useRef<number>(0);
+  const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth | null>(null);
+  const [runHistory, setRunHistory] = useState<AgentRunListItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
 
   useEffect(() => {
     api.agentSkills()
       .then((rows) => setSkills(rows.filter((row) => row.is_system).slice(0, 5)))
       .catch(() => setSkills(FALLBACK_SKILLS));
+    api.agentRuntimeHealth()
+      .then(setRuntimeHealth)
+      .catch(() => {});
+    setHistoryLoading(true);
+    api.agentRunList({ limit: 20 })
+      .then(setRunHistory)
+      .catch((err) => setHistoryError(err.message))
+      .finally(() => setHistoryLoading(false));
   }, []);
 
   useEffect(() => {
@@ -360,6 +372,43 @@ export default function AgentPage() {
     }
   }
 
+  async function loadHistoryRun(item: AgentRunListItem) {
+    sseRef.current?.close();
+    sseRef.current = null;
+    completedRef.current = false;
+    setLoading(true);
+    setError("");
+    setRun(null);
+    setSteps([]);
+    setArtifact(null);
+    setSseStatus("idle");
+    setFollowupMessages([]);
+    setFollowupInput("");
+    try {
+      const detail = await api.agentRunDetail(item.id);
+      setRun({
+        run_id: detail.id,
+        status: detail.status,
+        selected_task_type: detail.task_type,
+        report_title: detail.latest_artifact?.title || item.report_title || "历史运行",
+        summary: detail.latest_artifact?.content_md?.slice(0, 100) || "",
+        artifact_id: detail.latest_artifact?.id || null,
+        warnings: []
+      });
+      const stepRows = await api.agentRunSteps(item.id);
+      setSteps(stepRows);
+      const artifacts = await api.agentRunArtifacts(item.id);
+      if (artifacts.length > 0) {
+        setArtifact(artifacts[artifacts.length - 1]);
+      }
+      loadFollowupMessages(item.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载历史运行失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 px-6 py-8">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -374,9 +423,7 @@ export default function AgentPage() {
               用一句自然语言生成投研工作流，系统只读取平台已有数据，输出投研分析、观察清单、风险提示和证据链。
             </p>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs font-bold text-slate-500">
-            Runtime: Alpha Radar mock adapter
-          </div>
+          <RuntimeHealthBadge health={runtimeHealth} />
         </section>
 
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -416,12 +463,69 @@ export default function AgentPage() {
 
           <aside className="space-y-6">
             <AgentRunTimeline loading={loading} steps={steps} run={run} sseStatus={sseStatus} isGenerating={streamingContent !== ""} />
+            <RunHistoryPanel runs={runHistory} loading={historyLoading} error={historyError} onSelectRun={loadHistoryRun} />
             <EvidencePanel artifact={artifact} run={run} />
             <SkillBuilderPanel prompt={prompt} run={run} artifact={artifact} />
           </aside>
         </div>
       </div>
     </div>
+  );
+}
+
+function RunHistoryPanel({ runs, loading, error, onSelectRun }: { runs: AgentRunListItem[]; loading: boolean; error: string; onSelectRun: (item: AgentRunListItem) => void }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+        <Clock size={16} className="text-indigo-600" />
+        历史运行
+      </div>
+      {loading && (
+        <div className="flex items-center gap-2 text-sm font-bold text-slate-500">
+          <Loader2 size={14} className="animate-spin" />
+          加载中...
+        </div>
+      )}
+      {error && (
+        <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{error}</div>
+      )}
+      {!loading && !error && runs.length === 0 && (
+        <div className="rounded-lg bg-slate-50 px-3 py-3 text-xs font-medium text-slate-500">暂无历史运行记录。</div>
+      )}
+      {!loading && !error && runs.length > 0 && (
+        <div className="max-h-80 space-y-2 overflow-y-auto">
+          {runs.map((item) => {
+            const statusTone =
+              item.status === "success"
+                ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+                : item.status === "failed" || item.status === "error"
+                  ? "text-rose-700 bg-rose-50 border-rose-200"
+                  : "text-amber-700 bg-amber-50 border-amber-200";
+            const dateStr = item.created_at ? new Date(item.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelectRun(item)}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 p-3 text-left transition-colors hover:border-indigo-200 hover:bg-indigo-50"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="truncate text-xs font-bold text-slate-800">{item.report_title}</div>
+                  <span className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-bold ${statusTone}`}>
+                    {item.status}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-[10px] font-bold text-slate-400">
+                  <span>{item.task_type}</span>
+                  {dateStr && <span>&middot; {dateStr}</span>}
+                  <span>&middot; #{item.id}</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -680,6 +784,19 @@ function ResearchReportViewer({
     window.open(api.agentRunExportPrintUrl(artifact.run_id), "_blank");
   }
 
+  function handleOpenRichReport() {
+    if (!artifact) return;
+    window.open(api.agentRunExportRichHtmlUrl(artifact.run_id), "_blank");
+  }
+
+  function handleExportWithCharts() {
+    if (!artifact) return;
+    const chartDataUrls = captureAllChartDataUrls();
+    const html = buildExportHtml(artifact, chartDataUrls);
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    window.open(URL.createObjectURL(blob));
+  }
+
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
       {/* Print CSS: hides sidebar, inputs, buttons, timeline, evidence panel */}
@@ -714,7 +831,7 @@ function ResearchReportViewer({
         <div className="flex items-center gap-2">
           {run && <div className="text-xs font-bold text-slate-500">{run.selected_task_type}</div>}
           {artifact && (
-            <div className="flex items-center gap-1.5 no-print">
+            <div className="flex flex-wrap items-center gap-1.5 no-print">
               <button
                 type="button"
                 onClick={handleDownloadMarkdown}
@@ -726,11 +843,29 @@ function ResearchReportViewer({
               </button>
               <button
                 type="button"
-                onClick={handleOpenPrintView}
+                onClick={handleExportWithCharts}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-bold text-indigo-600 hover:border-indigo-300 hover:text-indigo-800"
-                title="打开打印版（Ctrl+P 保存为 PDF）"
+                title="导出含图表 HTML（捕获当前页面中的动态图表截图）"
+              >
+                <Download size={14} />
+                导出含图表 HTML
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenRichReport}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-xs font-bold text-emerald-600 hover:border-emerald-300 hover:text-emerald-800"
+                title="导出图文报告（在新标签页中打开含图表描述的打印版）"
               >
                 <FileText size={14} />
+                导出图文报告
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenPrintView}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 hover:border-slate-300 hover:text-slate-800"
+                title="打开打印版（Ctrl+P 保存为 PDF）"
+              >
+                <Printer size={14} />
                 打印版导出
               </button>
               <button
@@ -915,6 +1050,70 @@ function SkillBuilderPanel({ prompt, run, artifact }: { prompt: string; run: Age
   );
 }
 
+function RuntimeHealthBadge({ health }: { health: RuntimeHealth | null }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!health) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs font-bold text-slate-400">
+        检查运行时状态...
+      </div>
+    );
+  }
+
+  const isHealthy = health.llm_configured || health.hermes_configured;
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs font-bold text-slate-500 hover:border-slate-300"
+      >
+        <span className={`inline-block h-2 w-2 rounded-full ${isHealthy ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+        Runtime: {health.runtime_provider}
+      </button>
+      {expanded && (
+        <div className="absolute right-0 top-full z-20 mt-2 w-64 rounded-lg border border-slate-200 bg-white p-4 shadow-lg">
+          <div className="space-y-2 text-xs">
+            <div className="flex justify-between">
+              <span className="text-slate-400">LLM</span>
+              <span className={health.llm_configured ? 'font-bold text-emerald-600' : 'font-bold text-rose-600'}>
+                {health.llm_configured ? '已配置' : '未配置'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Hermes</span>
+              <span className={health.hermes_configured ? 'font-bold text-emerald-600' : 'text-slate-400'}>
+                {health.hermes_configured ? '已配置' : '未配置'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">流式支持</span>
+              <span className={health.streaming_supported ? 'font-bold text-emerald-600' : 'font-bold text-amber-600'}>
+                {health.streaming_supported ? '支持' : '不支持'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">追问 LLM</span>
+              <span className={health.followup_llm_enabled ? 'font-bold text-emerald-600' : 'text-slate-400'}>
+                {health.followup_llm_enabled ? '已启用' : '模板回退'}
+              </span>
+            </div>
+            {health.warnings.length > 0 && (
+              <div className="mt-2 space-y-1 border-t border-slate-100 pt-2">
+                {health.warnings.map((w, i) => (
+                  <div key={i} className="rounded bg-amber-50 px-2 py-1 text-[10px] text-amber-700">{w}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InfoBlock({ label, empty, children }: { label: string; empty: string; children: ReactNode }) {
   const childArray = Array.isArray(children) ? children.filter(Boolean) : children ? [children] : [];
   return (
@@ -925,7 +1124,7 @@ function InfoBlock({ label, empty, children }: { label: string; empty: string; c
   );
 }
 
-import { CandleChart } from "@/components/CandleChart";
+import { CandleChart, captureAllChartDataUrls } from "@/components/CandleChart";
 import { IndustryHeatChart } from "@/components/IndustryHeatChart";
 
 function MarkdownBlock({ content }: { content: string }) {
@@ -972,6 +1171,105 @@ function MarkdownBlock({ content }: { content: string }) {
   );
 }
 
+function buildExportHtml(
+  artifact: AgentArtifact,
+  chartDataUrls: Record<string, string>,
+): string {
+  const title = artifact.title || "投研报告";
+  const contentMd = artifact.content_md || "";
+
+  // Parse content_md into basic HTML, replacing chart tags with <img>
+  const lines = contentMd.split("\n");
+  const htmlParts: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Chart tag replacement
+    if (trimmed.startsWith(":::chart") && trimmed.endsWith(":::")) {
+      try {
+        const rawJson = trimmed.slice(8, -3);
+        const config = JSON.parse(rawJson);
+        const chartType = config.type as string;
+        const symbol = config.symbol as string | undefined;
+
+        let imgSrc: string | undefined;
+        if (chartType === "candle" && symbol && chartDataUrls[symbol]) {
+          imgSrc = chartDataUrls[symbol];
+        } else if (chartType === "industry_heat" && chartDataUrls["industry-heat"]) {
+          imgSrc = chartDataUrls["industry-heat"];
+        }
+
+        if (imgSrc) {
+          htmlParts.push(`<div style="margin:1em 0;text-align:center;"><img src="${imgSrc}" style="max-width:100%;border:1px solid #e2e8f0;border-radius:8px;" alt="chart" /></div>`);
+        } else {
+          // Fallback to placeholder
+          const label = chartType === "candle" ? `K线图${symbol ? ` - ${symbol}` : ""}` : chartType || "图表";
+          htmlParts.push(`<div style="background:#f1f5f9;border:1px dashed #94a3b8;border-radius:8px;padding:1.5em;text-align:center;color:#64748b;margin:1em 0;font-weight:600;">[图表: ${label}]</div>`);
+        }
+      } catch {
+        htmlParts.push(`<div style="background:#f1f5f9;border:1px dashed #94a3b8;border-radius:8px;padding:1.5em;text-align:center;color:#64748b;margin:1em 0;">[图表占位]</div>`);
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith("# ")) {
+      htmlParts.push(`<h1 style="font-size:1.8rem;font-weight:800;margin-top:0;margin-bottom:0.5em;border-bottom:2px solid #1e293b;padding-bottom:0.3em;">${escapeHtml(trimmed.slice(2))}</h1>`);
+    } else if (trimmed.startsWith("## ")) {
+      htmlParts.push(`<h2 style="font-size:1.35rem;font-weight:700;margin-top:1.5em;margin-bottom:0.5em;color:#0f172a;">${escapeHtml(trimmed.slice(3))}</h2>`);
+    } else if (trimmed.startsWith("### ")) {
+      htmlParts.push(`<h3 style="font-size:1.1rem;font-weight:700;margin-top:1.2em;margin-bottom:0.4em;color:#334155;">${escapeHtml(trimmed.slice(4))}</h3>`);
+    } else if (trimmed.startsWith("- ")) {
+      htmlParts.push(`<li style="margin-bottom:0.3em;">${escapeHtml(trimmed.slice(2))}</li>`);
+    } else if (trimmed === "---") {
+      htmlParts.push(`<hr style="border:none;border-top:1px solid #e2e8f0;margin:1.5em 0;" />`);
+    } else if (trimmed) {
+      htmlParts.push(`<p style="margin-bottom:0.8em;line-height:1.8;">${escapeHtml(trimmed)}</p>`);
+    } else {
+      htmlParts.push(`<br />`);
+    }
+  }
+
+  const body = htmlParts.join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>${escapeHtml(title)} - Alpha Radar 报告</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    color: #1e293b; line-height: 1.8; max-width: 210mm; margin: 0 auto; padding: 2em;
+  }
+  h1, h2, h3 { color: #0f172a; }
+  img { max-width: 100%; height: auto; }
+  .risk-disclaimer {
+    font-size: 0.8rem; color: #64748b; text-align: center;
+    margin-top: 2em; padding: 1em;
+    border: 1px solid #e2e8f0; border-radius: 6px; background: #fafafa;
+  }
+  @media print {
+    @page { margin: 15mm 20mm; size: A4; }
+    body { padding: 0; color: #000; }
+  }
+</style>
+</head>
+<body>
+<h1 style="font-size:1.8rem;font-weight:800;margin-bottom:0.5em;border-bottom:2px solid #1e293b;padding-bottom:0.3em;">${escapeHtml(title)}</h1>
+${body}
+<hr style="border:none;border-top:1px solid #e2e8f0;margin:2em 0;" />
+<div class="risk-disclaimer">${escapeHtml(artifact.risk_disclaimer)}</div>
+</body>
+</html>`;
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function StockChartMount({ symbol }: { symbol: string }) {
   const [rows, setRows] = useState<BarRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -994,7 +1292,7 @@ function StockChartMount({ symbol }: { symbol: string }) {
             正在加载行情数据...
           </div>
         ) : (
-          <CandleChart rows={rows} />
+          <CandleChart rows={rows} chartId={symbol} />
         )}
       </div>
     </div>
@@ -1023,7 +1321,7 @@ function IndustryHeatMount() {
             正在生成热力图...
           </div>
         ) : (
-          <IndustryHeatChart rows={data || []} />
+          <IndustryHeatChart rows={data || []} chartId="industry-heat" />
         )}
       </div>
     </div>

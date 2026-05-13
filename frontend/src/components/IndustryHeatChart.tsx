@@ -3,14 +3,20 @@
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts";
 import type { IndustryRadarRow } from "@/lib/api";
+import { registerChartCapture } from "./CandleChart";
 
-export function IndustryHeatChart({ rows }: { rows: IndustryRadarRow[] }) {
+export function IndustryHeatChart({ rows, chartId }: { rows: IndustryRadarRow[]; chartId?: string }) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!ref.current) return;
     const chart = echarts.init(ref.current);
-    
+
+    // Register for chart export
+    const unregister = chartId
+      ? registerChartCapture(chartId, () => chart.getDataURL({ type: "png", backgroundColor: "#fff" }))
+      : null;
+
     const data = rows.map((row) => ({
       value: row.heat_score,
       itemStyle: {
@@ -70,9 +76,10 @@ export function IndustryHeatChart({ rows }: { rows: IndustryRadarRow[] }) {
     window.addEventListener("resize", resize);
     return () => {
       window.removeEventListener("resize", resize);
+      if (unregister) unregister();
       chart.dispose();
     };
-  }, [rows]);
+  }, [rows, chartId]);
 
   return <div ref={ref} className="h-[360px] w-full" />;
 }

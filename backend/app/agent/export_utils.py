@@ -40,29 +40,93 @@ def _replace_chart_tags(html: str) -> str:
         try:
             config = json.loads(raw_json)
         except (json.JSONDecodeError, TypeError):
-            return '<div class="chart-placeholder">[图表占位]</div>'
+            return _chart_placeholder_html("图表", {}, "图表配置解析失败")
 
         chart_type = config.get("type", "")
         symbol = config.get("symbol", "")
+        stock_name = config.get("stock_name", "")
 
         if chart_type == "candle" and symbol:
-            label = f"K线图 - {symbol}"
+            name_part = f" ({stock_name})" if stock_name else ""
+            return _chart_placeholder_html(
+                f"K线图 - {symbol}{name_part}",
+                {"标的代码": symbol, "数据来源": "daily_bar"},
+                "此图表为交互式 K 线图，在交互式页面中动态渲染。导出版本以数据摘要替代。",
+            )
         elif chart_type == "industry_heat":
-            label = "行业热度图"
+            period = config.get("period", "7日")
+            return _chart_placeholder_html(
+                f"行业热度图 ({period})",
+                {"数据来源": "industry_heat", "更新频率": "每日"},
+                "此图表展示各行业的热度评分分布，在交互式页面中动态渲染。导出版本以数据摘要替代。",
+            )
         elif chart_type == "candle":
-            label = "K线图"
+            return _chart_placeholder_html(
+                "K线图",
+                {"数据来源": "daily_bar"},
+                "此图表为交互式 K 线图，在交互式页面中动态渲染。导出版本以数据摘要替代。",
+            )
         elif chart_type == "industry_sankey":
-            label = "产业链桑基图"
+            return _chart_placeholder_html(
+                "产业链桑基图",
+                {"数据来源": "chain_analysis"},
+                "此图表展示产业链上下游关系与热度传导路径。",
+            )
         elif chart_type == "trend_pool":
-            label = "趋势股票池"
+            return _chart_placeholder_html(
+                "趋势股票池",
+                {"数据来源": "trend_signal"},
+                "此表展示趋势评分靠前的候选股票池。",
+            )
         elif chart_type == "tenbagger":
-            label = "十倍股评估"
+            return _chart_placeholder_html(
+                "十倍股评估",
+                {"数据来源": "tenbagger_thesis"},
+                "此图表展示十倍股早期特征的评分雷达图。",
+            )
         elif chart_type == "market_brief":
-            label = "市场简报"
+            return _chart_placeholder_html(
+                "市场简报",
+                {"数据来源": "market_overview"},
+                "此图表展示市场整体概况与热点板块。",
+            )
         else:
             label = chart_type or "图表"
+            return _chart_placeholder_html(f"{label}", {}, "")
 
-        return f'<div class="chart-placeholder">[图表: {label}]</div>'
+    return pattern.sub(_replace_match, html)
+
+
+def _chart_placeholder_html(
+    title: str,
+    metadata: dict[str, str] | None = None,
+    description: str = "",
+) -> str:
+    """Build a styled chart placeholder div with title, metadata, and description."""
+    md_rows = ""
+    if metadata:
+        for key, value in metadata.items():
+            md_rows += (
+                f'<tr>'
+                f'<td class="chart-meta-key">{escape(key)}</td>'
+                f'<td class="chart-meta-value">{escape(value)}</td>'
+                f'</tr>\n'
+            )
+
+    desc_block = (
+        f'<p class="chart-desc">{escape(description)}</p>' if description else ""
+    )
+
+    return (
+        f'<div class="chart-placeholder">\n'
+        f'  <div class="chart-placeholder-icon">&#x1F4CA;</div>\n'
+        f'  <div class="chart-placeholder-title">{escape(title)}</div>\n'
+        f'  {desc_block}\n'
+        f'  <table class="chart-meta-table">\n'
+        f"    {md_rows}"
+        f'  </table>\n'
+        f'</div>'
+    )
 
     return pattern.sub(_replace_match, html)
 
@@ -261,15 +325,47 @@ def build_print_html(
         "\n"
         "/* ---- Chart Placeholder ---- */\n"
         ".chart-placeholder {\n"
-        "  background: #f1f5f9;\n"
-        "  border: 1.5px dashed #94a3b8;\n"
-        "  border-radius: 8px;\n"
-        "  padding: 2em 1em;\n"
+        "  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);\n"
+        "  border: 1.5px solid #cbd5e1;\n"
+        "  border-radius: 10px;\n"
+        "  padding: 1.5em 1.2em;\n"
         "  text-align: center;\n"
-        "  color: #64748b;\n"
-        "  font-size: 0.95rem;\n"
-        "  font-weight: 600;\n"
+        "  color: #334155;\n"
         "  margin: 1.2em 0;\n"
+        "  box-shadow: 0 1px 3px rgba(0,0,0,0.04);\n"
+        "}\n"
+        ".chart-placeholder-icon { font-size: 1.8rem; margin-bottom: 0.3em; }\n"
+        ".chart-placeholder-title {\n"
+        "  font-size: 1.05rem;\n"
+        "  font-weight: 700;\n"
+        "  color: #0f172a;\n"
+        "  margin-bottom: 0.4em;\n"
+        "}\n"
+        ".chart-desc {\n"
+        "  font-size: 0.85rem;\n"
+        "  color: #64748b;\n"
+        "  margin-bottom: 0.6em;\n"
+        "  line-height: 1.5;\n"
+        "}\n"
+        ".chart-meta-table {\n"
+        "  width: auto;\n"
+        "  margin: 0 auto;\n"
+        "  border-collapse: collapse;\n"
+        "  font-size: 0.8rem;\n"
+        "}\n"
+        ".chart-meta-table td {\n"
+        "  border: none;\n"
+        "  padding: 0.15em 0.8em;\n"
+        "}\n"
+        ".chart-meta-key {\n"
+        "  font-weight: 700;\n"
+        "  color: #475569;\n"
+        "  text-align: right;\n"
+        "}\n"
+        ".chart-meta-value {\n"
+        "  font-weight: 600;\n"
+        "  color: #64748b;\n"
+        "  text-align: left;\n"
         "}\n"
         "\n"
         "/* ---- Evidence Table ---- */\n"
@@ -315,7 +411,12 @@ def build_print_html(
         "    background: #f1f5f9;\n"
         "    -webkit-print-color-adjust: exact;\n"
         "    print-color-adjust: exact;\n"
+        "    box-shadow: none;\n"
         "  }\n"
+        "  .chart-placeholder-icon { font-size: 18pt; }\n"
+        "  .chart-placeholder-title { font-size: 11pt; }\n"
+        "  .chart-desc { font-size: 9pt; }\n"
+        "  .chart-meta-table td { font-size: 8pt; padding: 0.1em 0.6em; }\n"
         "  .evidence-table th {\n"
         "    background-color: #1e293b !important;\n"
         "    -webkit-print-color-adjust: exact;\n"
