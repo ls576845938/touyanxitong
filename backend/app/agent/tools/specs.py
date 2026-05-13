@@ -97,6 +97,38 @@ _UNAVAILABLE_MSG: str = (
 # dict[str, Any] / list[dict[str, Any]] rather than deep nesting.
 
 # ------------------------------------------------------------------
+# RISK INPUTS (5)
+# ------------------------------------------------------------------
+
+
+class CalculatePositionSizeInput(BaseModel):
+    account_equity: float = Field(..., gt=0, description="账户总权益")
+    symbol: str = Field(..., description="股票代码或名称")
+    entry_price: float = Field(..., gt=0, description="入场参考价")
+    invalidation_price: float = Field(..., gt=0, description="无效点/止损价")
+    risk_per_trade_pct: float = Field(default=1.0, gt=0, le=2.0, description="单笔风险比例(%)")
+    market: str | None = Field(default=None, description="市场：A/US/HK，用于确定最小交易单位")
+
+
+class CheckPortfolioExposureInput(BaseModel):
+    portfolio_id: int | None = Field(default=None, description="投资组合ID")
+
+
+class GetRiskRulesInput(BaseModel):
+    user_id: str | None = Field(default=None, description="用户标识符")
+
+
+class GetPositionPlansInput(BaseModel):
+    status: str = Field(default="active", description="计划状态：draft/active/completed/cancelled")
+
+
+class ExplainRiskBudgetInput(BaseModel):
+    account_equity: float = Field(..., gt=0, description="账户总权益")
+    risk_per_trade_pct: float = Field(default=1.0, gt=0, le=2.0, description="单笔风险比例(%)")
+    max_loss_example: float | None = Field(default=None, description="用于举例的亏损金额")
+
+
+# ------------------------------------------------------------------
 # MARKET INPUTS (4)
 # ------------------------------------------------------------------
 
@@ -831,11 +863,86 @@ WATCHLIST_TOOLS: list[ToolSpec] = [
 
 
 # ===================================================================
+# RISK TOOLS  (5 tools)
+# ===================================================================
+
+RISK_TOOLS: list[ToolSpec] = [
+    ToolSpec(
+        name="calculate_position_size",
+        category="risk",
+        description="根据账户权益、入场价、无效点和单笔风险比例，测算风险预算允许的最大仓位上限。不是交易建议。",
+        input_schema=CalculatePositionSizeInput.model_json_schema(),
+        output_schema={"type": "object", "properties": {"symbol": {"type": "string"}, "entry_price": {"type": "number"}, "invalidation_price": {"type": "number"}, "max_loss_amount": {"type": "number"}, "rounded_quantity": {"type": "integer"}, "estimated_position_pct": {"type": "number"}, "warnings": {"type": "array"}, "calculation_explain": {"type": "string"}, "disclaimer": {"type": "string"}, "error": {"type": "string"}}},
+        read_only=True,
+        risk_level="medium",
+        timeout_ms=10000,
+        examples=[
+            {"account_equity": 100000, "symbol": "000001", "entry_price": 10.0, "invalidation_price": 9.5, "risk_per_trade_pct": 1.0, "description": "按账户权益和风险比例计算仓位上限"},
+        ],
+        unavailable_behavior="Returns status='unavailable' fields when risk module is not loaded.",
+    ),
+    ToolSpec(
+        name="check_portfolio_exposure",
+        category="risk",
+        description="检查投资组合的行业暴露和主题暴露，识别集中风险。",
+        input_schema=CheckPortfolioExposureInput.model_json_schema(),
+        output_schema={"type": "object", "properties": {"positions": {"type": "array"}, "industry_exposure": {"type": "object"}, "theme_exposure": {"type": "object"}, "warnings": {"type": "array"}, "boundary": {"type": "string"}}},
+        read_only=True,
+        timeout_ms=15000,
+        examples=[
+            {"portfolio_id": 1, "description": "按投资组合ID查询暴露数据"},
+        ],
+        unavailable_behavior="Returns status='unavailable' with message when portfolio_id is missing or exposure data is unavailable.",
+    ),
+    ToolSpec(
+        name="get_risk_rules",
+        category="risk",
+        description="获取当前风险规则配置（单笔风险上限、单票上限、行业上限、回撤熔断规则）。",
+        input_schema=GetRiskRulesInput.model_json_schema(),
+        output_schema={"type": "object", "properties": {"max_risk_per_trade_pct": {"type": "number"}, "max_single_position_pct": {"type": "number"}, "max_industry_exposure_pct": {"type": "number"}, "max_theme_exposure_pct": {"type": "number"}, "drawdown_rules": {"type": "array"}, "warnings": {"type": "array"}}},
+        read_only=True,
+        timeout_ms=10000,
+        examples=[
+            {"user_id": "user_abc", "description": "查询指定用户的风险规则"},
+            {"description": "查询默认风险规则"},
+        ],
+        unavailable_behavior="Falls back to default risk rules when database is unavailable.",
+    ),
+    ToolSpec(
+        name="get_position_plans",
+        category="risk",
+        description="查询已有的仓位计划列表。",
+        input_schema=GetPositionPlansInput.model_json_schema(),
+        output_schema={"type": "object", "properties": {"plans": {"type": "array"}, "total": {"type": "integer"}, "boundary": {"type": "string"}}},
+        read_only=True,
+        timeout_ms=10000,
+        examples=[
+            {"status": "active", "description": "查询活跃状态的仓位计划"},
+        ],
+        unavailable_behavior="Returns status='unavailable' with empty plans list when database query fails.",
+    ),
+    ToolSpec(
+        name="explain_risk_budget",
+        category="risk",
+        description="用通俗语言解释风险预算的概念和计算方法。不提供交易建议。",
+        input_schema=ExplainRiskBudgetInput.model_json_schema(),
+        output_schema={"type": "object", "properties": {"explanation": {"type": "string"}, "formula": {"type": "string"}, "example": {"type": "object"}, "disclaimer": {"type": "string"}}},
+        read_only=True,
+        timeout_ms=5000,
+        examples=[
+            {"account_equity": 100000, "risk_per_trade_pct": 1.0, "description": "解释风险预算概念"},
+        ],
+        unavailable_behavior="Always returns status='ok'; pure text generation with no external dependencies.",
+    ),
+]
+
+
+# ===================================================================
 # AGGREGATE HELPERS
 # ===================================================================
 
 _ALL_TOOLS: list[ToolSpec] = (
-    MARKET_TOOLS + INDUSTRY_TOOLS + SCORING_TOOLS + EVIDENCE_TOOLS + REPORT_TOOLS + WATCHLIST_TOOLS
+    MARKET_TOOLS + INDUSTRY_TOOLS + SCORING_TOOLS + EVIDENCE_TOOLS + REPORT_TOOLS + WATCHLIST_TOOLS + RISK_TOOLS
 )
 
 _TOOL_MAP: dict[str, ToolSpec] = {spec.name: spec for spec in _ALL_TOOLS}
@@ -847,6 +954,7 @@ _CATEGORY_MAP: dict[str, list[ToolSpec]] = {
     "evidence": EVIDENCE_TOOLS,
     "report": REPORT_TOOLS,
     "watchlist": WATCHLIST_TOOLS,
+    "risk": RISK_TOOLS,
 }
 
 

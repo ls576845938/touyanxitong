@@ -9,6 +9,8 @@ from loguru import logger
 
 from app.agent.api import router as agent_router
 from app.agent.mcp_router import mcp_router
+from app.risk.api import router as risk_router
+from app.risk.plan_api import router as risk_plan_router
 from app.api.routes_analytics import router as analytics_router
 from app.api.routes_chain import router as chain_router
 from app.api.routes_industry import router as industry_router
@@ -86,3 +88,5 @@ app.include_router(thesis_review_router)
 app.include_router(retail_router)
 app.include_router(agent_router)
 app.include_router(mcp_router)
+app.include_router(risk_router)
+app.include_router(risk_plan_router)

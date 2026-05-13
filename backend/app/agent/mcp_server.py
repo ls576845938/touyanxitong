@@ -17,6 +17,7 @@ from app.agent.tools import (
     industry_tools,
     market_tools,
     report_tools,
+    risk_tools,
     scoring_tools,
 )
 from app.agent.tools.registry import ToolRegistry
@@ -50,6 +51,12 @@ _TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "get_latest_daily_report": report_tools.get_latest_daily_report,
     "generate_report_outline": report_tools.generate_report_outline,
     "format_research_report": report_tools.format_research_report,
+    # Risk (5)
+    "calculate_position_size": risk_tools.calculate_position_size,
+    "check_portfolio_exposure": risk_tools.check_portfolio_exposure,
+    "get_risk_rules": risk_tools.get_risk_rules,
+    "get_position_plans": risk_tools.get_position_plans,
+    "explain_risk_budget": risk_tools.explain_risk_budget,
 }
 
 

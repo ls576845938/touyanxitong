@@ -17,7 +17,7 @@ from app.db.models import Base
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SQLITE_PATH = BACKEND_DIR / "data" / "alpha_radar.db"
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 24
 
 
 @dataclass(frozen=True)
@@ -1013,6 +1013,14 @@ def _ensure_operational_status_and_indexes(target_engine: Engine) -> None:
     _ensure_api_performance_indexes(target_engine)
 
 
+def _migration_risk_portfolio_schema(_: Engine) -> None:
+    """Version marker for risk portfolio/exposure tables created from SQLAlchemy metadata."""
+
+
+def _migration_position_plan_schema(_: Engine) -> None:
+    """Version marker for PositionPlan and PositionPlanReview tables created from SQLAlchemy metadata."""
+
+
 SCHEMA_MIGRATIONS = [
     SchemaMigration(1, "base_schema", _migration_base_schema),
     SchemaMigration(2, "stock_contract_additive_columns", _ensure_lightweight_migrations),
@@ -1036,6 +1044,8 @@ SCHEMA_MIGRATIONS = [
     SchemaMigration(20, "thesis_analytics_snapshots", _migration_thesis_analytics),
     SchemaMigration(21, "annotation_feedback_schema", _migration_annotation_feedback_schema),
     SchemaMigration(22, "report_quality_timeseries", _migration_report_quality_timeseries),
+    SchemaMigration(23, "risk_portfolio_schema", _migration_risk_portfolio_schema),
+    SchemaMigration(24, "position_plan_schema", _migration_position_plan_schema),
 ]
 
 

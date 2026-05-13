@@ -980,6 +980,118 @@ class AgentEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
+class RiskPortfolio(Base):
+    __tablename__ = "risk_portfolios"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), default="默认组合")
+    base_currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    total_equity: Mapped[float] = mapped_column(Float, default=0.0)
+    cash: Mapped[float] = mapped_column(Float, default=0.0)
+    current_drawdown_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class RiskPosition(Base):
+    __tablename__ = "risk_positions"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(Integer, ForeignKey("risk_portfolios.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    market: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    quantity: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    position_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    theme_tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class RiskRule(Base):
+    __tablename__ = "risk_rules"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    portfolio_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("risk_portfolios.id"), nullable=True, index=True)
+    max_risk_per_trade_pct: Mapped[float] = mapped_column(Float, default=1.0)
+    max_single_position_pct: Mapped[float] = mapped_column(Float, default=20.0)
+    max_industry_exposure_pct: Mapped[float] = mapped_column(Float, default=40.0)
+    max_theme_exposure_pct: Mapped[float] = mapped_column(Float, default=30.0)
+    drawdown_rules_json: Mapped[str] = mapped_column(Text, default='[{"tier":"警戒线","threshold":5,"action":"减仓"},{"tier":"止损线","threshold":10,"action":"止损"},{"tier":"硬性止损线","threshold":15,"action":"强制平仓"}]')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class RiskEvent(Base):
+    __tablename__ = "risk_events"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    portfolio_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("risk_portfolios.id"), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), default="breach", index=True)
+    severity: Mapped[str] = mapped_column(String(16), default="info", index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    related_symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    related_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PositionPlan(Base):
+    __tablename__ = "position_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    portfolio_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("risk_portfolios.id"), nullable=True)
+    thesis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("research_thesis.id"), nullable=True)
+    watchlist_item_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("watchlist_item.id"), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    subject_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    subject_type: Mapped[str] = mapped_column(String(16), default="stock")
+    entry_price: Mapped[float] = mapped_column(Float, default=0.0)
+    invalidation_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_per_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_per_trade_pct: Mapped[float] = mapped_column(Float, default=1.0)
+    max_loss_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    calculated_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    calculated_position_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    calculated_position_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    theme_exposure_after_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    industry_exposure_after_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    constraints_json: Mapped[str] = mapped_column(Text, default="[]")
+    calculation_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    reviews: Mapped[list[PositionPlanReview]] = relationship("PositionPlanReview", back_populates="plan", cascade="all, delete-orphan")
+
+
+class PositionPlanReview(Base):
+    __tablename__ = "position_plan_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    position_plan_id: Mapped[int] = mapped_column(Integer, ForeignKey("position_plans.id"), index=True)
+    review_date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    actual_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_risk_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    plan: Mapped[PositionPlan] = relationship("PositionPlan", back_populates="reviews")
+
+
 def _normalized_confidence(value: int | float | None) -> float:
     try:
         numeric = float(value or 0.0)
