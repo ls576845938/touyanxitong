@@ -146,11 +146,30 @@ class MockRuntimeAdapter(RuntimeAdapter):
 
 {_claim_index(claims)}
 """
+        risk_cards = _risk_cards_from_context(context)
+        if not risk_cards and stock_code:
+            risk_cards.append({
+                "card_type": "position_size",
+                "title": f"风险预算仓位上限 - {stock_name}",
+                "symbol": stock_code,
+                "max_loss_amount": 5000.0,
+                "estimated_position_pct": 10.0,
+                "estimated_position_value": 10000.0,
+                "rounded_quantity": 1000,
+                "risk_per_share": 0.50,
+                "warnings": [],
+                "constraints_applied": ["风险预算允许上限: 1.0%", "单票仓位上限: 20%"],
+                "calculation_explain": "风险预算 = 100000 × 1% = 1000。每股风险 = 10.00 - 9.50 = 0.50。最大数量 = 1000 / 0.50 = 2000。取整后 = 1000 股。",
+                "disclaimer": "风险预算为单笔亏损上限，不代表预期收益。不构成投资建议。",
+            })
+        content_json: dict[str, Any] = {"task_type": "stock_deep_research", "stock": stock, "trend": trend, "score": score, "evidence": evidence, "source_refs": refs, "claims": claims}
+        if risk_cards:
+            content_json["risk_cards"] = risk_cards
         return AgentRuntimeResult(
             title=title,
             summary=_strip_md_bullets(_stock_conclusion(stock, trend, score)),
             content_md=md,
-            content_json={"task_type": "stock_deep_research", "stock": stock, "trend": trend, "score": score, "evidence": evidence, "source_refs": refs, "claims": claims},
+            content_json=content_json,
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -222,11 +241,15 @@ class MockRuntimeAdapter(RuntimeAdapter):
 
 {_claim_index(claims)}
 """
+        risk_cards = _risk_cards_from_context(context)
+        content_json: dict[str, Any] = {"task_type": "industry_chain_radar", "keyword": keyword, "chain": chain, "heatmap": heatmap, "stocks": stocks, "evidence": evidence, "source_refs": refs, "claims": claims}
+        if risk_cards:
+            content_json["risk_cards"] = risk_cards
         return AgentRuntimeResult(
             title=title,
             summary=f"{keyword} 已完成产业链热度, 节点, 相关股票和证据链整理.",
             content_md=md,
-            content_json={"task_type": "industry_chain_radar", "keyword": keyword, "chain": chain, "heatmap": heatmap, "stocks": stocks, "evidence": evidence, "source_refs": refs, "claims": claims},
+            content_json=content_json,
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -276,11 +299,15 @@ class MockRuntimeAdapter(RuntimeAdapter):
 
 {_claim_index(claims)}
 """
+        risk_cards = _risk_cards_from_context(context)
+        content_json: dict[str, Any] = {"task_type": "trend_pool_scan", "rows": rows, "source_refs": refs, "claims": claims}
+        if risk_cards:
+            content_json["risk_cards"] = risk_cards
         return AgentRuntimeResult(
             title=title,
             summary=f"已整理 {len(rows)} 个趋势观察候选, 需继续做证据和风险复核.",
             content_md=md,
-            content_json={"task_type": "trend_pool_scan", "rows": rows, "source_refs": refs, "claims": claims},
+            content_json=content_json,
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -330,11 +357,15 @@ class MockRuntimeAdapter(RuntimeAdapter):
 
 {_claim_index(claims)}
 """
+        risk_cards = _risk_cards_from_context(context)
+        content_json: dict[str, Any] = {"task_type": "tenbagger_candidate", "rows": rows, "source_refs": refs, "claims": claims}
+        if risk_cards:
+            content_json["risk_cards"] = risk_cards
         return AgentRuntimeResult(
             title=title,
             summary=f"已生成 {len(rows)} 个早期特征候选的观察清单.",
             content_md=md,
-            content_json={"task_type": "tenbagger_candidate", "rows": rows, "source_refs": refs, "claims": claims},
+            content_json=content_json,
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -378,11 +409,15 @@ class MockRuntimeAdapter(RuntimeAdapter):
 
 {_claim_index(claims)}
 """
+        risk_cards = _risk_cards_from_context(context)
+        content_json: dict[str, Any] = {"task_type": "daily_market_brief", "daily": daily, "heatmap": heatmap, "momentum": momentum, "source_refs": refs, "claims": claims}
+        if risk_cards:
+            content_json["risk_cards"] = risk_cards
         return AgentRuntimeResult(
             title=title,
             summary="已生成市场简报, 强产业链, 高动量股票和风险预警整理.",
             content_md=md,
-            content_json={"task_type": "daily_market_brief", "daily": daily, "heatmap": heatmap, "momentum": momentum, "source_refs": refs, "claims": claims},
+            content_json=content_json,
             evidence_refs=refs,
             warnings=warnings,
         )
@@ -736,3 +771,104 @@ def _dedupe(items: list[str]) -> list[str]:
         seen.add(item)
         rows.append(item)
     return rows
+
+
+def _risk_cards_from_context(context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build risk_cards list from risk tool results found in context."""
+    tool_results = context.get("tool_results", {})
+    cards: list[dict[str, Any]] = []
+
+    # ---- risk.calculate_position_size -> card_type "position_size" ----
+    data = tool_results.get("risk.calculate_position_size")
+    if isinstance(data, dict) and not data.get("error"):
+        cards.append({
+            "card_type": "position_size",
+            "title": f"风险预算仓位上限 - {data.get('symbol', '未识别标的')}",
+            "symbol": data.get("symbol"),
+            "max_loss_amount": data.get("max_loss_amount"),
+            "estimated_position_pct": data.get("estimated_position_pct"),
+            "estimated_position_value": data.get("estimated_position_value"),
+            "rounded_quantity": data.get("rounded_quantity"),
+            "risk_per_share": data.get("risk_per_share"),
+            "warnings": data.get("warnings", []),
+            "constraints_applied": data.get("constraints_applied", []),
+            "calculation_explain": data.get("calculation_explain", ""),
+            "disclaimer": data.get("disclaimer", ""),
+        })
+
+    # ---- risk.check_portfolio_exposure -> card_type "exposure_check" ----
+    data = tool_results.get("risk.check_portfolio_exposure")
+    if isinstance(data, dict) and not data.get("error"):
+        theme_exposure = data.get("theme_exposure", {})
+        theme_after = (
+            theme_exposure.get("after_pct")
+            if isinstance(theme_exposure, dict)
+            else None
+        )
+        cards.append({
+            "card_type": "exposure_check",
+            "title": "组合暴露检查",
+            "portfolio_id": data.get("portfolio_id"),
+            "theme_exposure_after_pct": theme_after,
+            "warnings": data.get("warnings", []),
+            "calculation_explain": (
+                str(data.get("industry_exposure", {}))
+                if isinstance(data.get("industry_exposure"), dict)
+                else ""
+            ),
+            "disclaimer": "",
+        })
+
+    # ---- risk.get_position_plans -> card_type "position_plan" ----
+    data = tool_results.get("risk.get_position_plans")
+    if isinstance(data, dict) and not data.get("error"):
+        for plan in data.get("plans", []):
+            cards.append({
+                "card_type": "position_plan",
+                "title": f"仓位计划 - {plan.get('symbol', '未识别标的')}",
+                "symbol": plan.get("symbol"),
+                "portfolio_id": plan.get("portfolio_id"),
+                "max_loss_amount": plan.get("max_loss_amount"),
+                "estimated_position_pct": plan.get("calculated_position_pct"),
+                "estimated_position_value": plan.get("calculated_position_value"),
+                "rounded_quantity": plan.get("calculated_quantity"),
+                "risk_per_share": plan.get("risk_per_share"),
+                "warnings": plan.get("warnings", []),
+                "constraints_applied": plan.get("constraints", []),
+                "calculation_explain": "",
+                "disclaimer": "",
+            })
+
+    # ---- risk.get_risk_rules -> card_type "risk_rule" ----
+    data = tool_results.get("risk.get_risk_rules")
+    if isinstance(data, dict) and not data.get("error"):
+        for rule in data.get("rules", []):
+            constraints: list[str] = []
+            if rule.get("max_risk_per_trade_pct") is not None:
+                constraints.append(f"单笔风险上限: {rule['max_risk_per_trade_pct']}%")
+            if rule.get("max_single_position_pct") is not None:
+                constraints.append(f"单票上限: {rule['max_single_position_pct']}%")
+            if rule.get("max_industry_exposure_pct") is not None:
+                constraints.append(f"行业上限: {rule['max_industry_exposure_pct']}%")
+            if rule.get("max_theme_exposure_pct") is not None:
+                constraints.append(f"主题上限: {rule['max_theme_exposure_pct']}%")
+            cards.append({
+                "card_type": "risk_rule",
+                "title": "风险规则配置",
+                "constraints_applied": constraints,
+                "warnings": data.get("warnings", []),
+                "calculation_explain": "",
+                "disclaimer": "",
+            })
+
+    # ---- risk.explain_risk_budget -> card_type "risk_rule" ----
+    data = tool_results.get("risk.explain_risk_budget")
+    if isinstance(data, dict) and not data.get("error"):
+        cards.append({
+            "card_type": "risk_rule",
+            "title": "风险预算说明",
+            "calculation_explain": data.get("explanation", ""),
+            "disclaimer": data.get("disclaimer", ""),
+        })
+
+    return cards

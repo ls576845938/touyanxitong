@@ -12,6 +12,7 @@ class AgentTaskType(StrEnum):
     TREND_POOL_SCAN = "trend_pool_scan"
     TENBAGGER_CANDIDATE = "tenbagger_candidate"
     DAILY_MARKET_BRIEF = "daily_market_brief"
+    RISK_BUDGET = "risk_budget"
     AUTO = "auto"
 
 
@@ -109,6 +110,23 @@ class AgentArtifactClaimRef(BaseModel):
     has_evidence: bool = False
 
 
+class RiskCardData(BaseModel):
+    card_type: str  # position_size / exposure_check / position_plan / risk_rule
+    title: str
+    symbol: str | None = None
+    portfolio_id: int | None = None
+    max_loss_amount: float | None = None
+    estimated_position_pct: float | None = None
+    estimated_position_value: float | None = None
+    rounded_quantity: int | None = None
+    risk_per_share: float | None = None
+    theme_exposure_after_pct: float | None = None
+    warnings: list[str] = Field(default_factory=list)
+    constraints_applied: list[str] = Field(default_factory=list)
+    calculation_explain: str = ""
+    disclaimer: str = ""
+
+
 class AgentRunListItem(BaseModel):
     id: int
     task_type: str
@@ -167,6 +185,10 @@ class AgentRuntimeHealth(BaseModel):
     streaming_supported: bool
     followup_llm_enabled: bool
     fallback_enabled: bool
+    vision_configured: bool = False
+    vision_provider: str | None = None
+    supports_image_input: bool = False
+    image_input_max_mb: float | None = None
     warnings: list[str] = Field(default_factory=list)
 
 

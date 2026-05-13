@@ -1581,7 +1581,37 @@ export type RuntimeHealth = {
   streaming_supported: boolean;
   followup_llm_enabled: boolean;
   fallback_enabled: boolean;
+  vision_configured: boolean;
+  vision_provider: string | null;
+  supports_image_input: boolean;
+  image_input_max_mb: number | null;
   warnings: string[];
+};
+
+// ---------------------------------------------------------------------------
+// Vision — Portfolio screenshot extraction types
+// ---------------------------------------------------------------------------
+export type ExtractedPosition = {
+  symbol: string | null;
+  name: string | null;
+  quantity: number | null;
+  market_value: number | null;
+  cost: number | null;
+  weight_pct: number | null;
+  unrealized_pnl: number | null;
+  confidence: number;
+  raw_text: string | null;
+};
+
+export type PortfolioImageExtractResponse = {
+  status: string;
+  broker_name: string | null;
+  account_equity: number | null;
+  cash: number | null;
+  positions: ExtractedPosition[];
+  warnings: string[];
+  unmapped_rows: string[];
+  needs_user_confirmation: boolean;
 };
 
 export type AgentRunListItem = {
@@ -1637,6 +1667,7 @@ export interface RiskPortfolio {
   name: string
   total_equity: number
   available_cash: number
+  current_drawdown_pct?: number
   created_at: string
   updated_at: string
 }
@@ -1671,6 +1702,16 @@ export interface PositionPlan {
   created_at: string
   updated_at: string
 }
+
+export type RiskRules = {
+  max_risk_per_trade_pct?: number;
+  max_single_position_pct?: number;
+  drawdown_tiers?: Array<{
+    threshold_pct: number;
+    action: string;
+    max_risk_pct: number;
+  }>;
+};
 
 // ---------------------------------------------------------------------------
 // User identity (X-Alpha-User-Id header)
@@ -2029,9 +2070,26 @@ export const api = {
     calculated_position_pct?: number | null;
     estimated_position_value?: number | null;
     warnings?: string[];
+    thesis_id?: number | null;
+    portfolio_id?: number | null;
+    risk_per_trade_pct?: number;
+    subject_name?: string;
   }) => postJson<PositionPlan>("/api/risk/position-plans", data),
   activatePlan: (planId: number) => postJson<PositionPlan>(`/api/risk/position-plans/${planId}/activate`, {}),
   archivePlan: (planId: number) => postJson<PositionPlan>(`/api/risk/position-plans/${planId}/archive`, {}),
+  fetchRiskRules: () => safeGetJson<RiskRules>("/api/risk/rules"),
+
+  // ---------------------------------------------------------------------------
+  // Vision — Portfolio screenshot extraction
+  // ---------------------------------------------------------------------------
+  extractPortfolioFromImage: (imageFile: Blob, brokerHint?: string) => {
+    const formData = new FormData();
+    formData.append("image", imageFile);
+    if (brokerHint) {
+      formData.append("broker_hint", brokerHint);
+    }
+    return postFormData<PortfolioImageExtractResponse>("/api/agent/vision/extract-portfolio", formData);
+  },
 };
 
 
@@ -2041,6 +2099,27 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Alpha-User-Id": getUserId() },
     body: JSON.stringify(payload),
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = typeof payload?.detail === "string" ? payload.detail : JSON.stringify(payload);
+    } catch {
+      detail = await response.text();
+    }
+    throw new Error(`${path} failed: ${response.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function postFormData<T>(path: string, formData: FormData): Promise<T> {
+  getCache.clear();
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "X-Alpha-User-Id": getUserId() },
+    body: formData,
     cache: "no-store"
   });
   if (!response.ok) {

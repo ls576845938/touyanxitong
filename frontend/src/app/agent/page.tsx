@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Bot, CheckCircle2, Clock, Download, Eye, FileText, Loader2, MessageSquare, Play, Printer, Radio, Save, ShieldAlert, Sparkles, Wrench, XCircle } from "lucide-react";
-import { api, type AgentArtifact, type AgentArtifactClaim, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunListItem, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow, type RuntimeHealth, type WatchlistItemEnhanced } from "@/lib/api";
+import { AlertTriangle, BarChart3, Bot, Calculator, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, Download, Eye, FileText, Loader2, Camera, ImageUp, MessageSquare, Play, Printer, Radio, Save, Shield, ShieldAlert, Sparkles, Target, Wrench, XCircle } from "lucide-react";
+import { api, type AgentArtifact, type AgentArtifactClaim, type AgentFollowupRequest, type AgentMessage, type AgentRunDetail, type AgentRunListItem, type AgentRunResponse, type AgentSSEEvent, type AgentSkill, type AgentStep, type AgentTaskType, type BarRow, type PortfolioImageExtractResponse, type RuntimeHealth, type WatchlistItemEnhanced, type ExposureData, type ExposureItem, type PositionPlan, type PositionSizeResponse, type RiskPortfolio, type RiskRules } from "@/lib/api";
 
 const FALLBACK_SKILLS: AgentSkill[] = [
   { id: "system:stock_deep_research", name: "个股深度投研", description: "趋势、评分、产业链和证据链报告。", skill_type: "stock_deep_research", skill_md: "", skill_config: {}, owner_user_id: null, is_system: true, created_at: null, updated_at: null },
@@ -73,6 +73,7 @@ export default function AgentPage() {
   const [watchlistItems, setWatchlistItems] = useState<WatchlistItemEnhanced[]>([]);
   const [addingToWatchlist, setAddingToWatchlist] = useState<Record<string, boolean>>({});
   const [watchlistSuccess, setWatchlistSuccess] = useState<string | null>(null);
+  const [riskPanelOpen, setRiskPanelOpen] = useState(false);
 
   useEffect(() => {
     api.agentSkills()
@@ -442,7 +443,7 @@ export default function AgentPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 px-6 py-8">
-      <div className="mx-auto max-w-7xl space-y-6">
+      <div className={`mx-auto space-y-6 ${riskPanelOpen ? 'max-w-[1640px]' : 'max-w-7xl'}`}>
         <section className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
@@ -454,10 +455,24 @@ export default function AgentPage() {
               用一句自然语言生成投研工作流，系统只读取平台已有数据，输出投研分析、观察清单、风险提示和证据链。
             </p>
           </div>
-          <RuntimeHealthBadge health={runtimeHealth} />
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setRiskPanelOpen(!riskPanelOpen)}
+              className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs font-bold transition-colors ${
+                riskPanelOpen
+                  ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+              }`}
+            >
+              {riskPanelOpen ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+              风险工作台
+            </button>
+            <RuntimeHealthBadge health={runtimeHealth} />
+          </div>
         </section>
 
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className={`grid gap-6 ${riskPanelOpen ? 'xl:grid-cols-[minmax(0,1fr)_360px_380px]' : 'xl:grid-cols-[minmax(0,1fr)_360px]'}`}>
           <main className="space-y-6">
             <AgentCommandBox
               prompt={prompt}
@@ -499,6 +514,7 @@ export default function AgentPage() {
             <AgentWatchlistPanel items={watchlistItems} />
             <SkillBuilderPanel prompt={prompt} run={run} artifact={artifact} />
           </aside>
+          {riskPanelOpen && <RiskWorkspacePanel runtimeHealth={runtimeHealth} />}
         </div>
       </div>
     </div>
@@ -937,6 +953,9 @@ function ResearchReportViewer({
           </div>
         )}
         {artifact && <MarkdownBlock content={artifact.content_md} />}
+        {artifact && artifact.content_json?.risk_cards != null && (
+          <RiskCardsSection cards={artifact.content_json.risk_cards as any as RiskCardData[]} />
+        )}
         {streamingContent && (
           <div className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/50 p-4">
             <div className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-indigo-400">
@@ -965,6 +984,69 @@ function EvidencePanel({ artifact, run, onAddToWatchlist, addingToWatchlist, wat
     ? (artifact.content_json.claims as Record<string, unknown>[])
     : [];
   const warnings = run?.warnings ?? [];
+
+  // Risk budget plan inline form state
+  const [activePlanClaimId, setActivePlanClaimId] = useState<string | null>(null);
+  const [planSymbol, setPlanSymbol] = useState("");
+  const [planEntryPrice, setPlanEntryPrice] = useState("");
+  const [planInvalidationPrice, setPlanInvalidationPrice] = useState("");
+  const [planRiskPct, setPlanRiskPct] = useState("1.0");
+  const [planPortfolioId, setPlanPortfolioId] = useState("");
+  const [planSubmitting, setPlanSubmitting] = useState(false);
+  const [planSubmitError, setPlanSubmitError] = useState("");
+  const [planCreated, setPlanCreated] = useState<{ id: number; disclaimer: string } | null>(null);
+
+  function openPlanForm(claimId: string) {
+    if (activePlanClaimId === claimId) {
+      setActivePlanClaimId(null);
+      return;
+    }
+    setActivePlanClaimId(claimId);
+    setPlanSymbol("");
+    setPlanEntryPrice("");
+    setPlanInvalidationPrice("");
+    setPlanRiskPct("1.0");
+    setPlanPortfolioId("");
+    setPlanSubmitError("");
+    setPlanCreated(null);
+  }
+
+  async function handleCreatePlan() {
+    setPlanSubmitError("");
+    setPlanCreated(null);
+    if (!planSymbol.trim()) {
+      setPlanSubmitError("请补充股票代码");
+      return;
+    }
+    if (!planEntryPrice.trim()) {
+      setPlanSubmitError("请补充入场价格");
+      return;
+    }
+    if (!planInvalidationPrice.trim()) {
+      setPlanSubmitError("请补充无效点价格");
+      return;
+    }
+    setPlanSubmitting(true);
+    try {
+      const result = await api.createPositionPlan({
+        symbol: planSymbol.trim(),
+        entry_price: parseFloat(planEntryPrice),
+        invalidation_price: parseFloat(planInvalidationPrice),
+        risk_per_trade_pct: parseFloat(planRiskPct) || 1.0,
+        portfolio_id: planPortfolioId ? parseInt(planPortfolioId, 10) : undefined,
+        subject_name: planSymbol.trim(),
+      });
+      setPlanCreated({
+        id: result.id,
+        disclaimer: (result as any).disclaimer || "风险预算为单笔亏损上限，不代表预期收益。不构成投资建议。",
+      });
+    } catch (err) {
+      setPlanSubmitError(err instanceof Error ? err.message : "创建仓位计划失败");
+    } finally {
+      setPlanSubmitting(false);
+    }
+  }
+
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
@@ -1010,19 +1092,124 @@ function EvidencePanel({ artifact, run, onAddToWatchlist, addingToWatchlist, wat
                 </div>
                 {run && run.status === "success" && (
                   <div className="mt-3 border-t border-slate-200 pt-3">
-                    <button
-                      type="button"
-                      onClick={() => onAddToWatchlist(claim as AgentArtifactClaim)}
-                      disabled={addingToWatchlist[claimId]}
-                      className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 text-[10px] font-bold text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 transition-colors"
-                    >
-                      {addingToWatchlist[claimId] ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        <Eye size={12} />
+                    <div className="flex flex-col gap-2">
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onAddToWatchlist(claim as AgentArtifactClaim)}
+                          disabled={addingToWatchlist[claimId]}
+                          className="inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 text-[10px] font-bold text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 transition-colors"
+                        >
+                          {addingToWatchlist[claimId] ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Eye size={12} />
+                          )}
+                          {watchlistSuccess === claimId ? "已加入观察池" : "加入观察池"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openPlanForm(claimId)}
+                          className="inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border border-amber-200 bg-white px-3 text-[10px] font-bold text-amber-700 hover:bg-amber-50 transition-colors"
+                        >
+                          <Shield size={12} />
+                          创建风险预算计划
+                        </button>
+                      </div>
+
+                      {activePlanClaimId === claimId && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50/30 p-3">
+                          <div className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                            <ShieldAlert size={12} />
+                            风险预算计划
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500">股票代码 *</label>
+                              <input
+                                type="text"
+                                value={planSymbol}
+                                onChange={(e) => setPlanSymbol(e.target.value)}
+                                placeholder="例如 300308"
+                                className="mt-1 w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs font-bold text-slate-700 placeholder:text-slate-300 focus:border-amber-400 focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500">入场价格 *</label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={planEntryPrice}
+                                onChange={(e) => setPlanEntryPrice(e.target.value)}
+                                placeholder="例如 45.50"
+                                className="mt-1 w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs font-bold text-slate-700 placeholder:text-slate-300 focus:border-amber-400 focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500">无效价格 *</label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={planInvalidationPrice}
+                                onChange={(e) => setPlanInvalidationPrice(e.target.value)}
+                                placeholder="例如 42.00"
+                                className="mt-1 w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs font-bold text-slate-700 placeholder:text-slate-300 focus:border-amber-400 focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500">单笔风险 (%)</label>
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={planRiskPct}
+                                onChange={(e) => setPlanRiskPct(e.target.value)}
+                                className="mt-1 w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs font-bold text-slate-700 placeholder:text-slate-300 focus:border-amber-400 focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500">组合 ID</label>
+                              <input
+                                type="number"
+                                value={planPortfolioId}
+                                onChange={(e) => setPlanPortfolioId(e.target.value)}
+                                placeholder="留空使用默认组合"
+                                className="mt-1 w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs font-bold text-slate-700 placeholder:text-slate-300 focus:border-amber-400 focus:outline-none"
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-col gap-2">
+                            <button
+                              type="button"
+                              onClick={handleCreatePlan}
+                              disabled={planSubmitting}
+                              className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 text-xs font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300 transition-colors"
+                            >
+                              {planSubmitting ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <Shield size={14} />
+                              )}
+                              提交计划（草稿）
+                            </button>
+                            {planSubmitError && (
+                              <div className="rounded-md bg-rose-50 px-2.5 py-1.5 text-[11px] font-bold leading-5 text-rose-700">
+                                {planSubmitError}
+                              </div>
+                            )}
+                            {planCreated && (
+                              <div className="space-y-1">
+                                <div className="rounded-md bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold leading-5 text-emerald-700">
+                                  仓位计划 #{planCreated.id} 创建成功（草稿）
+                                </div>
+                                <div className="text-[10px] font-medium italic leading-4 text-slate-400">
+                                  {planCreated.disclaimer}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       )}
-                      {watchlistSuccess === claimId ? "已加入观察池" : "加入观察池"}
-                    </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1156,6 +1343,116 @@ function SkillBuilderPanel({ prompt, run, artifact }: { prompt: string; run: Age
   );
 }
 
+function VisionUploadPanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | null }) {
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult] = useState<PortfolioImageExtractResponse | null>(null);
+  const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const visionAvailable = runtimeHealth?.vision_configured === true;
+  const visionProvider = runtimeHealth?.vision_provider ?? null;
+
+  async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError("");
+    setResult(null);
+    setUploading(true);
+    try {
+      const res = await api.extractPortfolioFromImage(file);
+      setResult(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "截图解析请求失败");
+    } finally {
+      setUploading(false);
+      // Reset file input so the same file can be re-selected
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-3 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+        <Camera size={16} className="text-indigo-600" />
+        截图解析 (Beta)
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/bmp"
+        onChange={handleFileSelected}
+        className="hidden"
+        id="vision-upload-input"
+      />
+      <button
+        type="button"
+        disabled={!visionAvailable || uploading}
+        onClick={() => fileInputRef.current?.click()}
+        title={!visionAvailable ? "需要配置多模态模型" : "上传持仓截图解析"}
+        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-sm font-bold text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400 transition-colors"
+      >
+        {uploading ? (
+          <Loader2 size={16} className="animate-spin" />
+        ) : (
+          <ImageUp size={16} />
+        )}
+        {uploading ? "解析中..." : "上传持仓截图解析 (Beta)"}
+      </button>
+      {!visionAvailable && runtimeHealth && (
+        <div className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[10px] font-bold text-amber-700">
+          需要配置多模态模型 (如 OPENAI_API_KEY) 才能使用截图解析功能。
+        </div>
+      )}
+      {error && (
+        <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{error}</div>
+      )}
+      {result && (
+        <div className="mt-3 space-y-2">
+          {result.status === "vision_unavailable" && (
+            <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+              {result.warnings[0] ?? "Vision 不可用"}
+            </div>
+          )}
+          {result.status === "success" && (
+            <div className="space-y-2">
+              <div className="text-xs font-bold text-emerald-700">
+                解析成功 · {result.positions.length} 个持仓
+              </div>
+              {result.account_equity != null && (
+                <div className="text-xs font-medium text-slate-600">
+                  账户权益: ￥{result.account_equity.toLocaleString()}
+                </div>
+              )}
+              {result.positions.length > 0 && (
+                <div className="max-h-40 space-y-1 overflow-y-auto">
+                  {result.positions.map((pos: { symbol: string | null; name: string | null; quantity: number | null; market_value: number | null; }, i: number) => (
+                    <div key={i} className="rounded bg-slate-50 px-2 py-1.5 text-[10px] font-medium text-slate-700">
+                      <span className="font-bold">{pos.symbol || "?"}</span>
+                      {pos.name && <span className="ml-1 text-slate-400">({pos.name})</span>}
+                      {pos.quantity != null && <span className="ml-1">x{pos.quantity}</span>}
+                      {pos.market_value != null && <span className="ml-1">￥{pos.market_value.toLocaleString()}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {result.needs_user_confirmation && (
+                <div className="text-[10px] font-bold text-amber-600">
+                  请确认提取结果后手动创建持仓。
+                </div>
+              )}
+            </div>
+          )}
+          {result.status === "parse_failed" && (
+            <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">
+              解析失败：{result.warnings.join("；")}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function RuntimeHealthBadge({ health }: { health: RuntimeHealth | null }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -1185,7 +1482,13 @@ function RuntimeHealthBadge({ health }: { health: RuntimeHealth | null }) {
             <div className="flex justify-between">
               <span className="text-slate-400">LLM</span>
               <span className={health.llm_configured ? 'font-bold text-emerald-600' : 'font-bold text-rose-600'}>
-                {health.llm_configured ? '已配置' : '未配置'}
+                {health.llm_configured ? '已配置' : '未配置 (使用Mock)'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Vision</span>
+              <span className={health.vision_configured ? 'font-bold text-emerald-600' : 'font-bold text-amber-600'}>
+                {health.vision_configured ? '已配置' : '未配置'}
               </span>
             </div>
             <div className="flex justify-between">
@@ -1532,4 +1835,673 @@ function FollowUpSection({
       </div>
     </section>
   );
+}
+
+// ---------------------------------------------------------------------------
+// RiskCard & RiskCardsSection
+// ---------------------------------------------------------------------------
+
+type RiskCardData = {
+  card_type: string;
+  title: string;
+  symbol?: string | null;
+  portfolio_id?: number | null;
+  max_loss_amount?: number | null;
+  estimated_position_pct?: number | null;
+  estimated_position_value?: number | null;
+  rounded_quantity?: number | null;
+  risk_per_share?: number | null;
+  theme_exposure_after_pct?: number | null;
+  warnings?: string[];
+  constraints_applied?: string[];
+  calculation_explain?: string;
+  disclaimer?: string;
+};
+
+function colorTone(warnings: string[] | undefined): {
+  border: string;
+  bg: string;
+  badge: string;
+  badgeText: string;
+} {
+  if (!warnings || warnings.length === 0) {
+    return {
+      border: "border-emerald-200",
+      bg: "bg-emerald-50/30",
+      badge: "bg-emerald-100",
+      badgeText: "text-emerald-700",
+    };
+  }
+  if (warnings.length <= 2) {
+    return {
+      border: "border-amber-200",
+      bg: "bg-amber-50/30",
+      badge: "bg-amber-100",
+      badgeText: "text-amber-700",
+    };
+  }
+  return {
+    border: "border-rose-200",
+    bg: "bg-rose-50/30",
+    badge: "bg-rose-100",
+    badgeText: "text-rose-700",
+  };
+}
+
+function RiskCard({ card }: { card: RiskCardData }) {
+  const tone = colorTone(card.warnings);
+  const cardLabel =
+    card.card_type === "position_size"
+      ? "风险预算允许上限"
+      : card.card_type === "exposure_check"
+        ? "组合暴露检查"
+        : card.card_type === "position_plan"
+          ? "仓位计划"
+          : "风险规则";
+
+  return (
+    <div className={`rounded-lg border ${tone.border} ${tone.bg} p-4`}>
+      {/* Header */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className={`rounded-md ${tone.badge} px-2 py-0.5 text-[10px] font-black ${tone.badgeText}`}>
+            {cardLabel}
+          </span>
+          <span className="text-xs font-bold text-slate-700">{card.title}</span>
+        </div>
+        {card.card_type === "position_size" && card.symbol && (
+          <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+            {card.symbol}
+          </span>
+        )}
+        {card.card_type === "exposure_check" && card.portfolio_id != null && (
+          <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+            Portfolio #{card.portfolio_id}
+          </span>
+        )}
+      </div>
+
+      {/* Body metrics */}
+      <div className="grid gap-2 sm:grid-cols-3">
+        {card.max_loss_amount != null && (
+          <MetricBox label="最大亏损预算" value={`${card.max_loss_amount.toLocaleString()}`} suffix="" />
+        )}
+        {card.estimated_position_pct != null && (
+          <MetricBox label="预算仓位占比" value={`${card.estimated_position_pct.toFixed(1)}`} suffix="%" />
+        )}
+        {card.estimated_position_value != null && (
+          <MetricBox label="预算仓位价值" value={`${card.estimated_position_value.toLocaleString()}`} suffix="" />
+        )}
+        {card.rounded_quantity != null && (
+          <MetricBox label="预算数量" value={`${card.rounded_quantity}`} suffix="股" />
+        )}
+        {card.risk_per_share != null && (
+          <MetricBox label="每股风险" value={`${card.risk_per_share.toFixed(2)}`} suffix="" />
+        )}
+        {card.theme_exposure_after_pct != null && (
+          <MetricBox label="主题暴露" value={`${card.theme_exposure_after_pct.toFixed(1)}`} suffix="%" />
+        )}
+      </div>
+
+      {/* Constraints */}
+      {card.constraints_applied && card.constraints_applied.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
+            约束条件
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {card.constraints_applied.map((c, i) => (
+              <span
+                key={i}
+                className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Warnings */}
+      {card.warnings && card.warnings.length > 0 && (
+        <div className="mt-3 space-y-1">
+          {card.warnings.map((w, i) => (
+            <div
+              key={i}
+              className="rounded-md bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold leading-5 text-amber-800"
+            >
+              {w}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Calculation explanation */}
+      {card.calculation_explain && (
+        <div className="mt-3 rounded-md bg-white/70 px-2.5 py-2 text-[11px] font-medium leading-5 text-slate-600">
+          {card.calculation_explain}
+        </div>
+      )}
+
+      {/* Disclaimer */}
+      {card.disclaimer && (
+        <div className="mt-3 text-[10px] font-medium italic text-slate-400">
+          {card.disclaimer}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricBox({ label, value, suffix }: { label: string; value: string; suffix: string }) {
+  return (
+    <div className="rounded-md bg-white px-3 py-2 shadow-sm">
+      <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">{label}</div>
+      <div className="mt-0.5 text-sm font-black text-slate-800">
+        {value}
+        {suffix && <span className="text-xs font-bold text-slate-500">{suffix}</span>}
+      </div>
+    </div>
+  );
+}
+
+function RiskCardsSection({ cards }: { cards: RiskCardData[] }) {
+  if (!cards || cards.length === 0) return null;
+
+  return (
+    <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+        <ShieldAlert size={16} className="text-amber-600" />
+        风险预算卡
+      </div>
+      <div className="space-y-4">
+        {cards.map((card, index) => (
+          <RiskCard key={index} card={card} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Risk Workspace Panel (Sub-task C)
+// ---------------------------------------------------------------------------
+
+function RiskWorkspacePanel({ runtimeHealth }: { runtimeHealth: RuntimeHealth | null }) {
+  const [s1Open, setS1Open] = useState(true);
+  const [s2Open, setS2Open] = useState(true);
+  const [s3Open, setS3Open] = useState(true);
+  const [s4Open, setS4Open] = useState(true);
+  const [s5Open, setS5Open] = useState(true);
+  const [s6Open, setS6Open] = useState(true);
+
+  const [portfolios, setPortfolios] = useState<RiskPortfolio[]>([]);
+  const [portfoliosLoading, setPortfoliosLoading] = useState(true);
+  const [portfoliosError, setPortfoliosError] = useState("");
+
+  const [exposure, setExposure] = useState<ExposureData | null>(null);
+  const [exposureLoading, setExposureLoading] = useState(false);
+  const [exposureError, setExposureError] = useState("");
+
+  const [rules, setRules] = useState<RiskRules | null>(null);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [rulesError, setRulesError] = useState("");
+
+  const [plans, setPlans] = useState<PositionPlan[]>([]);
+  const [plansLoading, setPlansLoading] = useState(false);
+  const [plansError, setPlansError] = useState("");
+
+  const [calcSymbol, setCalcSymbol] = useState("");
+  const [calcEntryPrice, setCalcEntryPrice] = useState("");
+  const [calcInvalidationPrice, setCalcInvalidationPrice] = useState("");
+  const [calcRiskPct, setCalcRiskPct] = useState("2");
+  const [calcResult, setCalcResult] = useState<PositionSizeResponse | null>(null);
+  const [calcLoading, setCalcLoading] = useState(false);
+  const [calcErrorMsg, setCalcErrorMsg] = useState("");
+
+  const portfolio = portfolios.length > 0 ? portfolios[0] : null;
+
+  useEffect(() => {
+    setPortfoliosLoading(true);
+    setPortfoliosError("");
+    api.fetchPortfolios()
+      .then((data) => setPortfolios(Array.isArray(data) ? data : []))
+      .catch((err) => setPortfoliosError(err.message))
+      .finally(() => setPortfoliosLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!portfolio) return;
+    setExposureLoading(true);
+    setExposureError("");
+    api.fetchExposure(portfolio.id)
+      .then(setExposure)
+      .catch((err) => setExposureError(err.message))
+      .finally(() => setExposureLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portfolio?.id]);
+
+  useEffect(() => {
+    setRulesLoading(true);
+    setRulesError("");
+    api.fetchRiskRules()
+      .then(setRules)
+      .catch((err) => setRulesError(err.message))
+      .finally(() => setRulesLoading(false));
+  }, []);
+
+  useEffect(() => {
+    setPlansLoading(true);
+    setPlansError("");
+    api.fetchPositionPlans({ status: "active" })
+      .then((data) => setPlans(Array.isArray(data) ? data : []))
+      .catch((err) => setPlansError(err.message))
+      .finally(() => setPlansLoading(false));
+  }, []);
+
+  async function handleCalculate() {
+    if (!portfolio || !calcSymbol || !calcEntryPrice || !calcRiskPct) return;
+    setCalcLoading(true);
+    setCalcErrorMsg("");
+    setCalcResult(null);
+    try {
+      const result = await api.calculatePositionSize({
+        account_equity: portfolio.total_equity,
+        available_cash: portfolio.available_cash,
+        symbol: calcSymbol,
+        entry_price: parseFloat(calcEntryPrice),
+        invalidation_price: calcInvalidationPrice ? parseFloat(calcInvalidationPrice) : undefined,
+        risk_per_trade_pct: parseFloat(calcRiskPct),
+      });
+      setCalcResult(result);
+    } catch (err) {
+      setCalcErrorMsg(err instanceof Error ? err.message : "计算失败");
+    } finally {
+      setCalcLoading(false);
+    }
+  }
+
+  function Section({ title, open, onToggle, children, loading, error, empty, emptyMessage }: {
+    title: string;
+    open: boolean;
+    onToggle: () => void;
+    children: React.ReactNode;
+    loading?: boolean;
+    error?: string;
+    empty?: boolean;
+    emptyMessage?: string;
+  }) {
+    return (
+      <div className="rounded-lg border border-slate-100">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex w-full items-center justify-between rounded-t-lg px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+        >
+          <span>{title}</span>
+          {open ? <ChevronDown size={14} className="text-slate-400" /> : <ChevronRight size={14} className="text-slate-400" />}
+        </button>
+        {open && (
+          <div className="px-3 pb-3">
+            {loading && (
+              <div className="flex items-center gap-2 py-2 text-xs text-slate-500">
+                <Loader2 size={12} className="animate-spin" />
+                加载中...
+              </div>
+            )}
+            {!loading && error && (
+              <div className="py-2 text-xs text-rose-600">{error}</div>
+            )}
+            {!loading && !error && empty && (
+              <div className="py-2 text-xs text-slate-500">{emptyMessage || "暂无数据"}</div>
+            )}
+            {!loading && !error && !empty && children}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500">
+        <ShieldAlert size={14} className="text-amber-600" />
+        风险工作台
+      </div>
+      <VisionUploadPanel runtimeHealth={runtimeHealth} />
+      <div className="mt-2 space-y-2">
+        {/* Section 1: Portfolio Snapshot */}
+        <Section
+          title="组合快照"
+          open={s1Open}
+          onToggle={() => setS1Open(!s1Open)}
+          loading={portfoliosLoading}
+          error={portfoliosError}
+          empty={!portfoliosLoading && !portfoliosError && !portfolio}
+          emptyMessage="暂无组合，点击创建"
+        >
+          {portfolio && (
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-500">名称</span>
+                <span className="font-bold text-slate-800">{portfolio.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">总权益</span>
+                <span className="font-bold text-slate-800">{formatEquity(portfolio.total_equity)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">可用现金</span>
+                <span className="font-bold text-slate-800">{formatEquity(portfolio.available_cash)}</span>
+              </div>
+              {portfolio.current_drawdown_pct != null && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">当前回撤</span>
+                  <span className={`font-bold ${(portfolio.current_drawdown_pct ?? 0) < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                    {((portfolio.current_drawdown_pct ?? 0) * 100).toFixed(1)}%
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+          {!portfoliosLoading && !portfoliosError && !portfolio && (
+            <Link
+              href="/risk"
+              className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+            >
+              暂无组合，点击创建
+            </Link>
+          )}
+        </Section>
+
+        {/* Section 2: Holdings */}
+        {portfolio && (
+          <Section
+            title="持仓明细"
+            open={s2Open}
+            onToggle={() => setS2Open(!s2Open)}
+            loading={exposureLoading}
+            error={exposureError}
+            empty={!exposureLoading && !exposureError && (!exposure?.single_stock_exposure || exposure.single_stock_exposure.length === 0)}
+            emptyMessage="暂无持仓"
+          >
+            {exposure && exposure.single_stock_exposure.length > 0 && (
+              <div className="max-h-40 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-[10px] text-slate-400">
+                      <th className="pb-1 pr-1 font-medium">代码</th>
+                      <th className="pb-1 pr-1 font-medium">名称</th>
+                      <th className="pb-1 pr-1 font-medium">占比</th>
+                      <th className="pb-1 font-medium">行业/主题</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-700">
+                    {exposure.single_stock_exposure.map((item, i) => (
+                      <tr key={item.symbol ?? i} className="border-t border-slate-50">
+                        <td className="py-1 pr-1 font-bold">{item.symbol}</td>
+                        <td className="py-1 pr-1">{item.name}</td>
+                        <td className="py-1 pr-1">{(item.exposure_pct * 100).toFixed(1)}%</td>
+                        <td className="py-1">{item.industry || item.theme || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Section>
+        )}
+
+        {/* Section 3: Exposure Summary */}
+        {portfolio && (
+          <Section
+            title="敞口汇总"
+            open={s3Open}
+            onToggle={() => setS3Open(!s3Open)}
+            loading={exposureLoading}
+            error={exposureError}
+            empty={!exposureLoading && !exposureError && !exposure}
+            emptyMessage="暂无敞口数据"
+          >
+            {exposure && (
+              <div className="space-y-3">
+                {exposure.industry_exposure.length > 0 && (
+                  <div>
+                    <div className="mb-1 flex items-center gap-1 text-[10px] font-bold text-slate-500">
+                      <BarChart3 size={10} />
+                      行业敞口
+                    </div>
+                    {exposure.industry_exposure.map((item, i) => (
+                      <ExposureBarRow key={i} item={item} />
+                    ))}
+                  </div>
+                )}
+                {exposure.theme_exposure.length > 0 && (
+                  <div className="mt-2">
+                    <div className="mb-1 flex items-center gap-1 text-[10px] font-bold text-slate-500">
+                      <BarChart3 size={10} />
+                      主题敞口
+                    </div>
+                    {exposure.theme_exposure.map((item, i) => (
+                      <ExposureBarRow key={i} item={item} />
+                    ))}
+                  </div>
+                )}
+                {exposure.current_risk_rules.length > 0 && (
+                  <div className="mt-2 border-t border-slate-100 pt-2">
+                    <div className="mb-1 flex items-center gap-1 text-[10px] font-bold text-slate-500">
+                      <Shield size={10} />
+                      活跃规则
+                    </div>
+                    {exposure.current_risk_rules.map((rule, i) => (
+                      <div key={i} className="text-[10px] text-slate-500 leading-5">{rule}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </Section>
+        )}
+
+        {/* Section 4: Quick Position Calculator */}
+        <Section
+          title="快速头寸计算"
+          open={s4Open}
+          onToggle={() => setS4Open(!s4Open)}
+        >
+          <div className="space-y-2">
+            {!portfolio ? (
+              <div className="text-xs text-slate-500">请先创建组合</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input
+                    type="text"
+                    value={calcSymbol}
+                    onChange={(e) => setCalcSymbol(e.target.value)}
+                    placeholder="代码"
+                    className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-800 outline-none focus:border-indigo-400"
+                  />
+                  <input
+                    type="number"
+                    value={calcEntryPrice}
+                    onChange={(e) => setCalcEntryPrice(e.target.value)}
+                    placeholder="入场价"
+                    className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-800 outline-none focus:border-indigo-400"
+                  />
+                  <input
+                    type="number"
+                    value={calcInvalidationPrice}
+                    onChange={(e) => setCalcInvalidationPrice(e.target.value)}
+                    placeholder="止损价（可选）"
+                    className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-800 outline-none focus:border-indigo-400"
+                  />
+                  <input
+                    type="number"
+                    value={calcRiskPct}
+                    onChange={(e) => setCalcRiskPct(e.target.value)}
+                    placeholder="风险比例 %"
+                    className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-800 outline-none focus:border-indigo-400"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCalculate}
+                  disabled={calcLoading || !calcSymbol || !calcEntryPrice || !calcRiskPct}
+                  className="inline-flex h-7 w-full items-center justify-center gap-1 rounded-lg bg-indigo-600 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300 hover:bg-indigo-700 transition-colors"
+                >
+                  {calcLoading ? <Loader2 size={12} className="animate-spin" /> : <Calculator size={12} />}
+                  测算
+                </button>
+                {calcErrorMsg && (
+                  <div className="rounded bg-rose-50 px-2 py-1.5 text-[10px] font-bold text-rose-700">{calcErrorMsg}</div>
+                )}
+                {calcResult && (
+                  <div className="rounded-lg border border-slate-100 bg-slate-50 p-2 text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">最大亏损</span>
+                      <span className="font-bold text-slate-700">{calcResult.max_loss_amount != null ? formatEquity(calcResult.max_loss_amount) : '—'}</span>
+                    </div>
+                    <div className="mt-1 flex justify-between">
+                      <span className="text-slate-500">建议数量</span>
+                      <span className="font-bold text-slate-700">{calcResult.rounded_quantity != null ? calcResult.rounded_quantity : '—'}</span>
+                    </div>
+                    <div className="mt-1 flex justify-between">
+                      <span className="text-slate-500">仓位占比</span>
+                      <span className="font-bold text-slate-700">{calcResult.estimated_position_pct != null ? `${(calcResult.estimated_position_pct * 100).toFixed(1)}%` : '—'}</span>
+                    </div>
+                    {calcResult.warnings.length > 0 && (
+                      <div className="mt-1.5 space-y-0.5">
+                        {calcResult.warnings.map((w, i) => (
+                          <div key={i} className="flex items-center gap-1 text-[10px] text-amber-700">
+                            <AlertTriangle size={10} />
+                            {w}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-2 border-t border-slate-200 pt-1.5 text-[9px] leading-4 text-slate-400">
+                      {calcResult.disclaimer || '风险提示：以上计算结果仅供参考，不构成投资建议。'}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </Section>
+
+        {/* Section 5: Risk Rules Summary */}
+        <Section
+          title="风控规则"
+          open={s5Open}
+          onToggle={() => setS5Open(!s5Open)}
+          loading={rulesLoading}
+          error={rulesError}
+          empty={!rulesLoading && !rulesError && !rules}
+          emptyMessage="暂无规则"
+        >
+          {rules && (
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-500">单笔最大风险</span>
+                <span className="font-bold text-slate-700">{rules.max_risk_per_trade_pct != null ? `${rules.max_risk_per_trade_pct}%` : '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">单标的最大仓位</span>
+                <span className="font-bold text-slate-700">{rules.max_single_position_pct != null ? `${rules.max_single_position_pct}%` : '—'}</span>
+              </div>
+              {rules.drawdown_tiers && rules.drawdown_tiers.length > 0 && (
+                <div className="mt-2 border-t border-slate-100 pt-1.5">
+                  <div className="mb-1 flex items-center gap-1 text-[10px] font-bold text-slate-500">
+                    <Target size={10} />
+                    回撤控制
+                  </div>
+                  {rules.drawdown_tiers.map((tier, i) => (
+                    <div key={i} className="flex justify-between text-[10px] text-slate-600">
+                      <span>回撤 {tier.threshold_pct}%</span>
+                      <span>{tier.action}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </Section>
+
+        {/* Section 6: Position Plans */}
+        <Section
+          title="持仓计划"
+          open={s6Open}
+          onToggle={() => setS6Open(!s6Open)}
+          loading={plansLoading}
+          error={plansError}
+          empty={!plansLoading && !plansError && plans.length === 0}
+          emptyMessage="暂无活跃计划"
+        >
+          {plans.length > 0 && (
+            <div className="max-h-48 space-y-1.5 overflow-y-auto">
+              {plans.map((plan) => (
+                <div key={plan.id} className="rounded border border-slate-100 p-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800">{plan.symbol}</span>
+                    <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                      plan.status === 'active' ? 'bg-emerald-100 text-emerald-700' :
+                      plan.status === 'pending' ? 'bg-amber-100 text-amber-700' :
+                      'bg-slate-100 text-slate-600'
+                    }`}>
+                      {plan.status === 'active' ? '进行中' : plan.status === 'pending' ? '待执行' : plan.status}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-slate-500">
+                    {plan.entry_price != null && `入场 ${plan.entry_price}`}
+                    {plan.invalidation_price != null && ` / 止损 ${plan.invalidation_price}`}
+                  </div>
+                  {plan.calculated_position_pct != null && (
+                    <div className="text-[10px] text-slate-500">
+                      仓位占比: {(plan.calculated_position_pct * 100).toFixed(1)}%
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      </div>
+    </section>
+  );
+}
+
+function ExposureBarRow({ item }: { item: ExposureItem }) {
+  const pct = (item.exposure_pct * 100).toFixed(1);
+  const limitPct = (item.limit_pct * 100).toFixed(1);
+  const fillPct = item.limit_pct > 0 ? Math.min((item.exposure_pct / item.limit_pct) * 100, 100) : 0;
+
+  return (
+    <div className="mb-1.5">
+      <div className="flex items-center justify-between text-[10px]">
+        <span className="font-medium text-slate-600">{item.industry || item.theme || item.symbol || '其他'}</span>
+        <span className={`font-medium ${item.over_limit ? 'text-rose-600' : 'text-slate-500'}`}>
+          {pct}% / {limitPct}%
+        </span>
+      </div>
+      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+        <div
+          className={`h-full rounded-full ${item.over_limit ? 'bg-rose-500' : 'bg-indigo-400'}`}
+          style={{ width: `${fillPct}%` }}
+        />
+      </div>
+      {item.over_limit && (
+        <div className="flex items-center gap-0.5 text-[9px] text-rose-600">
+          <AlertTriangle size={9} />
+          超限
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatEquity(value: number): string {
+  if (value >= 100_000_000) return `${(value / 100_000_000).toFixed(2)}亿`;
+  if (value >= 10_000) return `${(value / 10_000).toFixed(2)}万`;
+  return value.toLocaleString("zh-CN");
 }
