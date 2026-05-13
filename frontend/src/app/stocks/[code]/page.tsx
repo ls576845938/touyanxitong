@@ -111,13 +111,19 @@ export default function StockEvidencePage() {
         <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
           <StockSearch placeholder="输入代码或名称搜索标的..." />
           <div className="flex flex-wrap gap-2">
-            <button 
-              type="button" 
-              onClick={() => router.back()} 
+            <button
+              type="button"
+              onClick={() => router.back()}
               className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
             >
               <RotateCcw size={16} />返回
             </button>
+            <Link
+              href={`/risk?symbol=${encodeURIComponent(code)}&name=${encodeURIComponent(evidence?.stock?.name || "")}`}
+              className="inline-flex h-10 items-center gap-2 rounded-xl border border-amber-200 px-4 text-sm font-bold text-amber-700 hover:bg-amber-50 transition-colors"
+            >
+              快速测算
+            </Link>
             {from && from !== "search" ? (
               <Link href={from} className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
                 <ArrowLeft size={16} />来源

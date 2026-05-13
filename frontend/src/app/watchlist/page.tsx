@@ -430,12 +430,20 @@ function WatchlistItemCard({
         {/* Actions */}
         <div className="flex items-center gap-2 shrink-0">
           {item.subject_type === "stock" && item.subject_id && (
-            <Link
-              href={`/stocks/${encodeURIComponent(item.subject_id)}?from=/watchlist`}
-              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-600 hover:border-indigo-200 hover:text-indigo-600 transition-colors"
-            >
-              查看证据链
-            </Link>
+            <>
+              <Link
+                href={`/stocks/${encodeURIComponent(item.subject_id)}?from=/watchlist`}
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-600 hover:border-indigo-200 hover:text-indigo-600 transition-colors"
+              >
+                查看证据链
+              </Link>
+              <Link
+                href={`/risk?symbol=${encodeURIComponent(item.subject_id)}&name=${encodeURIComponent(item.subject_name || "")}`}
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-600 hover:border-amber-200 hover:text-amber-600 transition-colors"
+              >
+                创建风险预算计划
+              </Link>
+            </>
           )}
           {item.status === "active" && (
             <button

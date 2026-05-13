@@ -1074,11 +1074,7 @@ function AgentWatchlistPanel({ items }: { items: WatchlistItemEnhanced[] }) {
       ) : (
         <div className="space-y-2">
           {items.map((item) => (
-            <Link
-              key={item.id}
-              href="/watchlist"
-              className="block rounded-lg border border-slate-100 bg-slate-50 p-3 transition-colors hover:border-indigo-100 hover:bg-white"
-            >
+            <div key={item.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 transition-colors hover:border-indigo-100 hover:bg-white">
               <div className="flex items-center justify-between gap-2">
                 <div className="truncate text-xs font-bold text-slate-800">{item.subject_name || item.thesis_title?.slice(0, 40)}</div>
                 <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-black uppercase ${
@@ -1092,7 +1088,15 @@ function AgentWatchlistPanel({ items }: { items: WatchlistItemEnhanced[] }) {
               {item.reason && (
                 <div className="mt-1 text-[10px] font-medium text-slate-400 line-clamp-1">{item.reason}</div>
               )}
-            </Link>
+              {item.subject_type === "stock" && item.subject_id && (
+                <Link
+                  href={`/risk?symbol=${encodeURIComponent(item.subject_id)}&name=${encodeURIComponent(item.subject_name || "")}`}
+                  className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                >
+                  创建风险预算计划
+                </Link>
+              )}
+            </div>
           ))}
         </div>
       )}

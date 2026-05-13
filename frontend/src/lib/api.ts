@@ -1595,6 +1595,84 @@ export type AgentRunListItem = {
 };
 
 // ---------------------------------------------------------------------------
+// Risk Budget types
+// ---------------------------------------------------------------------------
+
+export interface PositionSizeRequest {
+  account_equity: number
+  available_cash?: number
+  symbol: string
+  entry_price: number
+  invalidation_price?: number
+  risk_per_trade_pct: number
+  max_single_position_pct?: number
+  max_theme_exposure_pct?: number
+  current_drawdown_pct?: number
+  market?: string
+  lot_size?: number
+}
+
+export interface PositionSizeResponse {
+  symbol: string
+  entry_price: number
+  invalidation_price: number | null
+  risk_per_share: number | null
+  max_loss_amount: number | null
+  raw_quantity: number | null
+  rounded_quantity: number | null
+  estimated_position_value: number | null
+  estimated_position_pct: number | null
+  effective_risk_pct: number
+  cash_required: number | null
+  cash_after: number | null
+  warnings: string[]
+  constraints_applied: string[]
+  calculation_explain: string
+  disclaimer: string
+  error: string | null
+}
+
+export interface RiskPortfolio {
+  id: number
+  name: string
+  total_equity: number
+  available_cash: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ExposureItem {
+  symbol?: string
+  name?: string
+  industry?: string
+  theme?: string
+  exposure_pct: number
+  limit_pct: number
+  over_limit: boolean
+}
+
+export interface ExposureData {
+  portfolio_id: number
+  single_stock_exposure: ExposureItem[]
+  industry_exposure: ExposureItem[]
+  theme_exposure: ExposureItem[]
+  current_risk_rules: string[]
+}
+
+export interface PositionPlan {
+  id: number
+  symbol: string
+  entry_price: number
+  invalidation_price: number | null
+  calculated_position_pct: number | null
+  estimated_position_value: number | null
+  status: string
+  warnings: string[]
+  created_at: string
+  updated_at: string
+}
+
+// ---------------------------------------------------------------------------
 // User identity (X-Alpha-User-Id header)
 // ---------------------------------------------------------------------------
 
@@ -1929,6 +2007,31 @@ export const api = {
     const suffix = query.toString() ? `?${query.toString()}` : "";
     return safeGetJson<{ total: number; rows: ReportQualityPoint[] }>(`/api/research/report-quality${suffix}`).then((data) => data?.rows ?? []);
   },
+
+  // ---------------------------------------------------------------------------
+  // Risk Budget API
+  // ---------------------------------------------------------------------------
+  calculatePositionSize: (req: PositionSizeRequest) => postJson<PositionSizeResponse>("/api/risk/calculate-position-size", req),
+  fetchPortfolios: () => safeGetJsonArray<RiskPortfolio>("/api/risk/portfolios"),
+  createPortfolio: (data: { name: string; total_equity: number; available_cash?: number }) =>
+    postJson<RiskPortfolio>("/api/risk/portfolios", data),
+  fetchExposure: (portfolioId: number) => safeGetJson<ExposureData>(`/api/risk/portfolios/${portfolioId}/exposure`),
+  fetchPositionPlans: (params?: { status?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.status) query.set("status", params.status);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return safeGetJsonArray<PositionPlan>(`/api/risk/position-plans${suffix}`);
+  },
+  createPositionPlan: (data: {
+    symbol: string;
+    entry_price: number;
+    invalidation_price?: number | null;
+    calculated_position_pct?: number | null;
+    estimated_position_value?: number | null;
+    warnings?: string[];
+  }) => postJson<PositionPlan>("/api/risk/position-plans", data),
+  activatePlan: (planId: number) => postJson<PositionPlan>(`/api/risk/position-plans/${planId}/activate`, {}),
+  archivePlan: (planId: number) => postJson<PositionPlan>(`/api/risk/position-plans/${planId}/archive`, {}),
 };
 
 

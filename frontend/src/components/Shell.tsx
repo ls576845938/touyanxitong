@@ -17,7 +17,8 @@ import {
   Bot,
   Eye,
   ChevronDown,
-  Search
+  Search,
+  Shield
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { StockSearch } from "@/components/StockSearch";
@@ -37,7 +38,8 @@ const SECONDARY_NAV_ITEMS = [
   { href: "/research/ai-infra-map", label: "深度图谱", icon: Network },
   { href: "/universe", label: "证券库", icon: Database },
   { href: "/portfolio/dashboard", label: "组合", icon: BarChart3 },
-  { href: "/report", label: "简报", icon: FileText }
+  { href: "/report", label: "简报", icon: FileText },
+  { href: "/risk", label: "风险预算", icon: Shield }
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {
